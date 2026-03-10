@@ -10,6 +10,15 @@ task_profiles:
       face: true
       upper: false
       full: false
+    thresholds:
+      face_pass: 0.82
+      face_warn: 0.68
+      upper_pass: 0.75
+      upper_warn: 0.60
+      full_pass: 0.72
+      full_warn: 0.58
+      overall_pass: 0.80
+      overall_warn: 0.65
   upper_body_product:
     weights:
       face: 0.40
@@ -19,6 +28,15 @@ task_profiles:
       face: true
       upper: true
       full: false
+    thresholds:
+      face_pass: 0.78
+      face_warn: 0.63
+      upper_pass: 0.78
+      upper_warn: 0.62
+      full_pass: 0.65
+      full_warn: 0.50
+      overall_pass: 0.78
+      overall_warn: 0.62
   full_body_outfit:
     weights:
       face: 0.25
@@ -28,6 +46,15 @@ task_profiles:
       face: false
       upper: true
       full: true
+    thresholds:
+      face_pass: 0.75
+      face_warn: 0.58
+      upper_pass: 0.75
+      upper_warn: 0.58
+      full_pass: 0.78
+      full_warn: 0.62
+      overall_pass: 0.78
+      overall_warn: 0.62
   lora_dataset:
     weights:
       face: 0.65
@@ -37,6 +64,15 @@ task_profiles:
       face: true
       upper: false
       full: false
+    thresholds:
+      face_pass: 0.78
+      face_warn: 0.62
+      upper_pass: 0.70
+      upper_warn: 0.55
+      full_pass: 0.70
+      full_warn: 0.55
+      overall_pass: 0.76
+      overall_warn: 0.60
   body_gold_fullbody:
     weights:
       face: 0.45
@@ -46,6 +82,15 @@ task_profiles:
       face: true
       upper: false
       full: true
+    thresholds:
+      face_pass: 0.76
+      face_warn: 0.60
+      upper_pass: 0.68
+      upper_warn: 0.53
+      full_pass: 0.74
+      full_warn: 0.58
+      overall_pass: 0.74
+      overall_warn: 0.59
 
 review_policy:
   main_priority: body_gold_fullbody
@@ -53,3 +98,41 @@ review_policy:
   strict_fail_min_conf: 0.18
   face_no_signal_conf: 0.08
 
+profile_policy:
+  identity_lock:
+    identity_anchor_pool: face
+    quality_anchor_pool: face
+    soft_quality_hits_to_warn: 1
+    hard_quality_flags:
+      - FACE_UNDEREXPOSED_DARK
+      - FACE_NO_RELIABLE_SIGNAL
+  upper_body_product:
+    identity_anchor_pool: face
+    quality_anchor_pool: upper_first
+    soft_quality_hits_to_warn: 1
+    hard_quality_flags:
+      - FACE_UNDEREXPOSED_DARK
+      - FACE_NO_RELIABLE_SIGNAL
+  full_body_outfit:
+    identity_anchor_pool: face
+    quality_anchor_pool: upper_or_full
+    soft_quality_hits_to_warn: 2
+    hard_quality_flags:
+      - FACE_UNDEREXPOSED_DARK
+      - FACE_NO_RELIABLE_SIGNAL
+      - HIP_POP_DETECTED_POSSIBLE_MODEL_POSE
+  lora_dataset:
+    identity_anchor_pool: face
+    quality_anchor_pool: face
+    soft_quality_hits_to_warn: 2
+    hard_quality_flags:
+      - FACE_UNDEREXPOSED_DARK
+      - FACE_NO_RELIABLE_SIGNAL
+  body_gold_fullbody:
+    identity_anchor_pool: face
+    quality_anchor_pool: upper_or_full
+    soft_quality_hits_to_warn: 2
+    hard_quality_flags:
+      - FACE_UNDEREXPOSED_DARK
+      - FACE_NO_RELIABLE_SIGNAL
+      - HIP_POP_DETECTED_POSSIBLE_MODEL_POSE

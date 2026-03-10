@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import cv2
+import copy
 import json
 import math
 import shutil
@@ -16,6 +17,7 @@ import importlib
 # ⚙️ 配置区（按你的目录改这里）
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
+CONFIG_DIR = BASE_DIR / "configs"
 DIR_ANCHORS = BASE_DIR / "anchors"
 DIR_INPUT = BASE_DIR / "input"
 DIR_OUTPUT = BASE_DIR / "outputs"
@@ -174,6 +176,218 @@ PROFILE_POLICY: Dict[str, Dict[str, Any]] = {
         },
     },
 }
+
+EXTERNAL_CONFIG_STATUS: Dict[str, bool] = {
+    "task_profiles": False,
+    "consistency_thresholds": False,
+}
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _yaml_scalar_from_text(text: str) -> Any:
+    s = text.strip()
+    if s == "":
+        return ""
+
+    lower = s.lower()
+    if lower == "true":
+        return True
+    if lower == "false":
+        return False
+    if lower in {"null", "none"}:
+        return None
+
+    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+        return s[1:-1]
+
+    try:
+        if any(ch in s for ch in [".", "e", "E"]):
+            return float(s)
+        return int(s)
+    except Exception:
+        return s
+
+
+def _load_simple_yaml(path: Path) -> Optional[Any]:
+    if not path.exists():
+        return None
+
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+    except Exception as e:
+        print(f"[警告] 配置文件读取失败: {path} | {e}")
+        return None
+
+    entries: List[Tuple[int, str]] = []
+    for raw_line in raw_text.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        entries.append((indent, line.strip()))
+
+    if len(entries) == 0:
+        return None
+
+    def next_container_type(idx: int, cur_indent: int) -> str:
+        if idx + 1 >= len(entries):
+            return "dict"
+        next_indent, next_content = entries[idx + 1]
+        if next_indent <= cur_indent:
+            return "dict"
+        return "list" if next_content.startswith("- ") else "dict"
+
+    root: Any = [] if entries[0][1].startswith("- ") else {}
+    stack: List[Tuple[int, Any]] = [(-1, root)]
+
+    for idx, (indent, content) in enumerate(entries):
+        while len(stack) > 1 and indent <= stack[-1][0]:
+            stack.pop()
+
+        parent = stack[-1][1]
+
+        if content.startswith("- "):
+            if not isinstance(parent, list):
+                raise ValueError(f"YAML 解析失败，列表项缺少父列表: {path} :: {content}")
+            item_text = content[2:].strip()
+            parent.append(_yaml_scalar_from_text(item_text))
+            continue
+
+        if ":" not in content:
+            raise ValueError(f"YAML 解析失败，非法映射行: {path} :: {content}")
+
+        key, _, value_text = content.partition(":")
+        key = key.strip()
+        value_text = value_text.strip()
+
+        if not isinstance(parent, dict):
+            raise ValueError(f"YAML 解析失败，映射项缺少父字典: {path} :: {content}")
+
+        if value_text == "":
+            container_type = next_container_type(idx, indent)
+            child: Any = [] if container_type == "list" else {}
+            parent[key] = child
+            stack.append((indent, child))
+        else:
+            parent[key] = _yaml_scalar_from_text(value_text)
+
+    return root
+
+
+def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    out = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_dict(out[key], value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def _normalize_profile_policy_map(data: Any) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(data, dict):
+        return {}
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for profile_name, policy in data.items():
+        if not isinstance(policy, dict):
+            continue
+        node = copy.deepcopy(policy)
+        flags = node.get("hard_quality_flags", [])
+        if isinstance(flags, list):
+            node["hard_quality_flags"] = set(str(x) for x in flags)
+        elif isinstance(flags, set):
+            node["hard_quality_flags"] = set(str(x) for x in flags)
+        elif flags is None:
+            node["hard_quality_flags"] = set()
+        else:
+            node["hard_quality_flags"] = {str(flags)}
+        out[str(profile_name)] = node
+    return out
+
+
+def _apply_external_project_configs() -> None:
+    global ACTIVE_PROFILE
+    global MIN_CONF_FOR_STRICT_FAIL, FACE_NO_SIGNAL_CONF_TH
+    global CONSISTENCY_MODE
+    global CONSTITUTION_MIN_CONF, SKIN_MIN_CONF, DEPTH3D_MIN_CONF
+    global CONSTITUTION_SOFT_WARN_TH, CONSTITUTION_STRONG_WARN_TH
+    global SKIN_SOFT_WARN_TH, SKIN_STRONG_WARN_TH
+    global DEPTH3D_SOFT_WARN_TH, DEPTH3D_STRONG_WARN_TH
+    global TASK_PROFILES, PROFILE_POLICY
+
+    try:
+        task_profile_cfg = _load_simple_yaml(CONFIG_DIR / "task_profiles.yaml")
+    except Exception as e:
+        print(f"[警告] task_profiles.yaml 解析失败，回退内置默认配置: {e}")
+        task_profile_cfg = None
+    if isinstance(task_profile_cfg, dict):
+        loaded_profiles = task_profile_cfg.get("task_profiles", {})
+        if isinstance(loaded_profiles, dict):
+            TASK_PROFILES = _deep_merge_dict(TASK_PROFILES, loaded_profiles)
+
+        loaded_profile_policy = _normalize_profile_policy_map(task_profile_cfg.get("profile_policy", {}))
+        if len(loaded_profile_policy) > 0:
+            PROFILE_POLICY = _deep_merge_dict(PROFILE_POLICY, loaded_profile_policy)
+
+        review_policy = task_profile_cfg.get("review_policy", {})
+        if isinstance(review_policy, dict):
+            ACTIVE_PROFILE = str(task_profile_cfg.get("active_profile", review_policy.get("main_priority", ACTIVE_PROFILE)))
+            MIN_CONF_FOR_STRICT_FAIL = _coerce_float(
+                review_policy.get("strict_fail_min_conf", MIN_CONF_FOR_STRICT_FAIL),
+                MIN_CONF_FOR_STRICT_FAIL,
+            )
+            FACE_NO_SIGNAL_CONF_TH = _coerce_float(
+                review_policy.get("face_no_signal_conf", FACE_NO_SIGNAL_CONF_TH),
+                FACE_NO_SIGNAL_CONF_TH,
+            )
+
+        EXTERNAL_CONFIG_STATUS["task_profiles"] = True
+
+    try:
+        consistency_cfg = _load_simple_yaml(CONFIG_DIR / "consistency_thresholds.yaml")
+    except Exception as e:
+        print(f"[警告] consistency_thresholds.yaml 解析失败，回退内置默认配置: {e}")
+        consistency_cfg = None
+    if isinstance(consistency_cfg, dict):
+        consistency = consistency_cfg.get("consistency", {})
+        if isinstance(consistency, dict):
+            CONSISTENCY_MODE = str(consistency.get("mode", CONSISTENCY_MODE))
+
+            min_conf = consistency.get("min_confidence", {})
+            if isinstance(min_conf, dict):
+                CONSTITUTION_MIN_CONF = _coerce_float(min_conf.get("constitution", CONSTITUTION_MIN_CONF), CONSTITUTION_MIN_CONF)
+                SKIN_MIN_CONF = _coerce_float(min_conf.get("skin", SKIN_MIN_CONF), SKIN_MIN_CONF)
+                DEPTH3D_MIN_CONF = _coerce_float(min_conf.get("depth3d", DEPTH3D_MIN_CONF), DEPTH3D_MIN_CONF)
+
+            warn_th = consistency.get("warn_threshold", {})
+            if isinstance(warn_th, dict):
+                CONSTITUTION_SOFT_WARN_TH = _coerce_float(
+                    warn_th.get("constitution_soft", CONSTITUTION_SOFT_WARN_TH),
+                    CONSTITUTION_SOFT_WARN_TH,
+                )
+                CONSTITUTION_STRONG_WARN_TH = _coerce_float(
+                    warn_th.get("constitution_strong", CONSTITUTION_STRONG_WARN_TH),
+                    CONSTITUTION_STRONG_WARN_TH,
+                )
+                SKIN_SOFT_WARN_TH = _coerce_float(warn_th.get("skin_soft", SKIN_SOFT_WARN_TH), SKIN_SOFT_WARN_TH)
+                SKIN_STRONG_WARN_TH = _coerce_float(warn_th.get("skin_strong", SKIN_STRONG_WARN_TH), SKIN_STRONG_WARN_TH)
+                DEPTH3D_SOFT_WARN_TH = _coerce_float(warn_th.get("depth3d_soft", DEPTH3D_SOFT_WARN_TH), DEPTH3D_SOFT_WARN_TH)
+                DEPTH3D_STRONG_WARN_TH = _coerce_float(
+                    warn_th.get("depth3d_strong", DEPTH3D_STRONG_WARN_TH),
+                    DEPTH3D_STRONG_WARN_TH,
+                )
+
+        EXTERNAL_CONFIG_STATUS["consistency_thresholds"] = True
+
+
+_apply_external_project_configs()
 
 # ============================================================
 # 📦 可选依赖（有就上，没有就兜底）
@@ -3208,9 +3422,12 @@ def run_pipeline(profile_name: str = ACTIVE_PROFILE) -> None:
 if __name__ == "__main__":
     print(f"[CONFIG] RUN_MODE={RUN_MODE}")
     print(f"[CONFIG] ACTIVE_PROFILE={ACTIVE_PROFILE}")
+    print(f"[CONFIG] CONFIG_DIR={CONFIG_DIR}")
+    print(f"[CONFIG] EXTERNAL_CONFIG_STATUS={EXTERNAL_CONFIG_STATUS}")
     print("[CONFIG] FACE_CONF_MAP = linear_map_to_01(bbox_ratio, 0.006, 0.035)")
     print(f"[CONFIG] FACE_NO_RELIABLE_SIGNAL_TH = {FACE_NO_SIGNAL_CONF_TH}")
     print(f"[CONFIG] MIN_CONF_FOR_STRICT_FAIL = {MIN_CONF_FOR_STRICT_FAIL}")
+    print(f"[CONFIG] CONSISTENCY_MODE={CONSISTENCY_MODE}")
 
     if RUN_MODE not in {"qa", "calibrate"}:
         raise ValueError("RUN_MODE 只能是 'qa' 或 'calibrate'")
