@@ -1,0 +1,10 @@
+.idea/
+.venv/
+__pycache__/
+*.pyc
+
+# Local runtime and batch artifacts
+outputs/
+input/
+calib_pass/
+

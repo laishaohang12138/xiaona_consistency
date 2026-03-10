@@ -1,0 +1,143 @@
+[REFERENCE PRIORITY RULE | MUST BE FIRST]
+Ref #1 = FACE MASTER (Identity Anchor). Highest priority for identity. Copy exactly.
+Ref #2 = FULL BODY MASTER (Proportion + Framing Anchor). Highest priority for body proportions and full-body framing.
+Ref #3 = UPPER SUPPORT anchor only if shoulders/neck drift.
+Conflict rule: Ref #1 always wins for face identity; Ref #2 always wins for body proportions, body architecture, and full-body framing.
+Single person only. No redesign. No beautify. No face replacement style drift.
+
+[SUBJECT / PURPOSE]
+Subject: MODEL A "Xiao Na" - Master Reference Clone.
+Purpose: LoRA BODY GOLD calibration dataset.
+Calibration body study only. Neutral full-body reference for identity + body proportion locking.
+Non-fashion, non-sensual, non-erotic, non-editorial. Do not stylize.
+
+[IDENTITY HARD-LOCK]
+Identity must match Ref #1 exactly.
+Do NOT beautify.
+Do NOT change facial proportions.
+Do NOT make the face more generic, younger, cuter, more glamorous, or more "influencer-like".
+Layout Lock: inter-feature distances consistent with Ref #1.
+Ratio Lock: face width / face length ratio consistent with Ref #1.
+Face geometry must remain stable across the whole batch.
+Expression: calm neutral, relaxed closed mouth, no smile, no teeth, no pout.
+
+[FEATURE INVARIANTS]
+Face shape: soft oval face, rounded chin, natural jaw width, no V-line.
+Nose: bridge height and bridge length consistent with Ref #1; blunt rounded U-shaped nose tip; no sharp tip; no rhinoplasty look.
+Lips: lip thickness consistent with Ref #1; relaxed closed mouth; no overfilled lips.
+Eyes: natural eye size and spacing, no doll-eye effect, no enlarged iris effect.
+Eyebrows: natural density, not overly sharp, not overly arched.
+Ears: natural size, correct left-right symmetry.
+
+[HAIR & ACCESSORY LOCK]
+Hair Variant: black middle-part low ponytail, clean parting, natural hairline, no bangs covering eyebrows, no curls, no dye, no highlights.
+Hair must remain simple, neat, and stable across the batch.
+Earrings: small silver hoop earrings only.
+No additional accessories.
+
+[SKIN / TEXTURE / LIGHTING LOCK]
+Lighting: soft studio broad lighting with subtle rim light and soft frontal fill.
+Even exposure from head to toe.
+CRITICAL: uniform skin tone from face to neck, arms, abdomen, thighs, knees, calves, ankles, and feet.
+Legs must match the face in brightness and tone.
+No darker legs. No darker knees. No orange cast. No tan shift.
+White balance: neutral.
+Skin texture: realistic natural skin texture, visible natural pores, fine vellus hair, subtle uneven highlights, realistic micro-contrast.
+Skin must look real and healthy, smooth but not waxy.
+No beauty filter. No airbrushed skin. No plastic skin. No over-smoothed limbs.
+Face brightness must match Ref #1.
+Avoid auto-exposure darkening.
+Add enough frontal fill so face and legs stay equally bright.
+No harsh specular hot spots.
+
+[BACKGROUND / STUDIO FIX]
+Background: solid neutral grey to cool grey seamless studio cyclorama, grey family around #808080, clean and uncluttered.
+No props. No furniture. No environment storytelling.
+Floor: subtle natural floor shadow grounding the feet.
+No bright white background.
+No black void background.
+No textured wall.
+
+[BODY ARCHITECTURE HARD-LOCK]
+Slim Chinese female, 170cm visual height, 50kg visual weight, slender professional model physique, long-leg proportion, measurements B82cm/W59cm/H86cm, 1:7.5 to 1:8 head-to-body ratio.
+Shoulders straight and relaxed, 38cm shoulder width, 22cm upper arm.
+Visible distinct clavicles, sleek neckline, 30cm neck.
+Natural trapezius slope, no shrugging.
+Shoulder-width to pelvis-width relationship consistent with Ref #2.
+Waist high and natural.
+Flat abdomen without abs definition.
+Natural hip curve, narrow and compact pelvis.
+Low body fat percentage, lean and firm soft tissue, tight silhouette.
+No rib cage visibility.
+No hollow cheeks.
+No body-slimming filter.
+Keep waist width and hip width consistent with Ref #2.
+Avoid snatched waist.
+Avoid extreme hourglass.
+Navel: visible natural belly button, small shallow innie, centered on abdominal midline, subtle natural navel shadow and realistic micro-crease.
+Do not erase the navel.
+Do not over-smooth the abdomen.
+
+[LOWER BODY SAFETY LOCK]
+Thighs: slender and elongated silhouette, tight soft tissue, model-like thin legs, natural thigh gap, no bulging quadriceps, no heavy lower body.
+Knees: clean, natural, aligned forward, not knocked inward, no dark patches, no bruised-looking shadows, no dirty knee tone.
+Calves: long and slender but realistic.
+Ankles: natural ankle bones visible, realistic Achilles line.
+Feet: natural bare feet, correct toe count (5 per foot), natural toe spacing, natural arch, clean heels, natural toenails, anatomically normal.
+Keep knees, ankles, heels, and all toes fully visible and normal whenever framing allows.
+
+[ATTIRE | BODY GOLD CALIBRATION ONLY]
+Top: strapless bandeau tube top, no straps, matte fabric, non-see-through, clean straight top edge, minimal and neutral, not lingerie-styled.
+Coverage must remain secure and non-revealing.
+No lace. No logo. No decorative trim. No push-up effect. No cleavage emphasis.
+Bottom: women's short boxer briefs with a female-style boxer brief cut, high-waisted fit, matte fabric, non-see-through, clean hem, neutral and functional.
+Length covers lower abdomen / groin area to upper thigh safely and cleanly.
+No thigh squeeze. No logo. No pattern. No transparent fabric.
+Color: solid black or dark charcoal only.
+Barefoot only.
+Calibration garment only. Neutral body study, not fashion styling.
+
+[CAMERA / OPTICS / FRAMING LOCK]
+Camera height: eye-level.
+Perspective: neutral perspective.
+Lens: 60mm equivalent.
+Horizon level.
+Vertical lines straight.
+Framing: full body, head to toe fully visible.
+Feet fully visible.
+Keep 8-12% floor margin below feet.
+No camera tilt.
+No dramatic perspective distortion.
+No wide-angle look.
+No zoom crop inconsistency.
+Whole body scale should remain stable across the batch.
+
+[POSE GLOBAL RULES]
+Static standing reference or subtle weight shift only.
+Choose only one main pose logic per image.
+No exaggerated walking stride.
+No hip pop.
+No crossed legs.
+No chest-forward pose.
+No contrapposto.
+No dramatic twist.
+No fashion-model attitude.
+Hands relaxed and natural.
+Hands must not cover knees.
+Shoulders relaxed.
+Neck natural.
+No motion blur.
+No occlusion of key joints.
+Body language must feel neutral, technical, and reference-like.
+
+[IMAGE QUALITY LOCK]
+Photorealistic.
+Natural anatomy.
+Stable full-body composition.
+High detail on face, abdomen, knees, ankles, feet, and toes.
+No retouching look.
+No synthetic glossy skin.
+No stylized fashion-campaign grade.
+No cinematic mood.
+Reference image feeling, not advertisement feeling.
+

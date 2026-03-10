@@ -1,0 +1,47 @@
+anchors:
+  ref_1_face_master:
+    role: FACE_MASTER
+    priority: 1
+    required_default: true
+    path: D:/xiaona_consistency/anchors/face/front/A-Core_01_0deg_MASTER.png
+    owns:
+      - face_identity
+      - facial_layout
+      - facial_geometry
+  ref_2_full_body_master:
+    role: FULL_BODY_MASTER
+    priority: 2
+    required_default: true
+    path: D:/xiaona_consistency/anchors/full/Task-63987060-116-1.png
+    owns:
+      - body_proportion
+      - body_architecture
+      - full_body_framing
+      - body_constitution
+  ref_3_upper_support_94:
+    role: UPPER_SUPPORT
+    priority: 3
+    required_default: false
+    path: D:/xiaona_consistency/anchors/upper/Task-63987060-94-1.png
+    owns:
+      - clavicle_boundary
+      - shoulder_line
+      - upper_body_edge
+  ref_3_upper_support_97:
+    role: UPPER_SUPPORT
+    priority: 3
+    required_default: false
+    path: D:/xiaona_consistency/anchors/upper/Task-63987060-97-1.png
+    owns:
+      - clavicle_boundary
+      - shoulder_line
+      - upper_body_edge
+rules:
+  face_conflict_winner: ref_1_face_master
+  body_conflict_winner: ref_2_full_body_master
+  upper_support_activation:
+    - shoulder_drift
+    - neck_drift
+    - clavicle_drift
+    - upper_body_boundary_drift
+

@@ -1,0 +1,21 @@
+prompt_asset:
+  id: body_gold_bg01_v1
+  scope: BODY_GOLD
+  status: frozen
+  version: v1
+  source_import: D:/xiaona_consistency/prompts/archive/body_gold_master_import_2026-03-11.txt
+  refs_required:
+    - ref_1_face_master
+    - ref_2_full_body_master
+  refs_optional:
+    - ref_3_upper_support_94
+    - ref_3_upper_support_97
+  compose_order:
+    - universal_base_v1.txt
+    - shot_plugin_bg01_front_neutral_symmetry_v1.txt
+    - universal_negative_v1.txt
+  notes:
+    - BODY GOLD only
+    - not a whole-project master prompt
+    - use as calibration prompt asset, not as style prompt
+

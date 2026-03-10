@@ -1,0 +1,55 @@
+active_profile: body_gold_fullbody
+
+task_profiles:
+  identity_lock:
+    weights:
+      face: 0.70
+      upper: 0.20
+      full: 0.10
+    require:
+      face: true
+      upper: false
+      full: false
+  upper_body_product:
+    weights:
+      face: 0.40
+      upper: 0.45
+      full: 0.15
+    require:
+      face: true
+      upper: true
+      full: false
+  full_body_outfit:
+    weights:
+      face: 0.25
+      upper: 0.30
+      full: 0.45
+    require:
+      face: false
+      upper: true
+      full: true
+  lora_dataset:
+    weights:
+      face: 0.65
+      upper: 0.10
+      full: 0.25
+    require:
+      face: true
+      upper: false
+      full: false
+  body_gold_fullbody:
+    weights:
+      face: 0.45
+      upper: 0.15
+      full: 0.40
+    require:
+      face: true
+      upper: false
+      full: true
+
+review_policy:
+  main_priority: body_gold_fullbody
+  consistency_mode: soft_gate
+  strict_fail_min_conf: 0.18
+  face_no_signal_conf: 0.08
+

@@ -1,0 +1,24 @@
+consistency:
+  mode: soft_gate
+  min_confidence:
+    constitution: 0.68
+    skin: 0.60
+    depth3d: 0.58
+  warn_threshold:
+    constitution_soft: 0.56
+    constitution_strong: 0.44
+    skin_soft: 0.54
+    skin_strong: 0.42
+    depth3d_soft: 0.54
+    depth3d_strong: 0.42
+
+algorithm_policy:
+  route_order:
+    - engineering_decoupling
+    - human_parsing
+    - heel_foot_index_and_hand_landmarker
+    - yolo_for_roi
+    - sam_for_refinement
+    - smplx_shortlist_only
+  first_high_order_algorithm: human_parsing
+

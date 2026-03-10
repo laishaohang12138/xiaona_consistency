@@ -1,0 +1,23 @@
+training_layers:
+  BODY_GOLD:
+    quota: 12
+    priority: 1
+    role: human_instruction_sheet
+  BRIDGE:
+    quota: 8
+    priority: 2
+    role: transition_layer
+  NECKLINE:
+    quota: 28
+    priority: 3
+    role: neckline_stability_layer
+  OUTER:
+    quota: 24
+    priority: 4
+    role: outerwear_continuity_layer
+  FACE_LOCK:
+    quota: 12
+    priority: 5
+    role: face_identity_reinforcement_layer
+
+frozen_total_pass_target: 84
