@@ -178,9 +178,23 @@ PROFILE_POLICY: Dict[str, Dict[str, Any]] = {
 }
 
 EXTERNAL_CONFIG_STATUS: Dict[str, bool] = {
+    "anchor_registry": False,
     "task_profiles": False,
     "consistency_thresholds": False,
 }
+
+ANCHOR_REGISTRY: Dict[str, Any] = {
+    "anchors": {},
+    "rules": {},
+}
+
+PROVIDER_POLICY: Dict[str, str] = {
+    "subject_mask": "legacy_foreground",
+    "skin_region": "legacy_ycrcb",
+    "anchor_source": "registry_then_directory_fallback",
+}
+
+_PROVIDER_WARNED_KEYS: set[str] = set()
 
 
 def _coerce_float(value: Any, default: float) -> float:
@@ -312,8 +326,121 @@ def _normalize_profile_policy_map(data: Any) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _normalize_anchor_registry(data: Any) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        return {"anchors": {}, "rules": {}}
+
+    anchors_node = data.get("anchors", {})
+    rules_node = data.get("rules", {})
+    out_anchors: Dict[str, Dict[str, Any]] = {}
+
+    if isinstance(anchors_node, dict):
+        for anchor_id, node in anchors_node.items():
+            if not isinstance(node, dict):
+                continue
+            out_anchors[str(anchor_id)] = {
+                "role": str(node.get("role", "")),
+                "priority": _coerce_float(node.get("priority", 0), 0.0),
+                "required_default": bool(node.get("required_default", False)),
+                "path": str(node.get("path", "")),
+                "owns": [str(x) for x in node.get("owns", [])] if isinstance(node.get("owns", []), list) else [],
+            }
+
+    out_rules: Dict[str, Any] = {}
+    if isinstance(rules_node, dict):
+        out_rules = copy.deepcopy(rules_node)
+
+    return {"anchors": out_anchors, "rules": out_rules}
+
+
+def _anchor_paths_from_registry() -> Dict[str, List[str]]:
+    grouped: Dict[str, List[str]] = {
+        "face_paths": [],
+        "upper_paths": [],
+        "full_paths": [],
+    }
+
+    anchors_node = ANCHOR_REGISTRY.get("anchors", {})
+    if not isinstance(anchors_node, dict):
+        return grouped
+
+    for anchor_id, node in anchors_node.items():
+        if not isinstance(node, dict):
+            continue
+        role = str(node.get("role", "")).upper()
+        path_str = str(node.get("path", "")).strip()
+        if not path_str:
+            continue
+
+        p = Path(path_str)
+        target_key: Optional[str] = None
+
+        if role == "FACE_MASTER":
+            target_key = "face_paths"
+        elif role == "UPPER_SUPPORT":
+            target_key = "upper_paths"
+        elif role == "FULL_BODY_MASTER":
+            target_key = "full_paths"
+        else:
+            p_str = str(p).replace("\\", "/").lower()
+            if "/anchors/face/" in p_str:
+                target_key = "face_paths"
+            elif "/anchors/upper/" in p_str:
+                target_key = "upper_paths"
+            elif "/anchors/full/" in p_str:
+                target_key = "full_paths"
+
+        if target_key is None:
+            continue
+
+        if p.exists():
+            grouped[target_key].append(str(p))
+        else:
+            print(f"[警告] Anchor registry 路径不存在，已跳过: {anchor_id} -> {p}")
+
+    return grouped
+
+
+def _default_anchor_paths_from_dirs() -> Dict[str, List[str]]:
+    return {
+        "face_paths": [str(p) for p in list_images_recursive(DIR_ANCHOR_FACE)],
+        "upper_paths": [str(p) for p in list_images_in_dir(DIR_ANCHOR_UPPER)],
+        "full_paths": [str(p) for p in list_images_in_dir(DIR_ANCHOR_FULL)],
+    }
+
+
+def _resolve_anchor_paths() -> Dict[str, List[str]]:
+    default_paths = _default_anchor_paths_from_dirs()
+    if PROVIDER_POLICY.get("anchor_source", "registry_then_directory_fallback") != "registry_then_directory_fallback":
+        return default_paths
+
+    registry_paths = _anchor_paths_from_registry()
+    out: Dict[str, List[str]] = {}
+    for key in ["face_paths", "upper_paths", "full_paths"]:
+        vals = registry_paths.get(key, [])
+        out[key] = vals if len(vals) > 0 else default_paths.get(key, [])
+    return out
+
+
+def _anchor_registry_summary() -> Dict[str, int]:
+    resolved = _resolve_anchor_paths()
+    return {
+        "face_paths": len(resolved.get("face_paths", [])),
+        "upper_paths": len(resolved.get("upper_paths", [])),
+        "full_paths": len(resolved.get("full_paths", [])),
+    }
+
+
+def _warn_provider_once(key: str, message: str) -> None:
+    if key in _PROVIDER_WARNED_KEYS:
+        return
+    _PROVIDER_WARNED_KEYS.add(key)
+    print(message)
+
+
 def _apply_external_project_configs() -> None:
     global ACTIVE_PROFILE
+    global ANCHOR_REGISTRY, PROVIDER_POLICY
     global MIN_CONF_FOR_STRICT_FAIL, FACE_NO_SIGNAL_CONF_TH
     global CONSISTENCY_MODE
     global CONSTITUTION_MIN_CONF, SKIN_MIN_CONF, DEPTH3D_MIN_CONF
@@ -321,6 +448,15 @@ def _apply_external_project_configs() -> None:
     global SKIN_SOFT_WARN_TH, SKIN_STRONG_WARN_TH
     global DEPTH3D_SOFT_WARN_TH, DEPTH3D_STRONG_WARN_TH
     global TASK_PROFILES, PROFILE_POLICY
+
+    try:
+        anchor_registry_cfg = _load_simple_yaml(CONFIG_DIR / "anchor_registry.yaml")
+    except Exception as e:
+        print(f"[警告] anchor_registry.yaml 解析失败，回退目录扫描: {e}")
+        anchor_registry_cfg = None
+    if isinstance(anchor_registry_cfg, dict):
+        ANCHOR_REGISTRY = _normalize_anchor_registry(anchor_registry_cfg)
+        EXTERNAL_CONFIG_STATUS["anchor_registry"] = True
 
     try:
         task_profile_cfg = _load_simple_yaml(CONFIG_DIR / "task_profiles.yaml")
@@ -383,6 +519,17 @@ def _apply_external_project_configs() -> None:
                     warn_th.get("depth3d_strong", DEPTH3D_STRONG_WARN_TH),
                     DEPTH3D_STRONG_WARN_TH,
                 )
+
+        algo_policy = consistency_cfg.get("algorithm_policy", {})
+        if isinstance(algo_policy, dict):
+            provider_defaults = algo_policy.get("provider_defaults", {})
+            if isinstance(provider_defaults, dict):
+                subject_mask_provider = provider_defaults.get("subject_mask", PROVIDER_POLICY["subject_mask"])
+                skin_region_provider = provider_defaults.get("skin_region", PROVIDER_POLICY["skin_region"])
+                anchor_source_provider = provider_defaults.get("anchor_source", PROVIDER_POLICY["anchor_source"])
+                PROVIDER_POLICY["subject_mask"] = str(subject_mask_provider)
+                PROVIDER_POLICY["skin_region"] = str(skin_region_provider)
+                PROVIDER_POLICY["anchor_source"] = str(anchor_source_provider)
 
         EXTERNAL_CONFIG_STATUS["consistency_thresholds"] = True
 
@@ -897,7 +1044,7 @@ def _delta_e_lab(lab1: Optional[np.ndarray], lab2: Optional[np.ndarray]) -> Opti
     return float(np.sqrt(np.sum(d * d)))
 
 
-def _skin_mask_ycrcb(img_bgr: np.ndarray) -> np.ndarray:
+def _skin_mask_ycrcb_legacy(img_bgr: np.ndarray) -> np.ndarray:
     ycrcb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2YCrCb)
     Y = ycrcb[:, :, 0]
     Cr = ycrcb[:, :, 1]
@@ -913,7 +1060,7 @@ def _skin_mask_ycrcb(img_bgr: np.ndarray) -> np.ndarray:
     return mask
 
 
-def compute_foreground_mask(img_bgr: np.ndarray, face_feat: FaceFeat, pose_feat: PoseFeat) -> Optional[np.ndarray]:
+def _compute_foreground_mask_legacy(img_bgr: np.ndarray, face_feat: FaceFeat, pose_feat: PoseFeat) -> Optional[np.ndarray]:
     if img_bgr is None:
         return None
 
@@ -962,6 +1109,64 @@ def compute_foreground_mask(img_bgr: np.ndarray, face_feat: FaceFeat, pose_feat:
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k2)
     mask = _largest_component(mask)
     return mask
+
+
+def _compute_foreground_mask_human_parsing(
+    img_bgr: np.ndarray,
+    face_feat: FaceFeat,
+    pose_feat: PoseFeat,
+) -> Optional[np.ndarray]:
+    # Placeholder for the future Human Parsing provider.
+    return None
+
+
+def compute_foreground_mask(img_bgr: np.ndarray, face_feat: FaceFeat, pose_feat: PoseFeat) -> Optional[np.ndarray]:
+    provider = PROVIDER_POLICY.get("subject_mask", "legacy_foreground")
+    if provider == "human_parsing":
+        mask = _compute_foreground_mask_human_parsing(img_bgr, face_feat, pose_feat)
+        if mask is not None:
+            return mask
+        _warn_provider_once(
+            "subject_mask_human_parsing_fallback",
+            "[警告] subject_mask provider=human_parsing 尚未接入，已回退 legacy_foreground。",
+        )
+    elif provider != "legacy_foreground":
+        _warn_provider_once(
+            f"subject_mask_unknown::{provider}",
+            f"[警告] 未知 subject_mask provider={provider}，已回退 legacy_foreground。",
+        )
+    return _compute_foreground_mask_legacy(img_bgr, face_feat, pose_feat)
+
+
+def _compute_skin_mask_human_parsing(
+    img_bgr: np.ndarray,
+    face_feat: Optional[FaceFeat] = None,
+    pose_feat: Optional[PoseFeat] = None,
+) -> Optional[np.ndarray]:
+    # Placeholder for the future Human Parsing provider.
+    return None
+
+
+def compute_skin_mask(
+    img_bgr: np.ndarray,
+    face_feat: Optional[FaceFeat] = None,
+    pose_feat: Optional[PoseFeat] = None,
+) -> np.ndarray:
+    provider = PROVIDER_POLICY.get("skin_region", "legacy_ycrcb")
+    if provider == "human_parsing":
+        mask = _compute_skin_mask_human_parsing(img_bgr, face_feat=face_feat, pose_feat=pose_feat)
+        if mask is not None:
+            return mask
+        _warn_provider_once(
+            "skin_region_human_parsing_fallback",
+            "[警告] skin_region provider=human_parsing 尚未接入，已回退 legacy_ycrcb。",
+        )
+    elif provider != "legacy_ycrcb":
+        _warn_provider_once(
+            f"skin_region_unknown::{provider}",
+            f"[警告] 未知 skin_region provider={provider}，已回退 legacy_ycrcb。",
+        )
+    return _skin_mask_ycrcb_legacy(img_bgr)
 
 
 def _row_width(mask_u8: np.ndarray, y: int) -> Optional[int]:
@@ -1239,7 +1444,7 @@ def extract_skin_consistency_metrics(
         out["reasons"].append("SKIN_FG_MASK_FAILED")
         return out
 
-    skin_mask = _skin_mask_ycrcb(img_bgr)
+    skin_mask = compute_skin_mask(img_bgr, face_feat=face_feat, pose_feat=pose_feat)
     valid_skin = cv2.bitwise_and(skin_mask, fg_mask)
 
     L_SH, R_SH = 11, 12
@@ -2884,14 +3089,14 @@ def get_stats_for_bucket(stats: Dict[str, Any], bucket: str) -> Dict[str, Any]:
 def load_anchor_set() -> AnchorSet:
     anchors = AnchorSet()
 
-    # ✅ face 改为递归读取，支持 front / three_quarter / profile_like 子目录
-    anchors.meta["face_paths"] = [str(p) for p in list_images_recursive(DIR_ANCHOR_FACE)]
-
-    # upper / full 继续维持原本一层读取就行
-    anchors.meta["upper_paths"] = [str(p) for p in list_images_in_dir(DIR_ANCHOR_UPPER)]
-    anchors.meta["full_paths"] = [str(p) for p in list_images_in_dir(DIR_ANCHOR_FULL)]
+    resolved_anchor_paths = _resolve_anchor_paths()
+    anchors.meta["anchor_source_mode"] = PROVIDER_POLICY.get("anchor_source", "registry_then_directory_fallback")
+    anchors.meta["face_paths"] = list(resolved_anchor_paths.get("face_paths", []))
+    anchors.meta["upper_paths"] = list(resolved_anchor_paths.get("upper_paths", []))
+    anchors.meta["full_paths"] = list(resolved_anchor_paths.get("full_paths", []))
 
     print("\n[初始化] 加载 Anchor Set...")
+    print(f"  Anchor Source Mode: {anchors.meta['anchor_source_mode']}")
     print(f"  Face Anchors : {len(anchors.meta['face_paths'])}")
     print(f"  Upper Anchors: {len(anchors.meta['upper_paths'])}")
     print(f"  Full Anchors : {len(anchors.meta['full_paths'])}")
@@ -3424,6 +3629,8 @@ if __name__ == "__main__":
     print(f"[CONFIG] ACTIVE_PROFILE={ACTIVE_PROFILE}")
     print(f"[CONFIG] CONFIG_DIR={CONFIG_DIR}")
     print(f"[CONFIG] EXTERNAL_CONFIG_STATUS={EXTERNAL_CONFIG_STATUS}")
+    print(f"[CONFIG] PROVIDER_POLICY={PROVIDER_POLICY}")
+    print(f"[CONFIG] ANCHOR_REGISTRY_SUMMARY={_anchor_registry_summary()}")
     print("[CONFIG] FACE_CONF_MAP = linear_map_to_01(bbox_ratio, 0.006, 0.035)")
     print(f"[CONFIG] FACE_NO_RELIABLE_SIGNAL_TH = {FACE_NO_SIGNAL_CONF_TH}")
     print(f"[CONFIG] MIN_CONF_FOR_STRICT_FAIL = {MIN_CONF_FOR_STRICT_FAIL}")
