@@ -22,6 +22,6 @@ algorithm_policy:
     - smplx_shortlist_only
   first_high_order_algorithm: human_parsing
   provider_defaults:
-    subject_mask: legacy_foreground
-    skin_region: legacy_ycrcb
+    subject_mask: human_parsing
+    skin_region: human_parsing
     anchor_source: registry_then_directory_fallback
