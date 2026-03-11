@@ -11,6 +11,48 @@ consistency:
     skin_strong: 0.42
     depth3d_soft: 0.54
     depth3d_strong: 0.42
+  skin_risk:
+    lighting_warn: 0.30
+    lighting_high: 0.55
+    sample_warn: 0.32
+    sample_high: 0.55
+    face_side_delta_l_warn: 16.0
+    face_neck_delta_l_warn: 18.0
+    leg_lr_delta_l_warn: 20.0
+    face_highlight_l: 242.0
+    face_highlight_ratio_warn: 0.08
+    face_highlight_ratio_high: 0.16
+    edge_margin_ratio_floor: 0.018
+    low_purity_floor: 0.18
+    purity_variance_warn: 0.18
+  skin_split:
+    delta_ab_decay_thigh: 11.5
+    delta_ab_decay_calf: 12.5
+    delta_l_decay_thigh: 18.0
+    delta_l_decay_calf: 20.0
+    brightness_ratio_low: 0.84
+    brightness_ratio_high: 1.08
+    brightness_ratio_margin: 0.22
+    knee_ratio_low: 0.82
+    knee_ratio_high: 1.08
+    knee_ratio_margin: 0.22
+    severe_delta_ab_thigh: 11.0
+    severe_delta_ab_calf: 12.5
+    severe_leg_brightness_ratio: 0.78
+    severe_luminance_score: 0.40
+  skin_score_weights:
+    strict:
+      chroma: 0.62
+      luminance: 0.24
+      knee: 0.14
+    chroma_dominant:
+      chroma: 0.70
+      luminance: 0.20
+      knee: 0.10
+    high_risk:
+      chroma: 0.82
+      luminance: 0.08
+      knee: 0.10
 
 algorithm_policy:
   route_order:

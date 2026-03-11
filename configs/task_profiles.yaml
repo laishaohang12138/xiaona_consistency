@@ -103,6 +103,8 @@ profile_policy:
     identity_anchor_pool: face
     quality_anchor_pool: face
     soft_quality_hits_to_warn: 1
+    skin_lighting_high_caps_pass: false
+    skin_sample_high_caps_pass: false
     hard_quality_flags:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL
@@ -110,6 +112,8 @@ profile_policy:
     identity_anchor_pool: face
     quality_anchor_pool: upper_first
     soft_quality_hits_to_warn: 1
+    skin_lighting_high_caps_pass: false
+    skin_sample_high_caps_pass: false
     hard_quality_flags:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL
@@ -117,6 +121,8 @@ profile_policy:
     identity_anchor_pool: face
     quality_anchor_pool: upper_or_full
     soft_quality_hits_to_warn: 2
+    skin_lighting_high_caps_pass: false
+    skin_sample_high_caps_pass: false
     hard_quality_flags:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL
@@ -125,6 +131,8 @@ profile_policy:
     identity_anchor_pool: face
     quality_anchor_pool: face
     soft_quality_hits_to_warn: 2
+    skin_lighting_high_caps_pass: false
+    skin_sample_high_caps_pass: false
     hard_quality_flags:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL
@@ -132,6 +140,8 @@ profile_policy:
     identity_anchor_pool: face
     quality_anchor_pool: upper_or_full
     soft_quality_hits_to_warn: 2
+    skin_lighting_high_caps_pass: true
+    skin_sample_high_caps_pass: true
     hard_quality_flags:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL

@@ -450,6 +450,25 @@ def run_pipeline(
                 final_status = "WARN"
                 overall_state = "WARN"
 
+            skin_sample_risk = float(skin_metrics.get("sample_risk_score", 0.0) or 0.0)
+            skin_lighting_risk = float(skin_metrics.get("lighting_risk_score", 0.0) or 0.0)
+            skin_risk_policy = config.consistency.skin_risk
+            if final_status == "PASS":
+                if (
+                    bool(policy.get("skin_sample_high_caps_pass", False))
+                    and skin_sample_risk >= skin_risk_policy.sample_high_th
+                ):
+                    final_status = "WARN"
+                    overall_state = "WARN"
+                    reasons_all.append("BODY_GOLD_SKIN_SAMPLE_RISK_PASS_CAPPED")
+                if (
+                    bool(policy.get("skin_lighting_high_caps_pass", False))
+                    and skin_lighting_risk >= skin_risk_policy.lighting_high_th
+                ):
+                    final_status = "WARN"
+                    overall_state = "WARN"
+                    reasons_all.append("BODY_GOLD_SKIN_LIGHTING_RISK_PASS_CAPPED")
+
             if target_profile == "body_gold_fullbody":
                 if view_bucket == "profile_like" and final_status == "PASS":
                     final_status = "WARN"
@@ -605,7 +624,7 @@ def run_pipeline(
     with open(config.paths.report_file, "w", encoding="utf-8") as file:
         json.dump(report, file, indent=2, ensure_ascii=False)
 
-    print("\n[完工] 质检完成 ✅")
+    print("\n[完工] 质检完成 [OK]")
     print(f"[报告] {config.paths.report_file}")
     print(
         f"[输出目录] PASS={config.paths.dir_out_pass} | WARN={config.paths.dir_out_warn} | FAIL={config.paths.dir_out_fail}"

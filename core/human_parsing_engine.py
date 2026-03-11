@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Optional
 import importlib.util
+import os
 
 import numpy as np
 
@@ -28,6 +30,7 @@ def normalize_label_name(label: str) -> str:
         "upper_cloth": "upper_clothes",
         "top": "upper_clothes",
         "coat": "upper_clothes",
+        "hair": "hair",
         "face": "face",
         "leftarm": "left_arm",
         "left_arm": "left_arm",
@@ -41,6 +44,10 @@ def normalize_label_name(label: str) -> str:
         "trousers": "pants",
         "skirt": "skirt",
         "dress": "dress",
+        "leftshoe": "left_shoe",
+        "left_shoe": "left_shoe",
+        "rightshoe": "right_shoe",
+        "right_shoe": "right_shoe",
         "skin": "skin",
     }
     return alias_map.get(key, key)
@@ -64,6 +71,7 @@ class HumanParsingEngine:
         self._torch = None
         self._Image = None
         self._device = None
+        self._load_source = None
 
     def is_available(self) -> bool:
         return TRANSFORMERS_AVAILABLE and TORCH_AVAILABLE and PILLOW_AVAILABLE
@@ -83,6 +91,40 @@ class HumanParsingEngine:
             return self.device_preference
         return "cuda" if torch_module.cuda.is_available() else "cpu"
 
+    def _local_snapshot_path(self) -> Optional[Path]:
+        candidate = Path(self.model_name)
+        if candidate.exists():
+            return candidate.resolve()
+
+        hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+        repo_dir = hf_home / "hub" / f"models--{self.model_name.replace('/', '--')}"
+        if not repo_dir.exists():
+            return None
+
+        ref_main = repo_dir / "refs" / "main"
+        if ref_main.exists():
+            try:
+                revision = ref_main.read_text(encoding="utf-8").strip()
+                snapshot_dir = repo_dir / "snapshots" / revision
+                if snapshot_dir.exists():
+                    return snapshot_dir.resolve()
+            except Exception:
+                pass
+
+        snapshots_dir = repo_dir / "snapshots"
+        if not snapshots_dir.exists():
+            return None
+        snapshots = sorted((path for path in snapshots_dir.iterdir() if path.is_dir()), reverse=True)
+        return snapshots[0].resolve() if snapshots else None
+
+    def _load_processor(self, source: str, local_files_only: bool):
+        from transformers import AutoImageProcessor
+        try:
+            return AutoImageProcessor.from_pretrained(source, local_files_only=local_files_only)
+        except Exception:
+            from transformers import SegformerImageProcessor
+            return SegformerImageProcessor.from_pretrained(source, local_files_only=local_files_only)
+
     def ensure_ready(self) -> None:
         if self._processor is not None and self._model is not None:
             return
@@ -92,7 +134,6 @@ class HumanParsingEngine:
 
         import torch
         from PIL import Image
-        from transformers import AutoImageProcessor
         try:
             from transformers import SegformerForSemanticSegmentation as ModelClass
         except Exception:
@@ -101,8 +142,28 @@ class HumanParsingEngine:
         self._torch = torch
         self._Image = Image
         self._device = torch.device(self._resolve_device(torch))
-        self._processor = AutoImageProcessor.from_pretrained(self.model_name)
-        self._model = ModelClass.from_pretrained(self.model_name)
+        local_snapshot = self._local_snapshot_path()
+        load_attempts = []
+        if local_snapshot is not None:
+            load_attempts.append((str(local_snapshot), True, "local_snapshot"))
+        load_attempts.append((self.model_name, True, "hub_cache"))
+        load_attempts.append((self.model_name, False, "remote"))
+
+        errors = []
+        for source, local_files_only, source_name in load_attempts:
+            try:
+                self._processor = self._load_processor(source, local_files_only=local_files_only)
+                self._model = ModelClass.from_pretrained(source, local_files_only=local_files_only)
+                self._load_source = source_name
+                break
+            except Exception as exc:
+                errors.append(f"{source_name}: {exc}")
+                self._processor = None
+                self._model = None
+
+        if self._processor is None or self._model is None:
+            raise RuntimeError(" | ".join(errors))
+
         self._model.to(self._device)
         self._model.eval()
 

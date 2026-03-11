@@ -168,6 +168,7 @@ class LegacyYCrCbSkinRegionProvider(SkinRegionProvider):
 class HumanParsingProvider(SubjectMaskProvider, SkinRegionProvider):
     provider_name = "human_parsing"
     SUBJECT_LABELS = (
+        "hair",
         "upper_clothes",
         "pants",
         "skirt",
@@ -177,6 +178,8 @@ class HumanParsingProvider(SubjectMaskProvider, SkinRegionProvider):
         "right_arm",
         "left_leg",
         "right_leg",
+        "left_shoe",
+        "right_shoe",
         "skin",
     )
     SKIN_LABELS = ("face", "left_arm", "right_arm", "left_leg", "right_leg", "skin")

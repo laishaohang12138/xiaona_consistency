@@ -45,6 +45,59 @@ class StandardizationSettings:
 
 
 @dataclass
+class SkinRiskSettings:
+    lighting_warn_th: float = 0.30
+    lighting_high_th: float = 0.55
+    sample_warn_th: float = 0.32
+    sample_high_th: float = 0.55
+    face_side_delta_l_warn: float = 16.0
+    face_neck_delta_l_warn: float = 18.0
+    leg_lr_delta_l_warn: float = 20.0
+    face_highlight_l: float = 242.0
+    face_highlight_ratio_warn: float = 0.08
+    face_highlight_ratio_high: float = 0.16
+    edge_margin_ratio_floor: float = 0.018
+    low_purity_floor: float = 0.18
+    purity_variance_warn: float = 0.18
+
+
+@dataclass
+class SkinScoreWeightPreset:
+    chroma: float = 0.62
+    luminance: float = 0.24
+    knee: float = 0.14
+
+
+@dataclass
+class SkinScoreWeightSettings:
+    strict: SkinScoreWeightPreset = field(default_factory=SkinScoreWeightPreset)
+    chroma_dominant: SkinScoreWeightPreset = field(
+        default_factory=lambda: SkinScoreWeightPreset(chroma=0.70, luminance=0.20, knee=0.10)
+    )
+    high_risk: SkinScoreWeightPreset = field(
+        default_factory=lambda: SkinScoreWeightPreset(chroma=0.82, luminance=0.08, knee=0.10)
+    )
+
+
+@dataclass
+class SkinSplitSettings:
+    delta_ab_decay_thigh: float = 11.5
+    delta_ab_decay_calf: float = 12.5
+    delta_l_decay_thigh: float = 18.0
+    delta_l_decay_calf: float = 20.0
+    brightness_ratio_low: float = 0.84
+    brightness_ratio_high: float = 1.08
+    brightness_ratio_margin: float = 0.22
+    knee_ratio_low: float = 0.82
+    knee_ratio_high: float = 1.08
+    knee_ratio_margin: float = 0.22
+    severe_delta_ab_thigh: float = 11.0
+    severe_delta_ab_calf: float = 12.5
+    severe_leg_brightness_ratio: float = 0.78
+    severe_luminance_score: float = 0.40
+
+
+@dataclass
 class ConsistencySettings:
     mode: str = "soft_gate"
     constitution_min_conf: float = 0.68
@@ -56,6 +109,9 @@ class ConsistencySettings:
     skin_strong_warn_th: float = 0.42
     depth3d_soft_warn_th: float = 0.54
     depth3d_strong_warn_th: float = 0.42
+    skin_risk: SkinRiskSettings = field(default_factory=SkinRiskSettings)
+    skin_split: SkinSplitSettings = field(default_factory=SkinSplitSettings)
+    skin_score_weights: SkinScoreWeightSettings = field(default_factory=SkinScoreWeightSettings)
 
 
 @dataclass
@@ -254,12 +310,16 @@ def _default_profile_policy() -> Dict[str, Dict[str, Any]]:
             "quality_anchor_pool": "face",
             "soft_quality_hits_to_warn": 1,
             "hard_quality_flags": {"FACE_UNDEREXPOSED_DARK", "FACE_NO_RELIABLE_SIGNAL"},
+            "skin_lighting_high_caps_pass": False,
+            "skin_sample_high_caps_pass": False,
         },
         "upper_body_product": {
             "identity_anchor_pool": "face",
             "quality_anchor_pool": "upper_first",
             "soft_quality_hits_to_warn": 1,
             "hard_quality_flags": {"FACE_UNDEREXPOSED_DARK", "FACE_NO_RELIABLE_SIGNAL"},
+            "skin_lighting_high_caps_pass": False,
+            "skin_sample_high_caps_pass": False,
         },
         "full_body_outfit": {
             "identity_anchor_pool": "face",
@@ -270,12 +330,16 @@ def _default_profile_policy() -> Dict[str, Dict[str, Any]]:
                 "FACE_NO_RELIABLE_SIGNAL",
                 "HIP_POP_DETECTED_POSSIBLE_MODEL_POSE",
             },
+            "skin_lighting_high_caps_pass": False,
+            "skin_sample_high_caps_pass": False,
         },
         "lora_dataset": {
             "identity_anchor_pool": "face",
             "quality_anchor_pool": "face",
             "soft_quality_hits_to_warn": 2,
             "hard_quality_flags": {"FACE_UNDEREXPOSED_DARK", "FACE_NO_RELIABLE_SIGNAL"},
+            "skin_lighting_high_caps_pass": False,
+            "skin_sample_high_caps_pass": False,
         },
         "body_gold_fullbody": {
             "identity_anchor_pool": "face",
@@ -286,6 +350,8 @@ def _default_profile_policy() -> Dict[str, Dict[str, Any]]:
                 "FACE_NO_RELIABLE_SIGNAL",
                 "HIP_POP_DETECTED_POSSIBLE_MODEL_POSE",
             },
+            "skin_lighting_high_caps_pass": True,
+            "skin_sample_high_caps_pass": True,
         },
     }
 
@@ -591,6 +657,137 @@ def apply_external_project_configs(config: RuntimeConfig) -> None:
                     config.consistency.depth3d_strong_warn_th = float(
                         warn_node["depth3d_strong"]
                     )
+
+            skin_risk_node = consistency_node.get("skin_risk", None)
+            if isinstance(skin_risk_node, dict):
+                if skin_risk_node.get("lighting_warn") is not None:
+                    config.consistency.skin_risk.lighting_warn_th = float(
+                        skin_risk_node["lighting_warn"]
+                    )
+                if skin_risk_node.get("lighting_high") is not None:
+                    config.consistency.skin_risk.lighting_high_th = float(
+                        skin_risk_node["lighting_high"]
+                    )
+                if skin_risk_node.get("sample_warn") is not None:
+                    config.consistency.skin_risk.sample_warn_th = float(
+                        skin_risk_node["sample_warn"]
+                    )
+                if skin_risk_node.get("sample_high") is not None:
+                    config.consistency.skin_risk.sample_high_th = float(
+                        skin_risk_node["sample_high"]
+                    )
+                if skin_risk_node.get("face_side_delta_l_warn") is not None:
+                    config.consistency.skin_risk.face_side_delta_l_warn = float(
+                        skin_risk_node["face_side_delta_l_warn"]
+                    )
+                if skin_risk_node.get("face_neck_delta_l_warn") is not None:
+                    config.consistency.skin_risk.face_neck_delta_l_warn = float(
+                        skin_risk_node["face_neck_delta_l_warn"]
+                    )
+                if skin_risk_node.get("leg_lr_delta_l_warn") is not None:
+                    config.consistency.skin_risk.leg_lr_delta_l_warn = float(
+                        skin_risk_node["leg_lr_delta_l_warn"]
+                    )
+                if skin_risk_node.get("face_highlight_l") is not None:
+                    config.consistency.skin_risk.face_highlight_l = float(
+                        skin_risk_node["face_highlight_l"]
+                    )
+                if skin_risk_node.get("face_highlight_ratio_warn") is not None:
+                    config.consistency.skin_risk.face_highlight_ratio_warn = float(
+                        skin_risk_node["face_highlight_ratio_warn"]
+                    )
+                if skin_risk_node.get("face_highlight_ratio_high") is not None:
+                    config.consistency.skin_risk.face_highlight_ratio_high = float(
+                        skin_risk_node["face_highlight_ratio_high"]
+                    )
+                if skin_risk_node.get("edge_margin_ratio_floor") is not None:
+                    config.consistency.skin_risk.edge_margin_ratio_floor = float(
+                        skin_risk_node["edge_margin_ratio_floor"]
+                    )
+                if skin_risk_node.get("low_purity_floor") is not None:
+                    config.consistency.skin_risk.low_purity_floor = float(
+                        skin_risk_node["low_purity_floor"]
+                    )
+                if skin_risk_node.get("purity_variance_warn") is not None:
+                    config.consistency.skin_risk.purity_variance_warn = float(
+                        skin_risk_node["purity_variance_warn"]
+                    )
+
+            skin_split_node = consistency_node.get("skin_split", None)
+            if isinstance(skin_split_node, dict):
+                if skin_split_node.get("delta_ab_decay_thigh") is not None:
+                    config.consistency.skin_split.delta_ab_decay_thigh = float(
+                        skin_split_node["delta_ab_decay_thigh"]
+                    )
+                if skin_split_node.get("delta_ab_decay_calf") is not None:
+                    config.consistency.skin_split.delta_ab_decay_calf = float(
+                        skin_split_node["delta_ab_decay_calf"]
+                    )
+                if skin_split_node.get("delta_l_decay_thigh") is not None:
+                    config.consistency.skin_split.delta_l_decay_thigh = float(
+                        skin_split_node["delta_l_decay_thigh"]
+                    )
+                if skin_split_node.get("delta_l_decay_calf") is not None:
+                    config.consistency.skin_split.delta_l_decay_calf = float(
+                        skin_split_node["delta_l_decay_calf"]
+                    )
+                if skin_split_node.get("brightness_ratio_low") is not None:
+                    config.consistency.skin_split.brightness_ratio_low = float(
+                        skin_split_node["brightness_ratio_low"]
+                    )
+                if skin_split_node.get("brightness_ratio_high") is not None:
+                    config.consistency.skin_split.brightness_ratio_high = float(
+                        skin_split_node["brightness_ratio_high"]
+                    )
+                if skin_split_node.get("brightness_ratio_margin") is not None:
+                    config.consistency.skin_split.brightness_ratio_margin = float(
+                        skin_split_node["brightness_ratio_margin"]
+                    )
+                if skin_split_node.get("knee_ratio_low") is not None:
+                    config.consistency.skin_split.knee_ratio_low = float(
+                        skin_split_node["knee_ratio_low"]
+                    )
+                if skin_split_node.get("knee_ratio_high") is not None:
+                    config.consistency.skin_split.knee_ratio_high = float(
+                        skin_split_node["knee_ratio_high"]
+                    )
+                if skin_split_node.get("knee_ratio_margin") is not None:
+                    config.consistency.skin_split.knee_ratio_margin = float(
+                        skin_split_node["knee_ratio_margin"]
+                    )
+                if skin_split_node.get("severe_delta_ab_thigh") is not None:
+                    config.consistency.skin_split.severe_delta_ab_thigh = float(
+                        skin_split_node["severe_delta_ab_thigh"]
+                    )
+                if skin_split_node.get("severe_delta_ab_calf") is not None:
+                    config.consistency.skin_split.severe_delta_ab_calf = float(
+                        skin_split_node["severe_delta_ab_calf"]
+                    )
+                if skin_split_node.get("severe_leg_brightness_ratio") is not None:
+                    config.consistency.skin_split.severe_leg_brightness_ratio = float(
+                        skin_split_node["severe_leg_brightness_ratio"]
+                    )
+                if skin_split_node.get("severe_luminance_score") is not None:
+                    config.consistency.skin_split.severe_luminance_score = float(
+                        skin_split_node["severe_luminance_score"]
+                    )
+
+            skin_weights_node = consistency_node.get("skin_score_weights", None)
+            if isinstance(skin_weights_node, dict):
+                for key, target in [
+                    ("strict", config.consistency.skin_score_weights.strict),
+                    ("chroma_dominant", config.consistency.skin_score_weights.chroma_dominant),
+                    ("high_risk", config.consistency.skin_score_weights.high_risk),
+                ]:
+                    node = skin_weights_node.get(key, None)
+                    if not isinstance(node, dict):
+                        continue
+                    if node.get("chroma") is not None:
+                        target.chroma = float(node["chroma"])
+                    if node.get("luminance") is not None:
+                        target.luminance = float(node["luminance"])
+                    if node.get("knee") is not None:
+                        target.knee = float(node["knee"])
 
         algorithm_policy = consistency_data.get("algorithm_policy", None)
         if isinstance(algorithm_policy, dict):

@@ -699,6 +699,14 @@ def make_recommendations(
     consistency = runtime.config.consistency
     if constitution_s is not None and float(constitution_s) < consistency.constitution_soft_warn_th:
         recs.append("身材宪法偏移：复查腰线、骨盆紧凑度、腿型细长度与下半身轻盈感")
+    if "SKIN_SAMPLE_RISK_HIGH" in reasons:
+        recs.append("皮肤采样风险过高：腿部靠边、遮挡、purity 过低或区域太小，这类图不适合作为稳定肤色样本")
+    elif "SKIN_SAMPLE_RISK_WARN" in reasons:
+        recs.append("皮肤采样稳定性一般：复查腿部 patch 是否靠边、过小或被衣物/暗角污染")
+    if "SKIN_LIGHTING_RISK_HIGH" in reasons:
+        recs.append("光影风险过高：脸腿受光条件差异过大，这类图应降为观察样本，不要靠放宽肤色阈值放行")
+    elif "SKIN_LIGHTING_RISK_WARN" in reasons:
+        recs.append("光影差异偏大：优先复查面光、腿部阴影和局部高光，不要把受光差误当成肤色差")
     if skin_s is not None and float(skin_s) < consistency.skin_soft_warn_th:
         recs.append("肤色一致性不足：复查脸-脖子-腿部亮度与色偏，优先排查腿部偏暗/偏黄/膝盖脏影")
     if depth_s is not None and float(depth_s) < consistency.depth3d_soft_warn_th:

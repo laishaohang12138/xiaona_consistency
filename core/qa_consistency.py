@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 
 from .qa_runtime import FaceFeat, PoseFeat, RuntimeContext
-from .qa_utils import clamp, dedupe_keep_order, safe_float
+from .qa_utils import clamp, dedupe_keep_order, linear_map_to_01, safe_float
 
 
 def soft_range_score(x: Optional[float], lo: float, hi: float, margin: float) -> Optional[float]:
@@ -74,6 +75,154 @@ def _delta_e_lab(lab1: Optional[np.ndarray], lab2: Optional[np.ndarray]) -> Opti
         return None
     delta = lab1.astype(np.float32) - lab2.astype(np.float32)
     return float(np.sqrt(np.sum(delta * delta)))
+
+
+def _delta_l_lab(lab1: Optional[np.ndarray], lab2: Optional[np.ndarray]) -> Optional[float]:
+    if lab1 is None or lab2 is None:
+        return None
+    return float(abs(float(lab1[0]) - float(lab2[0])))
+
+
+def _delta_ab_lab(lab1: Optional[np.ndarray], lab2: Optional[np.ndarray]) -> Optional[float]:
+    if lab1 is None or lab2 is None:
+        return None
+    da = float(lab1[1]) - float(lab2[1])
+    db = float(lab1[2]) - float(lab2[2])
+    return float(math.sqrt(da * da + db * db))
+
+
+def _mean_l_in_region(img_bgr: np.ndarray, region_mask_u8: Optional[np.ndarray]) -> Optional[float]:
+    if img_bgr is None or region_mask_u8 is None:
+        return None
+    ys, xs = np.where(region_mask_u8 > 0)
+    if len(xs) < 30:
+        return None
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    vals = lab[ys, xs, 0].astype(np.float32)
+    if vals.shape[0] < 30:
+        return None
+    return float(np.mean(vals))
+
+
+def _highlight_ratio_in_region(
+    img_bgr: np.ndarray,
+    region_mask_u8: Optional[np.ndarray],
+    l_threshold: float,
+) -> Optional[float]:
+    if img_bgr is None or region_mask_u8 is None:
+        return None
+    ys, xs = np.where(region_mask_u8 > 0)
+    if len(xs) < 30:
+        return None
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    vals = lab[ys, xs, 0].astype(np.float32)
+    if vals.shape[0] < 30:
+        return None
+    return float(np.mean(vals >= float(l_threshold)))
+
+
+def _edge_margin_ratio(rect: Optional[Tuple[int, int, int, int]], h: int, w: int) -> Optional[float]:
+    if rect is None:
+        return None
+    x1, y1, x2, y2 = rect
+    margin = float(min(x1, y1, max(0, w - x2), max(0, h - y2)))
+    return float(margin / max(1.0, min(h, w)))
+
+
+@dataclass
+class SkinPatchStats:
+    name: str
+    rect: Optional[Tuple[int, int, int, int]]
+    mask: Optional[np.ndarray]
+    lab: Optional[np.ndarray]
+    purity: float
+    pixel_count: int
+    edge_margin_ratio: Optional[float]
+    mean_l: Optional[float]
+    highlight_ratio: Optional[float] = None
+
+
+def _mean_valid(values: List[Optional[float]]) -> Optional[float]:
+    vals = [float(value) for value in values if value is not None]
+    if len(vals) == 0:
+        return None
+    return float(np.mean(np.array(vals, dtype=np.float32)))
+
+
+def _median_lab_from_stats(stats: List[SkinPatchStats]) -> Optional[np.ndarray]:
+    labs = [stat.lab for stat in stats if stat.lab is not None]
+    if len(labs) == 0:
+        return None
+    return np.median(np.stack(labs, axis=0), axis=0).astype(np.float32)
+
+
+def _build_skin_patch_stats(
+    img_bgr: np.ndarray,
+    valid_skin: np.ndarray,
+    name: str,
+    rect: Optional[Tuple[int, int, int, int]],
+    min_pixels: int = 30,
+    min_purity: float = 0.12,
+    highlight_l: Optional[float] = None,
+) -> SkinPatchStats:
+    h, w = valid_skin.shape[:2]
+    edge_margin_ratio = _edge_margin_ratio(rect, h, w)
+    if rect is None:
+        return SkinPatchStats(
+            name=name,
+            rect=None,
+            mask=None,
+            lab=None,
+            purity=0.0,
+            pixel_count=0,
+            edge_margin_ratio=edge_margin_ratio,
+            mean_l=None,
+            highlight_ratio=None,
+        )
+
+    x1, y1, x2, y2 = rect
+    area = max(1, (x2 - x1) * (y2 - y1))
+    patch_mask = np.zeros((h, w), dtype=np.uint8)
+    patch_mask[y1:y2, x1:x2] = 255
+    region_mask = cv2.bitwise_and(patch_mask, valid_skin)
+    pixel_count = int(np.sum(region_mask > 0))
+    purity = float(pixel_count / area)
+
+    if pixel_count < min_pixels or purity < min_purity:
+        return SkinPatchStats(
+            name=name,
+            rect=rect,
+            mask=None,
+            lab=None,
+            purity=purity,
+            pixel_count=pixel_count,
+            edge_margin_ratio=edge_margin_ratio,
+            mean_l=None,
+            highlight_ratio=None,
+        )
+
+    mean_l = _mean_l_in_region(img_bgr, region_mask)
+    highlight_ratio = None
+    if highlight_l is not None:
+        highlight_ratio = _highlight_ratio_in_region(img_bgr, region_mask, highlight_l)
+
+    return SkinPatchStats(
+        name=name,
+        rect=rect,
+        mask=region_mask,
+        lab=_median_lab_in_region(img_bgr, region_mask),
+        purity=purity,
+        pixel_count=pixel_count,
+        edge_margin_ratio=edge_margin_ratio,
+        mean_l=mean_l,
+        highlight_ratio=highlight_ratio,
+    )
+
+
+def _exp_decay_score(value: Optional[float], decay: float) -> Optional[float]:
+    if value is None:
+        return None
+    return float(math.exp(-float(value) / max(1e-6, float(decay))))
 
 
 def _row_width(mask_u8: np.ndarray, y: int) -> Optional[int]:
@@ -324,12 +473,30 @@ def extract_skin_consistency_metrics(
         "is_valid": False,
         "confidence": 0.0,
         "face_neck_deltaE": None,
+        "face_neck_deltaL": None,
+        "face_neck_deltaAB": None,
         "face_arm_deltaE": None,
+        "face_arm_deltaL": None,
+        "face_arm_deltaAB": None,
         "face_abdomen_deltaE": None,
+        "face_abdomen_deltaL": None,
+        "face_abdomen_deltaAB": None,
         "face_thigh_deltaE": None,
+        "face_thigh_deltaL": None,
+        "face_thigh_deltaAB": None,
         "face_calf_deltaE": None,
+        "face_calf_deltaL": None,
+        "face_calf_deltaAB": None,
+        "face_side_deltaL": None,
+        "leg_lr_deltaL": None,
         "leg_brightness_ratio": None,
+        "face_highlight_ratio": None,
         "knee_dark_patch_score": None,
+        "chroma_consistency_score": None,
+        "luminance_consistency_score": None,
+        "sample_risk_score": None,
+        "lighting_risk_score": None,
+        "skin_score_mode": "strict",
         "skin_uniformity_score": None,
         "reasons": [],
     }
@@ -347,88 +514,20 @@ def extract_skin_consistency_metrics(
         out["reasons"].append("SKIN_FG_MASK_FAILED")
         return out
 
-    valid_skin = cv2.bitwise_and(
-        runtime.providers.get_skin_region(img_bgr, face_feat=face_feat, pose_feat=pose_feat),
-        fg_mask,
-    )
+    skin_region = runtime.providers.get_skin_region(img_bgr, face_feat=face_feat, pose_feat=pose_feat)
+    if skin_region is None:
+        out["reasons"].append("SKIN_CONSISTENCY_NOT_AVAILABLE")
+        return out
+    valid_skin = cv2.bitwise_and(skin_region, fg_mask)
 
     L_SH, R_SH = 11, 12
     L_EL, R_EL = 13, 14
     L_HIP, R_HIP = 23, 24
     L_KNEE, R_KNEE = 25, 26
     L_ANK, R_ANK = 27, 28
-
-    def patch_mask_from_rect(
-        rect: Optional[Tuple[int, int, int, int]],
-        min_pixels: int = 30,
-        min_purity: float = 0.12,
-    ) -> Tuple[Optional[np.ndarray], float]:
-        if rect is None:
-            return None, 0.0
-        x1, y1, x2, y2 = rect
-        area = max(1, (x2 - x1) * (y2 - y1))
-        mask = np.zeros((h, w), dtype=np.uint8)
-        mask[y1:y2, x1:x2] = 255
-        mask = cv2.bitwise_and(mask, valid_skin)
-        count = int(np.sum(mask > 0))
-        purity = float(count / area)
-        if count < min_pixels or purity < min_purity:
-            return None, purity
-        return mask, purity
-
-    face_lab = None
-    face_purity = 0.0
-    if face_feat.ok and face_feat.bbox_xyxy is not None:
-        x1, y1, x2, y2 = face_feat.bbox_xyxy
-        fw = x2 - x1
-        fh = y2 - y1
-        rr = _clip_rect(
-            x1 + int(0.18 * fw),
-            y1 + int(0.20 * fh),
-            x2 - int(0.18 * fw),
-            y2 - int(0.12 * fh),
-            h,
-            w,
-        )
-        mask, face_purity = patch_mask_from_rect(rr, min_pixels=40, min_purity=0.10)
-        face_lab = _median_lab_in_region(img_bgr, mask) if mask is not None else None
-
-    if face_lab is None and face_feat.ok and face_feat.lab_mean is not None:
-        face_lab = face_feat.lab_mean.astype(np.float32)
-        face_purity = 0.20
-
-    if face_lab is None:
-        out["reasons"].append("SKIN_FACE_REFERENCE_MISSING")
-        return out
-
-    lsx, lsy = _norm_xy_to_px(xy[L_SH], h, w)
-    rsx, rsy = _norm_xy_to_px(xy[R_SH], h, w)
-    shoulder_mid_x = int(round((lsx + rsx) / 2.0))
-    shoulder_mid_y = int(round((lsy + rsy) / 2.0))
-
-    neck_rect = _rect_from_center(
-        shoulder_mid_x,
-        shoulder_mid_y - max(8, int(0.025 * h)),
-        max(10, int(0.03 * w)),
-        max(8, int(0.02 * h)),
-        h,
-        w,
-    )
-
-    abdomen_rect = None
-    if all(float(vis[idx]) > 0.35 for idx in [L_SH, R_SH, L_HIP, R_HIP]):
-        lhx, lhy = _norm_xy_to_px(xy[L_HIP], h, w)
-        rhx, rhy = _norm_xy_to_px(xy[R_HIP], h, w)
-        hip_mid_x = int(round((lhx + rhx) / 2.0))
-        hip_mid_y = int(round((lhy + rhy) / 2.0))
-        abdomen_rect = _rect_from_center(
-            int(round((shoulder_mid_x + hip_mid_x) / 2.0)),
-            int(round(shoulder_mid_y + 0.60 * (hip_mid_y - shoulder_mid_y))),
-            max(12, int(0.035 * w)),
-            max(10, int(0.025 * h)),
-            h,
-            w,
-        )
+    consistency = runtime.config.consistency
+    risk = consistency.skin_risk
+    split = consistency.skin_split
 
     def limb_mid_rect(
         i1: int,
@@ -444,83 +543,381 @@ def extract_skin_consistency_metrics(
         cy = int(round((y1 + y2) / 2.0))
         return _rect_from_center(cx, cy, max(8, int(rx_ratio * w)), max(8, int(ry_ratio * h)), h, w)
 
-    purities: List[float] = [face_purity]
+    face_center = SkinPatchStats("face_center", None, None, None, 0.0, 0, None, None, None)
+    face_left = SkinPatchStats("face_left", None, None, None, 0.0, 0, None, None, None)
+    face_right = SkinPatchStats("face_right", None, None, None, 0.0, 0, None, None, None)
+    face_lab: Optional[np.ndarray] = None
+    face_ref_l: Optional[float] = None
 
-    arm_labs = []
-    for rect in [limb_mid_rect(L_SH, L_EL), limb_mid_rect(R_SH, R_EL)]:
-        mask, purity = patch_mask_from_rect(rect)
-        purities.append(purity)
-        lab = _median_lab_in_region(img_bgr, mask) if mask is not None else None
-        if lab is not None:
-            arm_labs.append(lab)
-    arm_lab = np.median(np.stack(arm_labs, axis=0), axis=0).astype(np.float32) if arm_labs else None
+    if face_feat.ok and face_feat.bbox_xyxy is not None:
+        x1, y1, x2, y2 = face_feat.bbox_xyxy
+        fw = x2 - x1
+        fh = y2 - y1
+        face_center = _build_skin_patch_stats(
+            img_bgr,
+            valid_skin,
+            "face_center",
+            _clip_rect(
+                x1 + int(0.18 * fw),
+                y1 + int(0.20 * fh),
+                x2 - int(0.18 * fw),
+                y2 - int(0.12 * fh),
+                h,
+                w,
+            ),
+            min_pixels=40,
+            min_purity=0.10,
+            highlight_l=risk.face_highlight_l,
+        )
+        face_left = _build_skin_patch_stats(
+            img_bgr,
+            valid_skin,
+            "face_left",
+            _clip_rect(
+                x1 + int(0.10 * fw),
+                y1 + int(0.24 * fh),
+                x1 + int(0.40 * fw),
+                y2 - int(0.18 * fh),
+                h,
+                w,
+            ),
+            min_pixels=28,
+            min_purity=0.08,
+            highlight_l=risk.face_highlight_l,
+        )
+        face_right = _build_skin_patch_stats(
+            img_bgr,
+            valid_skin,
+            "face_right",
+            _clip_rect(
+                x2 - int(0.40 * fw),
+                y1 + int(0.24 * fh),
+                x2 - int(0.10 * fw),
+                y2 - int(0.18 * fh),
+                h,
+                w,
+            ),
+            min_pixels=28,
+            min_purity=0.08,
+            highlight_l=risk.face_highlight_l,
+        )
+        face_lab = face_center.lab
+        face_ref_l = face_center.mean_l
 
-    thigh_labs = []
-    for rect in [limb_mid_rect(L_HIP, L_KNEE, 0.035, 0.030), limb_mid_rect(R_HIP, R_KNEE, 0.035, 0.030)]:
-        mask, purity = patch_mask_from_rect(rect, min_pixels=36, min_purity=0.10)
-        purities.append(purity)
-        lab = _median_lab_in_region(img_bgr, mask) if mask is not None else None
-        if lab is not None:
-            thigh_labs.append(lab)
-    thigh_lab = np.median(np.stack(thigh_labs, axis=0), axis=0).astype(np.float32) if thigh_labs else None
+    if face_lab is None and face_feat.ok and face_feat.lab_mean is not None:
+        face_lab = face_feat.lab_mean.astype(np.float32)
+        face_ref_l = float(face_lab[0])
 
-    calf_labs = []
-    for rect in [limb_mid_rect(L_KNEE, L_ANK, 0.032, 0.028), limb_mid_rect(R_KNEE, R_ANK, 0.032, 0.028)]:
-        mask, purity = patch_mask_from_rect(rect, min_pixels=34, min_purity=0.10)
-        purities.append(purity)
-        lab = _median_lab_in_region(img_bgr, mask) if mask is not None else None
-        if lab is not None:
-            calf_labs.append(lab)
-    calf_lab = np.median(np.stack(calf_labs, axis=0), axis=0).astype(np.float32) if calf_labs else None
+    if face_lab is None:
+        out["reasons"].append("SKIN_FACE_REFERENCE_MISSING")
+        return out
 
-    neck_mask, purity = patch_mask_from_rect(neck_rect)
-    purities.append(purity)
-    neck_lab = _median_lab_in_region(img_bgr, neck_mask) if neck_mask is not None else None
+    if face_ref_l is None:
+        face_ref_l = float(face_lab[0])
 
-    abdomen_mask, purity = patch_mask_from_rect(abdomen_rect)
-    purities.append(purity)
-    abdomen_lab = _median_lab_in_region(img_bgr, abdomen_mask) if abdomen_mask is not None else None
+    lsx, lsy = _norm_xy_to_px(xy[L_SH], h, w)
+    rsx, rsy = _norm_xy_to_px(xy[R_SH], h, w)
+    shoulder_mid_x = int(round((lsx + rsx) / 2.0))
+    shoulder_mid_y = int(round((lsy + rsy) / 2.0))
 
-    out["face_neck_deltaE"] = _delta_e_lab(face_lab, neck_lab)
-    out["face_arm_deltaE"] = _delta_e_lab(face_lab, arm_lab)
-    out["face_abdomen_deltaE"] = _delta_e_lab(face_lab, abdomen_lab)
-    out["face_thigh_deltaE"] = _delta_e_lab(face_lab, thigh_lab)
-    out["face_calf_deltaE"] = _delta_e_lab(face_lab, calf_lab)
+    neck_patch = _build_skin_patch_stats(
+        img_bgr,
+        valid_skin,
+        "neck",
+        _rect_from_center(
+            shoulder_mid_x,
+            shoulder_mid_y - max(8, int(0.025 * h)),
+            max(10, int(0.03 * w)),
+            max(8, int(0.02 * h)),
+            h,
+            w,
+        ),
+        min_pixels=28,
+        min_purity=0.10,
+    )
 
-    leg_l_vals = [float(lab[0]) for lab in [thigh_lab, calf_lab] if lab is not None]
-    if leg_l_vals:
-        out["leg_brightness_ratio"] = float(np.mean(leg_l_vals) / max(1e-6, float(face_lab[0])))
+    abdomen_patch = SkinPatchStats("abdomen", None, None, None, 0.0, 0, None, None, None)
+    if all(float(vis[idx]) > 0.35 for idx in [L_SH, R_SH, L_HIP, R_HIP]):
+        lhx, lhy = _norm_xy_to_px(xy[L_HIP], h, w)
+        rhx, rhy = _norm_xy_to_px(xy[R_HIP], h, w)
+        hip_mid_x = int(round((lhx + rhx) / 2.0))
+        hip_mid_y = int(round((lhy + rhy) / 2.0))
+        abdomen_patch = _build_skin_patch_stats(
+            img_bgr,
+            valid_skin,
+            "abdomen",
+            _rect_from_center(
+                int(round((shoulder_mid_x + hip_mid_x) / 2.0)),
+                int(round(shoulder_mid_y + 0.60 * (hip_mid_y - shoulder_mid_y))),
+                max(12, int(0.035 * w)),
+                max(10, int(0.025 * h)),
+                h,
+                w,
+            ),
+            min_pixels=28,
+            min_purity=0.10,
+        )
 
-    knee_scores = []
-    if thigh_lab is not None and calf_lab is not None:
-        knee_l_proxy = float((thigh_lab[0] + calf_lab[0]) / 2.0)
-        ratio = knee_l_proxy / max(1e-6, float(face_lab[0]))
-        knee_scores.append(soft_range_score(ratio, 0.82, 1.08, 0.22))
-    out["knee_dark_patch_score"] = float(np.mean(knee_scores)) if knee_scores else None
+    left_arm = _build_skin_patch_stats(
+        img_bgr,
+        valid_skin,
+        "left_arm",
+        limb_mid_rect(L_SH, L_EL),
+        min_pixels=30,
+        min_purity=0.12,
+    )
+    right_arm = _build_skin_patch_stats(
+        img_bgr,
+        valid_skin,
+        "right_arm",
+        limb_mid_rect(R_SH, R_EL),
+        min_pixels=30,
+        min_purity=0.12,
+    )
+    left_thigh = _build_skin_patch_stats(
+        img_bgr,
+        valid_skin,
+        "left_thigh",
+        limb_mid_rect(L_HIP, L_KNEE, 0.035, 0.030),
+        min_pixels=36,
+        min_purity=0.10,
+    )
+    right_thigh = _build_skin_patch_stats(
+        img_bgr,
+        valid_skin,
+        "right_thigh",
+        limb_mid_rect(R_HIP, R_KNEE, 0.035, 0.030),
+        min_pixels=36,
+        min_purity=0.10,
+    )
+    left_calf = _build_skin_patch_stats(
+        img_bgr,
+        valid_skin,
+        "left_calf",
+        limb_mid_rect(L_KNEE, L_ANK, 0.032, 0.028),
+        min_pixels=34,
+        min_purity=0.10,
+    )
+    right_calf = _build_skin_patch_stats(
+        img_bgr,
+        valid_skin,
+        "right_calf",
+        limb_mid_rect(R_KNEE, R_ANK, 0.032, 0.028),
+        min_pixels=34,
+        min_purity=0.10,
+    )
 
-    out["skin_uniformity_score"] = weighted_mean_valid(
+    arm_lab = _median_lab_from_stats([left_arm, right_arm])
+    thigh_lab = _median_lab_from_stats([left_thigh, right_thigh])
+    calf_lab = _median_lab_from_stats([left_calf, right_calf])
+    left_leg_mean_l = _mean_valid([left_thigh.mean_l, left_calf.mean_l])
+    right_leg_mean_l = _mean_valid([right_thigh.mean_l, right_calf.mean_l])
+    mean_leg_l = _mean_valid([left_leg_mean_l, right_leg_mean_l])
+
+    for prefix, region_lab in [
+        ("face_neck", neck_patch.lab),
+        ("face_arm", arm_lab),
+        ("face_abdomen", abdomen_patch.lab),
+        ("face_thigh", thigh_lab),
+        ("face_calf", calf_lab),
+    ]:
+        out[f"{prefix}_deltaE"] = _delta_e_lab(face_lab, region_lab)
+        out[f"{prefix}_deltaL"] = _delta_l_lab(face_lab, region_lab)
+        out[f"{prefix}_deltaAB"] = _delta_ab_lab(face_lab, region_lab)
+
+    out["face_side_deltaL"] = None
+    if face_left.mean_l is not None and face_right.mean_l is not None:
+        out["face_side_deltaL"] = float(abs(face_left.mean_l - face_right.mean_l))
+
+    out["leg_lr_deltaL"] = None
+    if left_leg_mean_l is not None and right_leg_mean_l is not None:
+        out["leg_lr_deltaL"] = float(abs(left_leg_mean_l - right_leg_mean_l))
+
+    out["face_highlight_ratio"] = face_center.highlight_ratio
+    if out["face_highlight_ratio"] is None:
+        out["face_highlight_ratio"] = _mean_valid([face_left.highlight_ratio, face_right.highlight_ratio])
+
+    if mean_leg_l is not None and face_ref_l is not None:
+        out["leg_brightness_ratio"] = float(mean_leg_l / max(1e-6, face_ref_l))
+
+    knee_scores: List[Optional[float]] = []
+    for thigh_patch, calf_patch in [(left_thigh, left_calf), (right_thigh, right_calf)]:
+        if thigh_patch.mean_l is None or calf_patch.mean_l is None or face_ref_l is None:
+            continue
+        knee_l_proxy = float((thigh_patch.mean_l + calf_patch.mean_l) / 2.0)
+        knee_ratio = float(knee_l_proxy / max(1e-6, face_ref_l))
+        knee_scores.append(
+            soft_range_score(
+                knee_ratio,
+                split.knee_ratio_low,
+                split.knee_ratio_high,
+                split.knee_ratio_margin,
+            )
+        )
+    out["knee_dark_patch_score"] = _mean_valid(knee_scores)
+
+    out["chroma_consistency_score"] = weighted_mean_valid(
         [
-            (
-                None if out["face_thigh_deltaE"] is None else float(math.exp(-out["face_thigh_deltaE"] / 13.5)),
-                0.38,
-            ),
-            (
-                None if out["face_calf_deltaE"] is None else float(math.exp(-out["face_calf_deltaE"] / 14.5)),
-                0.34,
-            ),
-            (soft_range_score(out["leg_brightness_ratio"], 0.84, 1.08, 0.22), 0.18),
-            (out["knee_dark_patch_score"], 0.10),
+            (_exp_decay_score(out["face_thigh_deltaAB"], split.delta_ab_decay_thigh), 0.56),
+            (_exp_decay_score(out["face_calf_deltaAB"], split.delta_ab_decay_calf), 0.44),
         ]
     )
+    out["luminance_consistency_score"] = weighted_mean_valid(
+        [
+            (_exp_decay_score(out["face_thigh_deltaL"], split.delta_l_decay_thigh), 0.30),
+            (_exp_decay_score(out["face_calf_deltaL"], split.delta_l_decay_calf), 0.26),
+            (
+                soft_range_score(
+                    out["leg_brightness_ratio"],
+                    split.brightness_ratio_low,
+                    split.brightness_ratio_high,
+                    split.brightness_ratio_margin,
+                ),
+                0.44,
+            ),
+        ]
+    )
+
+    observed_stats = [
+        face_center,
+        face_left,
+        face_right,
+        neck_patch,
+        abdomen_patch,
+        left_arm,
+        right_arm,
+        left_thigh,
+        right_thigh,
+        left_calf,
+        right_calf,
+    ]
+    purity_values = [stat.purity for stat in observed_stats if stat.rect is not None]
+    purity_mean = _mean_valid([float(value) for value in purity_values]) or 0.0
+    purity_std = None
+    if len(purity_values) > 0:
+        purity_std = float(np.std(np.array(purity_values, dtype=np.float32)))
+
+    low_purity_risk = _mean_valid(
+        [
+            1.0 - linear_map_to_01(float(stat.purity), risk.low_purity_floor, 0.60)
+            for stat in observed_stats
+            if stat.rect is not None
+        ]
+    )
+    edge_risk = _mean_valid(
+        [
+            1.0 - linear_map_to_01(
+                float(stat.edge_margin_ratio),
+                risk.edge_margin_ratio_floor,
+                max(risk.edge_margin_ratio_floor * 4.0, risk.edge_margin_ratio_floor + 1e-6),
+            )
+            for stat in [left_thigh, right_thigh, left_calf, right_calf]
+            if stat.edge_margin_ratio is not None
+        ]
+    )
+    purity_variance_risk = None
+    if purity_std is not None:
+        purity_variance_risk = linear_map_to_01(
+            purity_std,
+            risk.purity_variance_warn,
+            max(risk.purity_variance_warn * 2.0, risk.purity_variance_warn + 1e-6),
+        )
+
+    left_leg_valid = sum(1 for stat in [left_thigh, left_calf] if stat.lab is not None)
+    right_leg_valid = sum(1 for stat in [right_thigh, right_calf] if stat.lab is not None)
+    single_side_leg_risk = None
+    if (left_leg_valid > 0) != (right_leg_valid > 0):
+        single_side_leg_risk = 1.0
+    elif left_leg_valid > 0 and right_leg_valid > 0:
+        single_side_leg_risk = 0.0
 
     avail_main = sum(
         1 for value in [out["face_thigh_deltaE"], out["face_calf_deltaE"], out["leg_brightness_ratio"]] if value is not None
     )
-    purity_mean = float(np.mean(np.array(purities, dtype=np.float32))) if purities else 0.0
+    availability_risk = 1.0 - float(avail_main) / 3.0
+    out["sample_risk_score"] = weighted_mean_valid(
+        [
+            (availability_risk, 0.28),
+            (low_purity_risk, 0.30),
+            (purity_variance_risk, 0.16),
+            (edge_risk, 0.16),
+            (single_side_leg_risk, 0.10),
+        ]
+    )
+
+    out["lighting_risk_score"] = weighted_mean_valid(
+        [
+            (
+                linear_map_to_01(
+                    safe_float(out["face_side_deltaL"], 0.0),
+                    risk.face_side_delta_l_warn,
+                    max(risk.face_side_delta_l_warn * 2.0, risk.face_side_delta_l_warn + 1e-6),
+                )
+                if out["face_side_deltaL"] is not None
+                else None,
+                0.30,
+            ),
+            (
+                linear_map_to_01(
+                    safe_float(out["face_neck_deltaL"], 0.0),
+                    risk.face_neck_delta_l_warn,
+                    max(risk.face_neck_delta_l_warn * 2.0, risk.face_neck_delta_l_warn + 1e-6),
+                )
+                if out["face_neck_deltaL"] is not None
+                else None,
+                0.22,
+            ),
+            (
+                linear_map_to_01(
+                    safe_float(out["leg_lr_deltaL"], 0.0),
+                    risk.leg_lr_delta_l_warn,
+                    max(risk.leg_lr_delta_l_warn * 2.0, risk.leg_lr_delta_l_warn + 1e-6),
+                )
+                if out["leg_lr_deltaL"] is not None
+                else None,
+                0.28,
+            ),
+            (
+                linear_map_to_01(
+                    safe_float(out["face_highlight_ratio"], 0.0),
+                    risk.face_highlight_ratio_warn,
+                    max(risk.face_highlight_ratio_high, risk.face_highlight_ratio_warn + 1e-6),
+                )
+                if out["face_highlight_ratio"] is not None
+                else None,
+                0.20,
+            ),
+        ]
+    )
+
+    if out["lighting_risk_score"] is not None and float(out["lighting_risk_score"]) >= risk.lighting_high_th:
+        out["skin_score_mode"] = "high_risk"
+        weight_preset = consistency.skin_score_weights.high_risk
+    elif out["lighting_risk_score"] is not None and float(out["lighting_risk_score"]) >= risk.lighting_warn_th:
+        out["skin_score_mode"] = "chroma_dominant"
+        weight_preset = consistency.skin_score_weights.chroma_dominant
+    else:
+        out["skin_score_mode"] = "strict"
+        weight_preset = consistency.skin_score_weights.strict
+
+    out["skin_uniformity_score"] = weighted_mean_valid(
+        [
+            (out["chroma_consistency_score"], weight_preset.chroma),
+            (out["luminance_consistency_score"], weight_preset.luminance),
+            (out["knee_dark_patch_score"], weight_preset.knee),
+        ]
+    )
+
     conf = weighted_mean_valid(
         [
-            (float(avail_main) / 3.0, 0.55),
-            (purity_mean, 0.45),
+            (float(avail_main) / 3.0, 0.45),
+            (purity_mean, 0.35),
+            (
+                None
+                if out["sample_risk_score"] is None
+                else clamp(1.0 - float(out["sample_risk_score"]), 0.0, 1.0),
+                0.20,
+            ),
         ]
     )
 
@@ -675,20 +1072,71 @@ def apply_consistency_soft_gate(
     s_score = skin_metrics.get("skin_uniformity_score", None)
     s_conf = float(skin_metrics.get("confidence", 0.0) or 0.0)
     s_valid = bool(skin_metrics.get("is_valid", False))
-    gate_debug["skin"] = {"score": s_score, "confidence": s_conf, "valid": s_valid}
-    if s_valid and s_score is not None:
-        reasons_all.extend(skin_metrics.get("reasons", []))
-        severe_skin = False
-        thigh_de = skin_metrics.get("face_thigh_deltaE", None)
-        calf_de = skin_metrics.get("face_calf_deltaE", None)
-        leg_ratio = skin_metrics.get("leg_brightness_ratio", None)
-        if (thigh_de is not None and float(thigh_de) > 24.0) or (calf_de is not None and float(calf_de) > 28.0):
-            severe_skin = True
-        if leg_ratio is not None and float(leg_ratio) < 0.78:
-            severe_skin = True
+    sample_risk = skin_metrics.get("sample_risk_score", None)
+    lighting_risk = skin_metrics.get("lighting_risk_score", None)
+    skin_mode = str(skin_metrics.get("skin_score_mode", "strict") or "strict")
+    chroma_score = skin_metrics.get("chroma_consistency_score", None)
+    luminance_score = skin_metrics.get("luminance_consistency_score", None)
+    gate_debug["skin"] = {
+        "score": s_score,
+        "confidence": s_conf,
+        "valid": s_valid,
+        "sample_risk": sample_risk,
+        "lighting_risk": lighting_risk,
+        "score_mode": skin_mode,
+        "chroma_score": chroma_score,
+        "luminance_score": luminance_score,
+    }
+    reasons_all.extend(
+        [reason for reason in skin_metrics.get("reasons", []) if reason != "SKIN_UNIFORMITY_EMPTY"]
+    )
 
-        if s_conf >= consistency.skin_min_conf:
-            if severe_skin and float(s_score) < consistency.skin_soft_warn_th:
+    sample_risk_high = sample_risk is not None and float(sample_risk) >= consistency.skin_risk.sample_high_th
+    sample_risk_warn = sample_risk is not None and float(sample_risk) >= consistency.skin_risk.sample_warn_th
+    lighting_risk_high = lighting_risk is not None and float(lighting_risk) >= consistency.skin_risk.lighting_high_th
+    lighting_risk_warn = lighting_risk is not None and float(lighting_risk) >= consistency.skin_risk.lighting_warn_th
+
+    if sample_risk_high:
+        reasons_all.append("SKIN_SAMPLE_RISK_HIGH")
+    elif sample_risk_warn:
+        reasons_all.append("SKIN_SAMPLE_RISK_WARN")
+
+    if lighting_risk_high:
+        reasons_all.append("SKIN_LIGHTING_RISK_HIGH")
+    elif lighting_risk_warn:
+        reasons_all.append("SKIN_LIGHTING_RISK_WARN")
+
+    risk_skip_skin_gate = sample_risk_high or lighting_risk_high
+    if s_valid and s_score is not None:
+        thigh_ab = skin_metrics.get("face_thigh_deltaAB", None)
+        calf_ab = skin_metrics.get("face_calf_deltaAB", None)
+        leg_ratio = skin_metrics.get("leg_brightness_ratio", None)
+
+        severe_chroma = False
+        if thigh_ab is not None and float(thigh_ab) >= consistency.skin_split.severe_delta_ab_thigh:
+            severe_chroma = True
+        if calf_ab is not None and float(calf_ab) >= consistency.skin_split.severe_delta_ab_calf:
+            severe_chroma = True
+
+        lighting_stable = (lighting_risk is None) or (float(lighting_risk) < consistency.skin_risk.lighting_warn_th)
+        severe_luminance = False
+        if lighting_stable:
+            if (
+                leg_ratio is not None
+                and float(leg_ratio) < consistency.skin_split.severe_leg_brightness_ratio
+            ):
+                severe_luminance = True
+            if (
+                luminance_score is not None
+                and float(luminance_score) < consistency.skin_split.severe_luminance_score
+            ):
+                severe_luminance = True
+
+        if risk_skip_skin_gate:
+            gate_debug["skin"]["risk_gate_skip"] = True
+        elif s_conf >= consistency.skin_min_conf:
+            severe_skin = severe_chroma or (skin_mode == "strict" and severe_luminance)
+            if severe_skin or float(s_score) < consistency.skin_strong_warn_th:
                 reasons_all.append("SKIN_UNIFORMITY_STRONG_WARN")
                 downgrade_pass_to_warn("SKIN_UNIFORMITY_STRONG_WARN")
             elif float(s_score) < consistency.skin_soft_warn_th:
