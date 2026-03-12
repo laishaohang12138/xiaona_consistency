@@ -1,14 +1,17 @@
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportGeneralTypeIssues=false
 from __future__ import annotations
 
+import argparse
+import json
 from pathlib import Path
+from typing import Any, Dict, Optional, Sequence
 
 from core.qa_pipeline import (
     calibrate_quality_thresholds,
     create_runtime,
     load_anchor_set,
     load_thresholds_from_file,
-    main,
+    main as pipeline_main,
     print_runtime_config,
     run_pipeline,
 )
@@ -24,8 +27,104 @@ from core.qa_runtime import (
     save_thresholds_to_file,
 )
 
-
 BASE_DIR = Path(__file__).resolve().parent
+main = pipeline_main
+
+
+def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _resolve_cli_path(path: Path, base_dir: Path) -> Path:
+    return path if path.is_absolute() else (base_dir / path).resolve()
+
+
+def _load_json_dict(raw_text: str, label: str) -> Dict[str, Any]:
+    try:
+        node = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} is not valid JSON: {exc}") from exc
+    if not isinstance(node, dict):
+        raise ValueError(f"{label} must decode to a JSON object")
+    return node
+
+
+def _load_threshold_override(args: argparse.Namespace, base_dir: Path) -> Optional[Dict[str, Any]]:
+    override: Dict[str, Any] = {}
+    if args.threshold_override_file is not None:
+        override_path = _resolve_cli_path(args.threshold_override_file, base_dir)
+        if not override_path.exists():
+            raise ValueError(f"threshold override file does not exist: {override_path}")
+        file_node = _load_json_dict(
+            override_path.read_text(encoding="utf-8"),
+            f"threshold override file {override_path}",
+        )
+        override = _deep_merge_dict(override, file_node)
+    if args.threshold_override_json:
+        json_node = _load_json_dict(args.threshold_override_json, "--threshold-override-json")
+        override = _deep_merge_dict(override, json_node)
+    return override or None
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run Xiaona consistency QA or calibration from the command line.",
+    )
+    parser.add_argument(
+        "--base-dir",
+        type=Path,
+        default=BASE_DIR,
+        help="Project base directory used to resolve configs, anchors, input, and outputs.",
+    )
+    parser.add_argument(
+        "--profile",
+        help="Override the active task profile for QA mode, e.g. body_gold_fullbody.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["qa", "calibrate"],
+        help="Override runtime.config.run_mode for this invocation.",
+    )
+    parser.add_argument(
+        "--auto-load-thresholds",
+        action="store_true",
+        help="Load outputs/quality_thresholds.json before running QA.",
+    )
+    parser.add_argument(
+        "--threshold-override-file",
+        type=Path,
+        help="Path to a JSON object whose values override runtime thresholds in memory for this run only.",
+    )
+    parser.add_argument(
+        "--threshold-override-json",
+        help="Inline JSON object whose values override runtime thresholds in memory for this run only.",
+    )
+    return parser
+
+
+def cli(argv: Optional[Sequence[str]] = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    base_dir = _resolve_cli_path(args.base_dir, BASE_DIR)
+    try:
+        threshold_override = _load_threshold_override(args, base_dir)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    pipeline_main(
+        base_dir=base_dir,
+        profile_name=args.profile,
+        run_mode=args.mode,
+        auto_load_thresholds=True if args.auto_load_thresholds else None,
+        threshold_override=threshold_override,
+    )
+    return 0
 
 __all__ = [
     "AnchorSet",
@@ -37,6 +136,7 @@ __all__ = [
     "RuntimeConfig",
     "RuntimeContext",
     "calibrate_quality_thresholds",
+    "cli",
     "create_runtime",
     "load_anchor_set",
     "load_thresholds_from_file",
@@ -46,6 +146,5 @@ __all__ = [
     "save_thresholds_to_file",
 ]
 
-
 if __name__ == "__main__":
-    main(base_dir=BASE_DIR)
+    raise SystemExit(cli())

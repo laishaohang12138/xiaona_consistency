@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import traceback
@@ -190,7 +191,309 @@ def load_thresholds_from_file(
     load_runtime_thresholds_from_file(runtime.config, path or runtime.config.paths.thresh_file)
 
 
+def _set_override_attr(
+    target: Any,
+    attr_name: str,
+    raw_value: Any,
+    cast_type: Any,
+    path: str,
+    applied: Dict[str, Any],
+) -> None:
+    try:
+        value = cast_type(raw_value)
+    except Exception as exc:
+        raise ValueError(f"Invalid threshold_override value at {path}: {raw_value!r}") from exc
+    setattr(target, attr_name, value)
+    applied[path] = value
+
+
+def _apply_mapped_overrides(
+    target: Any,
+    node: Dict[str, Any],
+    mapping: Dict[str, tuple[str, Any]],
+    path_prefix: str,
+    applied: Dict[str, Any],
+) -> None:
+    unknown_keys = sorted(set(node.keys()) - set(mapping.keys()))
+    if unknown_keys:
+        raise ValueError(f"Unsupported threshold_override keys under {path_prefix}: {unknown_keys}")
+    for key, raw_value in node.items():
+        attr_name, cast_type = mapping[key]
+        _set_override_attr(target, attr_name, raw_value, cast_type, f"{path_prefix}.{attr_name}", applied)
+
+
+def _apply_threshold_override(
+    runtime: RuntimeContext,
+    target_profile: str,
+    threshold_override: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(threshold_override, dict):
+        raise TypeError("threshold_override must be a dict when provided")
+
+    applied: Dict[str, Any] = {}
+    config = runtime.config
+
+    consistency_direct_map = {
+        "mode": ("mode", str),
+        "constitution_min_conf": ("constitution_min_conf", float),
+        "skin_min_conf": ("skin_min_conf", float),
+        "depth3d_min_conf": ("depth3d_min_conf", float),
+        "constitution_soft_warn_th": ("constitution_soft_warn_th", float),
+        "constitution_strong_warn_th": ("constitution_strong_warn_th", float),
+        "skin_soft_warn_th": ("skin_soft_warn_th", float),
+        "skin_strong_warn_th": ("skin_strong_warn_th", float),
+        "depth3d_soft_warn_th": ("depth3d_soft_warn_th", float),
+        "depth3d_strong_warn_th": ("depth3d_strong_warn_th", float),
+    }
+    consistency_min_conf_map = {
+        "constitution": ("constitution_min_conf", float),
+        "skin": ("skin_min_conf", float),
+        "depth3d": ("depth3d_min_conf", float),
+    }
+    consistency_warn_map = {
+        "constitution_soft": ("constitution_soft_warn_th", float),
+        "constitution_strong": ("constitution_strong_warn_th", float),
+        "skin_soft": ("skin_soft_warn_th", float),
+        "skin_strong": ("skin_strong_warn_th", float),
+        "depth3d_soft": ("depth3d_soft_warn_th", float),
+        "depth3d_strong": ("depth3d_strong_warn_th", float),
+    }
+    skin_risk_map = {
+        "lighting_warn": ("lighting_warn_th", float),
+        "lighting_warn_th": ("lighting_warn_th", float),
+        "lighting_high": ("lighting_high_th", float),
+        "lighting_high_th": ("lighting_high_th", float),
+        "sample_warn": ("sample_warn_th", float),
+        "sample_warn_th": ("sample_warn_th", float),
+        "sample_high": ("sample_high_th", float),
+        "sample_high_th": ("sample_high_th", float),
+        "face_side_delta_l_warn": ("face_side_delta_l_warn", float),
+        "face_neck_delta_l_warn": ("face_neck_delta_l_warn", float),
+        "leg_lr_delta_l_warn": ("leg_lr_delta_l_warn", float),
+        "face_highlight_l": ("face_highlight_l", float),
+        "face_highlight_ratio_warn": ("face_highlight_ratio_warn", float),
+        "face_highlight_ratio_high": ("face_highlight_ratio_high", float),
+        "edge_margin_ratio_floor": ("edge_margin_ratio_floor", float),
+        "low_purity_floor": ("low_purity_floor", float),
+        "purity_variance_warn": ("purity_variance_warn", float),
+    }
+    skin_split_map = {
+        "delta_ab_decay_thigh": ("delta_ab_decay_thigh", float),
+        "delta_ab_decay_calf": ("delta_ab_decay_calf", float),
+        "delta_l_decay_thigh": ("delta_l_decay_thigh", float),
+        "delta_l_decay_calf": ("delta_l_decay_calf", float),
+        "brightness_ratio_low": ("brightness_ratio_low", float),
+        "brightness_ratio_high": ("brightness_ratio_high", float),
+        "brightness_ratio_margin": ("brightness_ratio_margin", float),
+        "knee_ratio_low": ("knee_ratio_low", float),
+        "knee_ratio_high": ("knee_ratio_high", float),
+        "knee_ratio_margin": ("knee_ratio_margin", float),
+        "severe_delta_ab_thigh": ("severe_delta_ab_thigh", float),
+        "severe_delta_ab_calf": ("severe_delta_ab_calf", float),
+        "severe_leg_brightness_ratio": ("severe_leg_brightness_ratio", float),
+        "severe_luminance_score": ("severe_luminance_score", float),
+    }
+    quality_threshold_map = {
+        "face_luma_dark_warn_l": ("face_luma_dark_warn_l", float),
+        "FACE_LUMA_DARK_WARN_L": ("face_luma_dark_warn_l", float),
+        "face_lapvar_soft_warn": ("face_lapvar_soft_warn", float),
+        "FACE_LAPVAR_SOFT_WARN": ("face_lapvar_soft_warn", float),
+        "face_hfenergy_soft_warn": ("face_hfenergy_soft_warn", float),
+        "FACE_HFENERGY_SOFT_WARN": ("face_hfenergy_soft_warn", float),
+    }
+    profile_threshold_map = {
+        "face_pass": float,
+        "face_warn": float,
+        "upper_pass": float,
+        "upper_warn": float,
+        "full_pass": float,
+        "full_warn": float,
+        "overall_pass": float,
+        "overall_warn": float,
+    }
+
+    allowed_top_level = {"consistency", "quality_thresholds", "profile_thresholds", "task_profiles"}
+    unknown_top_level = sorted(set(threshold_override.keys()) - allowed_top_level)
+    if unknown_top_level:
+        raise ValueError(f"Unsupported threshold_override sections: {unknown_top_level}")
+
+    consistency_node = threshold_override.get("consistency", None)
+    if consistency_node is not None:
+        if not isinstance(consistency_node, dict):
+            raise ValueError("threshold_override.consistency must be a dict")
+        nested_consistency_keys = {"min_confidence", "warn_threshold", "skin_risk", "skin_split", "skin_score_weights"}
+        direct_consistency_node = {
+            key: value for key, value in consistency_node.items() if key not in nested_consistency_keys
+        }
+        if direct_consistency_node:
+            _apply_mapped_overrides(
+                config.consistency,
+                direct_consistency_node,
+                consistency_direct_map,
+                "consistency",
+                applied,
+            )
+        min_conf_node = consistency_node.get("min_confidence", None)
+        if min_conf_node is not None:
+            if not isinstance(min_conf_node, dict):
+                raise ValueError("threshold_override.consistency.min_confidence must be a dict")
+            _apply_mapped_overrides(
+                config.consistency,
+                min_conf_node,
+                consistency_min_conf_map,
+                "consistency.min_confidence",
+                applied,
+            )
+        warn_node = consistency_node.get("warn_threshold", None)
+        if warn_node is not None:
+            if not isinstance(warn_node, dict):
+                raise ValueError("threshold_override.consistency.warn_threshold must be a dict")
+            _apply_mapped_overrides(
+                config.consistency,
+                warn_node,
+                consistency_warn_map,
+                "consistency.warn_threshold",
+                applied,
+            )
+        skin_risk_node = consistency_node.get("skin_risk", None)
+        if skin_risk_node is not None:
+            if not isinstance(skin_risk_node, dict):
+                raise ValueError("threshold_override.consistency.skin_risk must be a dict")
+            _apply_mapped_overrides(
+                config.consistency.skin_risk,
+                skin_risk_node,
+                skin_risk_map,
+                "consistency.skin_risk",
+                applied,
+            )
+        skin_split_node = consistency_node.get("skin_split", None)
+        if skin_split_node is not None:
+            if not isinstance(skin_split_node, dict):
+                raise ValueError("threshold_override.consistency.skin_split must be a dict")
+            _apply_mapped_overrides(
+                config.consistency.skin_split,
+                skin_split_node,
+                skin_split_map,
+                "consistency.skin_split",
+                applied,
+            )
+        skin_score_weights_node = consistency_node.get("skin_score_weights", None)
+        if skin_score_weights_node is not None:
+            if not isinstance(skin_score_weights_node, dict):
+                raise ValueError("threshold_override.consistency.skin_score_weights must be a dict")
+            allowed_presets = {
+                "strict": config.consistency.skin_score_weights.strict,
+                "chroma_dominant": config.consistency.skin_score_weights.chroma_dominant,
+                "high_risk": config.consistency.skin_score_weights.high_risk,
+            }
+            unknown_presets = sorted(set(skin_score_weights_node.keys()) - set(allowed_presets.keys()))
+            if unknown_presets:
+                raise ValueError(
+                    f"Unsupported threshold_override.consistency.skin_score_weights presets: {unknown_presets}"
+                )
+            weight_map = {
+                "chroma": ("chroma", float),
+                "luminance": ("luminance", float),
+                "knee": ("knee", float),
+            }
+            for preset_name, preset_node in skin_score_weights_node.items():
+                if not isinstance(preset_node, dict):
+                    raise ValueError(
+                        f"threshold_override.consistency.skin_score_weights.{preset_name} must be a dict"
+                    )
+                _apply_mapped_overrides(
+                    allowed_presets[preset_name],
+                    preset_node,
+                    weight_map,
+                    f"consistency.skin_score_weights.{preset_name}",
+                    applied,
+                )
+
+    quality_threshold_node = threshold_override.get("quality_thresholds", None)
+    if quality_threshold_node is not None:
+        if not isinstance(quality_threshold_node, dict):
+            raise ValueError("threshold_override.quality_thresholds must be a dict")
+        _apply_mapped_overrides(
+            config.quality_thresholds,
+            quality_threshold_node,
+            quality_threshold_map,
+            "quality_thresholds",
+            applied,
+        )
+
+    profile_threshold_node = threshold_override.get("profile_thresholds", None)
+    if profile_threshold_node is not None:
+        if not isinstance(profile_threshold_node, dict):
+            raise ValueError("threshold_override.profile_thresholds must be a dict")
+        if target_profile not in config.task_profiles:
+            raise ValueError(f"Unknown target profile for threshold_override.profile_thresholds: {target_profile}")
+        unknown_profile_thresholds = sorted(set(profile_threshold_node.keys()) - set(profile_threshold_map.keys()))
+        if unknown_profile_thresholds:
+            raise ValueError(
+                f"Unsupported threshold_override.profile_thresholds keys: {unknown_profile_thresholds}"
+            )
+        for key, raw_value in profile_threshold_node.items():
+            cast_type = profile_threshold_map[key]
+            try:
+                value = cast_type(raw_value)
+            except Exception as exc:
+                raise ValueError(f"Invalid threshold_override.profile_thresholds.{key}: {raw_value!r}") from exc
+            config.task_profiles[target_profile]["thresholds"][key] = value
+            applied[f"task_profiles.{target_profile}.thresholds.{key}"] = value
+
+    task_profiles_node = threshold_override.get("task_profiles", None)
+    if task_profiles_node is not None:
+        if not isinstance(task_profiles_node, dict):
+            raise ValueError("threshold_override.task_profiles must be a dict")
+        for profile_name, profile_node in task_profiles_node.items():
+            if profile_name not in config.task_profiles:
+                raise ValueError(f"Unknown threshold_override task profile: {profile_name}")
+            if not isinstance(profile_node, dict):
+                raise ValueError(f"threshold_override.task_profiles.{profile_name} must be a dict")
+            threshold_node = profile_node.get("thresholds", profile_node)
+            if not isinstance(threshold_node, dict):
+                raise ValueError(f"threshold_override.task_profiles.{profile_name}.thresholds must be a dict")
+            unknown_threshold_keys = sorted(set(threshold_node.keys()) - set(profile_threshold_map.keys()))
+            if unknown_threshold_keys:
+                raise ValueError(
+                    f"Unsupported threshold_override.task_profiles.{profile_name}.thresholds keys: "
+                    f"{unknown_threshold_keys}"
+                )
+            for key, raw_value in threshold_node.items():
+                cast_type = profile_threshold_map[key]
+                try:
+                    value = cast_type(raw_value)
+                except Exception as exc:
+                    raise ValueError(
+                        f"Invalid threshold_override.task_profiles.{profile_name}.thresholds.{key}: {raw_value!r}"
+                    ) from exc
+                config.task_profiles[profile_name]["thresholds"][key] = value
+                applied[f"task_profiles.{profile_name}.thresholds.{key}"] = value
+
+    return applied
+
+
 def run_pipeline(
+    runtime: RuntimeContext,
+    profile_name: Optional[str] = None,
+    threshold_override: Optional[Dict[str, Any]] = None,
+) -> None:
+    original_config = copy.deepcopy(runtime.config) if threshold_override is not None else None
+    try:
+        if threshold_override is not None:
+            target_profile = profile_name or runtime.config.review.active_profile
+            applied = _apply_threshold_override(runtime, target_profile, threshold_override)
+            if applied:
+                print(f"[CONFIG] Applied in-memory threshold_override ({len(applied)} items)")
+                for key in sorted(applied.keys()):
+                    print(f"  {key} = {applied[key]}")
+        _run_pipeline_impl(runtime, profile_name=profile_name)
+    finally:
+        if original_config is not None:
+            runtime.config = original_config
+
+
+def _run_pipeline_impl(
     runtime: RuntimeContext,
     profile_name: Optional[str] = None,
 ) -> None:
@@ -631,8 +934,20 @@ def run_pipeline(
     )
 
 
-def main(base_dir: Optional[Path] = None) -> None:
+def main(
+    base_dir: Optional[Path] = None,
+    profile_name: Optional[str] = None,
+    run_mode: Optional[str] = None,
+    auto_load_thresholds: Optional[bool] = None,
+    threshold_override: Optional[Dict[str, Any]] = None,
+) -> None:
     runtime = create_runtime(base_dir)
+    if run_mode is not None:
+        runtime.config.run_mode = str(run_mode)
+    if profile_name is not None:
+        runtime.config.review.active_profile = str(profile_name)
+    if auto_load_thresholds is not None:
+        runtime.config.auto_load_thresholds = bool(auto_load_thresholds)
     print_runtime_config(runtime)
 
     if runtime.config.run_mode not in {"qa", "calibrate"}:
@@ -649,4 +964,8 @@ def main(base_dir: Optional[Path] = None) -> None:
 
     if runtime.config.auto_load_thresholds:
         load_thresholds_from_file(runtime, runtime.config.paths.thresh_file)
-    run_pipeline(runtime, profile_name=runtime.config.review.active_profile)
+    run_pipeline(
+        runtime,
+        profile_name=runtime.config.review.active_profile,
+        threshold_override=threshold_override,
+    )
