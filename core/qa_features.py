@@ -30,19 +30,27 @@ def _try_init_insightface() -> Tuple[str, object]:
         import onnxruntime as ort
         from insightface.app import FaceAnalysis
 
+        if hasattr(ort, "preload_dlls"):
+            try:
+                ort.preload_dlls(directory="")
+            except Exception as exc:
+                print(f"[警告] ONNXRuntime preload_dlls 失败，继续按默认方式加载 CUDA DLL。原因: {exc}")
+
         providers = ort.get_available_providers()
         print(f"[系统] ONNXRuntime providers: {providers}")
 
-        app = FaceAnalysis(name="buffalo_l")
         if "CUDAExecutionProvider" in providers:
+            app = FaceAnalysis(name="buffalo_l", providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
             try:
                 app.prepare(ctx_id=0, det_size=(640, 640))
                 print("[系统] InsightFace 已启用：GPU (CUDAExecutionProvider)")
             except Exception as exc:
                 print(f"[警告] InsightFace GPU 初始化失败，回退 CPU。原因: {exc}")
+                app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
                 app.prepare(ctx_id=-1, det_size=(640, 640))
                 print("[系统] InsightFace 已启用：CPU")
         else:
+            app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
             app.prepare(ctx_id=-1, det_size=(640, 640))
             print("[系统] InsightFace 已启用：CPU（未检测到 CUDAExecutionProvider）")
 

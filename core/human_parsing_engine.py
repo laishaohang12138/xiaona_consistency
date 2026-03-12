@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 import importlib.util
+import json
 import os
 
 import numpy as np
@@ -117,7 +118,34 @@ class HumanParsingEngine:
         snapshots = sorted((path for path in snapshots_dir.iterdir() if path.is_dir()), reverse=True)
         return snapshots[0].resolve() if snapshots else None
 
+    def _load_processor_from_config_file(self, config_path: Path):
+        from transformers import SegformerImageProcessor
+
+        node = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(node, dict):
+            raise ValueError(f"Invalid image processor config: {config_path}")
+
+        # Newer transformers expects do_reduce_labels and no feature_extractor_type.
+        node.pop("feature_extractor_type", None)
+        if "reduce_labels" in node and "do_reduce_labels" not in node:
+            node["do_reduce_labels"] = bool(node.pop("reduce_labels"))
+        else:
+            node.pop("reduce_labels", None)
+
+        if self._Image is not None and isinstance(node.get("resample"), int):
+            try:
+                node["resample"] = self._Image.Resampling(int(node["resample"]))
+            except Exception:
+                pass
+
+        return SegformerImageProcessor(**node)
+
     def _load_processor(self, source: str, local_files_only: bool):
+        source_path = Path(source)
+        config_path = source_path / "preprocessor_config.json"
+        if source_path.exists() and config_path.exists():
+            return self._load_processor_from_config_file(config_path)
+
         from transformers import AutoImageProcessor
         try:
             return AutoImageProcessor.from_pretrained(source, local_files_only=local_files_only)
