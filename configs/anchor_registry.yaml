@@ -3,39 +3,67 @@ anchors:
     role: FACE_MASTER
     priority: 1
     required_default: true
-    path: D:/xiaona_consistency/anchors/face/front/A-Core_01_0deg_MASTER.png
+    path: ${PROJECT_ROOT}/anchors/face/front/A-Core_01_0deg_MASTER.png
+    view_bucket: front
+    view_side: center
+    body_plane: frontal
     owns:
       - face_identity
       - facial_layout
       - facial_geometry
+    supports:
+      - front_identity_lock
+      - front_face_master
   ref_2_full_body_master:
     role: FULL_BODY_MASTER
     priority: 2
     required_default: true
-    path: D:/xiaona_consistency/anchors/full/Task-63987060-116-1.png
+    path: ${PROJECT_ROOT}/anchors/full/Task-63987060-116-1.png
+    view_bucket: front
+    view_side: center
+    body_plane: frontal
     owns:
       - body_proportion
       - body_architecture
       - full_body_framing
       - body_constitution
+      - body_tone_baseline
+    supports:
+      - body_gold_front_core
+      - constitution_master
   ref_3_upper_support_94:
     role: UPPER_SUPPORT
     priority: 3
     required_default: false
-    path: D:/xiaona_consistency/anchors/upper/Task-63987060-94-1.png
+    path: ${PROJECT_ROOT}/anchors/upper/Task-63987060-94-1.png
+    view_bucket: front
+    view_side: center
+    body_plane: frontal
     owns:
       - clavicle_boundary
       - shoulder_line
       - upper_body_edge
+    supports:
+      - shoulder_drift
+      - neck_drift
+      - clavicle_drift
   ref_3_upper_support_97:
     role: UPPER_SUPPORT
     priority: 3
     required_default: false
-    path: D:/xiaona_consistency/anchors/upper/Task-63987060-97-1.png
+    path: ${PROJECT_ROOT}/anchors/upper/Task-63987060-97-1.png
+    view_bucket: front
+    view_side: center
+    body_plane: frontal
     owns:
       - clavicle_boundary
       - shoulder_line
       - upper_body_edge
+    supports:
+      - shoulder_drift
+      - neck_drift
+      - clavicle_drift
+
 rules:
   face_conflict_winner: ref_1_face_master
   body_conflict_winner: ref_2_full_body_master
@@ -44,4 +72,3 @@ rules:
     - neck_drift
     - clavicle_drift
     - upper_body_boundary_drift
-

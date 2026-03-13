@@ -45,14 +45,17 @@ consistency:
       chroma: 0.62
       luminance: 0.24
       knee: 0.14
+      baseline: 0.12
     chroma_dominant:
       chroma: 0.70
       luminance: 0.20
       knee: 0.10
+      baseline: 0.10
     high_risk:
       chroma: 0.82
       luminance: 0.08
       knee: 0.10
+      baseline: 0.10
 
 algorithm_policy:
   route_order:

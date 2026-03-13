@@ -1,8 +1,8 @@
 [REFERENCE PRIORITY RULE | MUST BE FIRST]
-Ref #1 = FACE MASTER (Identity Anchor). Highest priority for identity. Copy exactly.
-Ref #2 = FULL BODY MASTER (Proportion + Framing Anchor). Highest priority for body proportions and full-body framing.
+Ref #1 = FACE MASTER (Identity + Craniofacial Anchor). Highest priority for identity and face geometry. Copy exactly.
+Ref #2 = FULL BODY MASTER (Proportion + Framing + Body Tone Baseline Anchor). Highest priority for body proportions, full-body framing, and non-facial body tone baseline.
 Ref #3 = UPPER SUPPORT anchor only if shoulders/neck drift.
-Conflict rule: Ref #1 always wins for face identity; Ref #2 always wins for body proportions, body architecture, and full-body framing.
+Conflict rule: Ref #1 always wins for face identity and facial geometry; Ref #2 always wins for body proportions, body architecture, full-body framing, and body-side tone baseline.
 Single person only. No redesign. No beautify. No face replacement style drift.
 
 [SUBJECT / PURPOSE]
@@ -45,7 +45,7 @@ White balance: neutral.
 Skin texture: realistic natural skin texture, visible natural pores, fine vellus hair, subtle uneven highlights, realistic micro-contrast.
 Skin must look real and healthy, smooth but not waxy.
 No beauty filter. No airbrushed skin. No plastic skin. No over-smoothed limbs.
-Face brightness must match Ref #1.
+Face brightness must stay natural and consistent with the active tone/body anchor baseline.
 Avoid auto-exposure darkening.
 Add enough frontal fill so face and legs stay equally bright.
 No harsh specular hot spots.
@@ -140,4 +140,3 @@ No synthetic glossy skin.
 No stylized fashion-campaign grade.
 No cinematic mood.
 Reference image feeling, not advertisement feeling.
-

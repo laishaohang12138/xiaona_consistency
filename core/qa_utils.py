@@ -344,12 +344,24 @@ def estimate_view_bucket_and_side(face_feat: FaceFeat) -> Tuple[str, str, float]
     return bucket, side, float(yaw_proxy)
 
 
+def canonicalize_view_lane(face_feat: FaceFeat, raw_view_bucket: str) -> str:
+    if (not face_feat.ok) or (face_feat.kps5 is None):
+        return "unknown"
+    if raw_view_bucket == "profile_like":
+        return "side_90"
+    return raw_view_bucket
+
+
 def infer_anchor_view_from_path(path_str: Optional[str]) -> str:
     if not path_str:
         return "front"
     s = str(path_str).replace("\\", "/").lower()
     if "/three_quarter/" in s or "/3q/" in s:
         return "three_quarter"
+    if "/side_90/" in s or "/side/" in s:
+        return "profile_like"
     if "/profile_like/" in s or "/profile/" in s:
         return "profile_like"
+    if "/back_180/" in s or "/back/" in s:
+        return "back_180"
     return "front"

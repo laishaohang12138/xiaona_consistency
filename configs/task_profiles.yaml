@@ -91,6 +91,60 @@ task_profiles:
       full_warn: 0.58
       overall_pass: 0.74
       overall_warn: 0.59
+  body_gold_front_cal:
+    weights:
+      face: 0.45
+      upper: 0.15
+      full: 0.40
+    require:
+      face: true
+      upper: false
+      full: true
+    thresholds:
+      face_pass: 0.76
+      face_warn: 0.60
+      upper_pass: 0.68
+      upper_warn: 0.53
+      full_pass: 0.74
+      full_warn: 0.58
+      overall_pass: 0.74
+      overall_warn: 0.59
+  body_gold_side90_shadow:
+    weights:
+      face: 0.20
+      upper: 0.25
+      full: 0.55
+    require:
+      face: false
+      upper: false
+      full: true
+    thresholds:
+      face_pass: 0.72
+      face_warn: 0.55
+      upper_pass: 0.66
+      upper_warn: 0.50
+      full_pass: 0.74
+      full_warn: 0.56
+      overall_pass: 0.72
+      overall_warn: 0.56
+  body_gold_back180_shadow:
+    weights:
+      face: 0.00
+      upper: 0.30
+      full: 0.70
+    require:
+      face: false
+      upper: false
+      full: true
+    thresholds:
+      face_pass: 0.00
+      face_warn: 0.00
+      upper_pass: 0.66
+      upper_warn: 0.50
+      full_pass: 0.74
+      full_warn: 0.56
+      overall_pass: 0.72
+      overall_warn: 0.56
 
 review_policy:
   main_priority: body_gold_fullbody
@@ -102,27 +156,51 @@ profile_policy:
   identity_lock:
     identity_anchor_pool: face
     quality_anchor_pool: face
+    tone_anchor_pool: face
     soft_quality_hits_to_warn: 1
     skin_lighting_high_caps_pass: false
     skin_sample_high_caps_pass: false
+    allowed_view_buckets:
+      - front
+      - three_quarter
+      - side_90
+    soft_review_buckets: []
+    pass_cap_mode: none
+    quota_bucket: IDENTITY_LOCK
     hard_quality_flags:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL
   upper_body_product:
     identity_anchor_pool: face
     quality_anchor_pool: upper_first
+    tone_anchor_pool: upper_first
     soft_quality_hits_to_warn: 1
     skin_lighting_high_caps_pass: false
     skin_sample_high_caps_pass: false
+    allowed_view_buckets:
+      - front
+      - three_quarter
+      - side_90
+    soft_review_buckets: []
+    pass_cap_mode: none
+    quota_bucket: UPPER_BODY_PRODUCT
     hard_quality_flags:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL
   full_body_outfit:
     identity_anchor_pool: face
     quality_anchor_pool: upper_or_full
+    tone_anchor_pool: upper_or_full
     soft_quality_hits_to_warn: 2
     skin_lighting_high_caps_pass: false
     skin_sample_high_caps_pass: false
+    allowed_view_buckets:
+      - front
+      - three_quarter
+      - side_90
+    soft_review_buckets: []
+    pass_cap_mode: none
+    quota_bucket: FULL_BODY_OUTFIT
     hard_quality_flags:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL
@@ -130,19 +208,80 @@ profile_policy:
   lora_dataset:
     identity_anchor_pool: face
     quality_anchor_pool: face
+    tone_anchor_pool: face
     soft_quality_hits_to_warn: 2
     skin_lighting_high_caps_pass: false
     skin_sample_high_caps_pass: false
+    allowed_view_buckets:
+      - front
+      - three_quarter
+      - side_90
+    soft_review_buckets: []
+    pass_cap_mode: none
+    quota_bucket: LORA_DATASET
     hard_quality_flags:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL
   body_gold_fullbody:
     identity_anchor_pool: face
     quality_anchor_pool: upper_or_full
+    tone_anchor_pool: upper_or_full
     soft_quality_hits_to_warn: 2
     skin_lighting_high_caps_pass: true
     skin_sample_high_caps_pass: true
+    allowed_view_buckets:
+      - front
+      - three_quarter
+      - side_90
+    soft_review_buckets:
+      - three_quarter
+    pass_cap_mode: body_gold_front_core
+    quota_bucket: BODY_GOLD.front_core
     hard_quality_flags:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL
+      - HIP_POP_DETECTED_POSSIBLE_MODEL_POSE
+  body_gold_front_cal:
+    identity_anchor_pool: face
+    quality_anchor_pool: upper_or_full
+    tone_anchor_pool: upper_or_full
+    soft_quality_hits_to_warn: 2
+    skin_lighting_high_caps_pass: true
+    skin_sample_high_caps_pass: true
+    allowed_view_buckets:
+      - front
+    soft_review_buckets: []
+    pass_cap_mode: none
+    quota_bucket: BODY_GOLD.front_core
+    hard_quality_flags:
+      - FACE_UNDEREXPOSED_DARK
+      - FACE_NO_RELIABLE_SIGNAL
+      - HIP_POP_DETECTED_POSSIBLE_MODEL_POSE
+  body_gold_side90_shadow:
+    identity_anchor_pool: face
+    quality_anchor_pool: upper_or_full
+    tone_anchor_pool: upper_or_full
+    soft_quality_hits_to_warn: 2
+    skin_lighting_high_caps_pass: true
+    skin_sample_high_caps_pass: true
+    allowed_view_buckets:
+      - side_90
+    soft_review_buckets: []
+    pass_cap_mode: always_warn
+    quota_bucket: BODY_GOLD.side90_shadow
+    hard_quality_flags:
+      - HIP_POP_DETECTED_POSSIBLE_MODEL_POSE
+  body_gold_back180_shadow:
+    identity_anchor_pool: upper_first
+    quality_anchor_pool: upper_or_full
+    tone_anchor_pool: upper_or_full
+    soft_quality_hits_to_warn: 2
+    skin_lighting_high_caps_pass: true
+    skin_sample_high_caps_pass: true
+    allowed_view_buckets:
+      - back_180
+    soft_review_buckets: []
+    pass_cap_mode: always_warn
+    quota_bucket: BODY_GOLD.back180_shadow
+    hard_quality_flags:
       - HIP_POP_DETECTED_POSSIBLE_MODEL_POSE

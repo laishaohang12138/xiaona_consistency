@@ -3,20 +3,27 @@
 XiaoNa LoRA training engineering repository.
 
 ## Current Scope
-- QA pipeline in [check_consistency.py](./check_consistency.py)
+- Entrypoint CLI in [check_consistency.py](./check_consistency.py)
+- Main QA implementation in `core/`
 - Frozen project rules in `docs/`
 - Machine-readable project config in `configs/`
 - Versioned prompt assets in `prompts/`
 - Custom GPT knowledge export in `kb_export/`
 - Anchor assets in `anchors/`
 
+## Runtime Status
+- The QA pipeline is modularized into `core/qa_runtime.py`, `core/qa_pipeline.py`, `core/qa_scoring.py`, `core/qa_consistency.py`, `core/qa_features.py`, and `core/providers.py`
+- Human Parsing is the default upstream provider for `subject_mask` and `skin_region`, with legacy fallback retained
+- BODY GOLD currently runs as a conservative front-core lane, while side/back work is staged through shadow profile lanes
+- `outputs/qa_report.json` now writes `report_meta` plus `items`, including provider policy, anchor snapshot, layer quota snapshot, and threshold hash
+
 ## Confirmed Route
 1. Engineering decoupling first
 2. Human Parsing as the first high-order algorithm
-3. YOLO and SAM only as later support layers
-4. Custom GPT knowledge ingests frozen rule documents only
+3. Hand/foot and body-measure providers before heavier 3D escalation
+4. YOLO and SAM only as later support layers
+5. Custom GPT knowledge ingests frozen rule documents only
 
 ## Repository Notes
 - `input/`, `outputs/`, and `calib_pass/` are excluded from Git as local/dynamic data
 - `.venv/` and IDE files are excluded from Git
-

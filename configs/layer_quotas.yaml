@@ -3,6 +3,22 @@ training_layers:
     quota: 12
     priority: 1
     role: human_instruction_sheet
+    sub_buckets:
+      front_core:
+        quota: 12
+        priority: 1
+        role: canonical_front_release
+        release_state: primary
+      side90_shadow:
+        quota: 4
+        priority: 2
+        role: sagittal_shadow_validation
+        release_state: shadow
+      back180_shadow:
+        quota: 2
+        priority: 3
+        role: posterior_shadow_validation
+        release_state: shadow
   BRIDGE:
     quota: 8
     priority: 2

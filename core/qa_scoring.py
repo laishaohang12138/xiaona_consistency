@@ -387,6 +387,7 @@ def upper_geom_similarity(
             "hip_width_norm": 0.20,
         }
         tilt_weight = 0.10
+        spine_weight = 0.04
     elif view_bucket == "three_quarter":
         weight_map = {
             "shoulder_width_norm": 0.10,
@@ -394,12 +395,17 @@ def upper_geom_similarity(
             "hip_width_norm": 0.40,
         }
         tilt_weight = 0.04
+        spine_weight = 0.10
     else:
         weight_map = {
-            "torso_len_norm": 0.60,
-            "hip_width_norm": 0.40,
+            "torso_len_norm": 0.34,
+            "shoulder_hip_center_offset_norm": 0.24,
+            "torso_compactness": 0.18,
+            "hip_width_norm": 0.14,
+            "hip_shoulder_ratio": 0.10,
         }
         tilt_weight = 0.00
+        spine_weight = 0.18
 
     avail = [key for key in weight_map.keys() if key in g1 and key in g2]
     if len(avail) == 0:
@@ -419,6 +425,11 @@ def upper_geom_similarity(
         errs.append(min(d, 360.0 - d) / 25.0)
         weights.append(tilt_weight)
 
+    if spine_weight > 0 and "spine_angle_deg" in g1 and "spine_angle_deg" in g2:
+        d = abs(float(g1["spine_angle_deg"]) - float(g2["spine_angle_deg"]))
+        errs.append(min(d, 360.0 - d) / 18.0)
+        weights.append(spine_weight)
+
     return clamp(
         1.0 - float(np.average(np.array(errs, dtype=np.float32), weights=np.array(weights, dtype=np.float32))),
         0.0,
@@ -426,17 +437,53 @@ def upper_geom_similarity(
     )
 
 
-def full_geom_similarity(g1: Dict[str, float], g2: Dict[str, float]) -> Optional[float]:
-    avail = [key for key in ["head_body_ratio", "leg_ratio"] if key in g1 and key in g2]
+def full_geom_similarity(
+    g1: Dict[str, float],
+    g2: Dict[str, float],
+    view_bucket: str = "front",
+) -> Optional[float]:
+    if view_bucket == "front":
+        weight_map = {
+            "head_body_ratio": 0.58,
+            "leg_ratio": 0.42,
+        }
+    elif view_bucket == "three_quarter":
+        weight_map = {
+            "head_body_ratio": 0.46,
+            "leg_ratio": 0.36,
+            "leg_straightness_mean_deg": 0.10,
+            "ankle_gap_norm": 0.08,
+        }
+    else:
+        weight_map = {
+            "head_body_ratio": 0.22,
+            "leg_ratio": 0.28,
+            "leg_straightness_min_deg": 0.24,
+            "leg_straightness_mean_deg": 0.12,
+            "ankle_gap_norm": 0.08,
+            "foot_length_proxy_norm": 0.06,
+        }
+
+    avail = [key for key in weight_map.keys() if key in g1 and key in g2]
     if len(avail) == 0:
         return None
+
     errs = []
+    weights = []
     for key in avail:
         a = float(g1[key])
         b = float(g2[key])
-        denom = max(1e-6, abs(a) + abs(b))
-        errs.append(abs(a - b) / denom)
-    return clamp(1.0 - float(np.mean(errs)), 0.0, 1.0)
+        if key.endswith("_deg"):
+            errs.append(abs(a - b) / 18.0)
+        else:
+            denom = max(1e-6, abs(a) + abs(b))
+            errs.append(abs(a - b) / denom)
+        weights.append(weight_map[key])
+    return clamp(
+        1.0 - float(np.average(np.array(errs, dtype=np.float32), weights=np.array(weights, dtype=np.float32))),
+        0.0,
+        1.0,
+    )
 
 
 def framing_score_from_pose_feat(pose_feat: PoseFeat) -> Tuple[float, List[str]]:
@@ -546,9 +593,10 @@ def score_upper_against_anchor_set(
 def score_full_against_anchor_set(
     candidate: PoseFeat,
     anchors: List[PoseFeat],
+    view_bucket: str = "front",
 ) -> Tuple[float, float, List[str], Dict[str, Any]]:
     reasons: List[str] = []
-    debug: Dict[str, Any] = {"anchor_scores": []}
+    debug: Dict[str, Any] = {"anchor_scores": [], "view_bucket_used": view_bucket}
 
     if not candidate.ok:
         return 0.0, 0.0, ["FULL_POSE_NOT_AVAILABLE"] + candidate.reasons, debug
@@ -573,13 +621,20 @@ def score_full_against_anchor_set(
 
         vec_a, cov_a = normalize_pose_subset(anchor.lm_xy, anchor.lm_vis, FULL_LM_IDS, mode="full")
         s_pose = pose_vector_similarity(vec_c, vec_a)
-        s_geom = full_geom_similarity(candidate.full_geom, anchor.full_geom)
+        s_geom = full_geom_similarity(candidate.full_geom, anchor.full_geom, view_bucket=view_bucket)
 
-        parts = [("framing", fr_score, 0.45)]
+        if view_bucket == "front":
+            part_weights = {"framing": 0.45, "geom": 0.35, "pose": 0.20}
+        elif view_bucket == "three_quarter":
+            part_weights = {"framing": 0.40, "geom": 0.40, "pose": 0.20}
+        else:
+            part_weights = {"framing": 0.30, "geom": 0.50, "pose": 0.20}
+
+        parts = [("framing", fr_score, part_weights["framing"])]
         if s_geom is not None:
-            parts.append(("geom", s_geom, 0.35))
+            parts.append(("geom", s_geom, part_weights["geom"]))
         if s_pose is not None:
-            parts.append(("pose", s_pose, 0.20))
+            parts.append(("pose", s_pose, part_weights["pose"]))
 
         ws = sum(weight for _, _, weight in parts)
         fused = sum(value * weight for _, value, weight in parts) / max(1e-8, ws)
@@ -715,8 +770,19 @@ def make_recommendations(
     if any("FEET_CROPPED" in reason for reason in reasons):
         recs.append("构图返工：确保脚完整入框（full-body 任务为硬条件）")
 
-    if len(recs) == 0:
+    if False:
         recs.append("一致性表现良好，可进入人工终审/训练入库阶段")
+    if "FACE_DARKER_THAN_TONE_ANCHOR" in reasons:
+        recs.append("脸部相对 tone anchor 偏暗：优先复查补光和曝光，不要把受光差误判为身份偏移")
+    elif "FACE_BRIGHTER_THAN_TONE_ANCHOR" in reasons:
+        recs.append("脸部相对 tone anchor 偏亮：优先复查过曝或美白偏移，再判断是否是真实肤色漂移")
+
+    if "VIEW_LANE_NOT_ALLOWED_FOR_PROFILE" in reasons:
+        recs.append("当前视角不在该 profile 放行范围内：请改用匹配 profile，或转入 shadow lane 观察")
+    if "PROFILE_PASS_CAPPED_TO_WARN" in reasons or "PROFILE_LIKE_NO_SIDE_ANCHOR_PASS_CAPPED" in reasons:
+        recs.append("该图当前只适合作为 shadow / review 样本，不建议直接晋升到正式 frozen 配额")
+    if len(recs) == 0:
+        recs.append("该图未触发明显警报，可进入人工终审或训练入库下一步")
     return recs
 
 
@@ -741,13 +807,14 @@ def get_identity_anchor_pool(
 
 def filter_face_anchors_by_view(anchors: List[FaceFeat], view_bucket: str) -> List[FaceFeat]:
     valid = [anchor for anchor in anchors if anchor.ok]
+    normalized_view = "profile_like" if view_bucket == "side_90" else view_bucket
     if view_bucket == "front":
         pool = [anchor for anchor in valid if infer_anchor_view_from_path(anchor.source_path) == "front"]
         return pool if len(pool) > 0 else valid
-    if view_bucket == "three_quarter":
+    if normalized_view == "three_quarter":
         pool = [anchor for anchor in valid if infer_anchor_view_from_path(anchor.source_path) == "three_quarter"]
         return pool if len(pool) > 0 else valid
-    if view_bucket == "profile_like":
+    if normalized_view == "profile_like":
         pool = [anchor for anchor in valid if infer_anchor_view_from_path(anchor.source_path) == "profile_like"]
         if len(pool) > 0:
             return pool
@@ -763,6 +830,30 @@ def get_quality_anchor_pool(
 ) -> List[FaceFeat]:
     policy = get_profile_policy(runtime, profile_name)
     mode = policy.get("quality_anchor_pool", "face")
+
+    if mode == "face":
+        return valid_face_feats(anchors.face_feats)
+    if mode == "upper_first":
+        pool = valid_face_feats(anchors.upper_face_feats)
+        return pool if len(pool) > 0 else valid_face_feats(anchors.face_feats)
+    if mode == "upper_or_full":
+        pool = valid_face_feats(anchors.upper_face_feats)
+        if len(pool) > 0:
+            return pool
+        pool = valid_face_feats(anchors.full_face_feats)
+        if len(pool) > 0:
+            return pool
+        return valid_face_feats(anchors.face_feats)
+    return valid_face_feats(anchors.face_feats)
+
+
+def get_tone_anchor_pool(
+    runtime: RuntimeContext,
+    profile_name: str,
+    anchors: AnchorSet,
+) -> List[FaceFeat]:
+    policy = get_profile_policy(runtime, profile_name)
+    mode = policy.get("tone_anchor_pool", policy.get("quality_anchor_pool", "face"))
 
     if mode == "face":
         return valid_face_feats(anchors.face_feats)
@@ -799,6 +890,27 @@ def build_quality_reference_stats(face_feats: List[FaceFeat]) -> Dict[str, Any]:
                 stats[key]["lap"].append(float(anchor.lap_var))
             if anchor.hf_energy > 0:
                 stats[key]["hf"].append(float(anchor.hf_energy))
+            stats[key]["count"] += 1
+    return stats
+
+
+def build_tone_reference_stats(face_feats: List[FaceFeat]) -> Dict[str, Any]:
+    stats: Dict[str, Any] = {
+        "all": {"L": [], "a": [], "b": [], "count": 0},
+        "near": {"L": [], "a": [], "b": [], "count": 0},
+        "mid": {"L": [], "a": [], "b": [], "count": 0},
+        "full_far": {"L": [], "a": [], "b": [], "count": 0},
+    }
+
+    for anchor in face_feats:
+        if not anchor.ok or anchor.lab_mean is None:
+            continue
+        bucket = get_face_size_bucket(anchor.bbox_area_ratio)
+        L, a, b = [float(x) for x in anchor.lab_mean]
+        for key in ["all", bucket]:
+            stats[key]["L"].append(L)
+            stats[key]["a"].append(a)
+            stats[key]["b"].append(b)
             stats[key]["count"] += 1
     return stats
 

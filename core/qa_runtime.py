@@ -66,16 +66,17 @@ class SkinScoreWeightPreset:
     chroma: float = 0.62
     luminance: float = 0.24
     knee: float = 0.14
+    baseline: float = 0.12
 
 
 @dataclass
 class SkinScoreWeightSettings:
     strict: SkinScoreWeightPreset = field(default_factory=SkinScoreWeightPreset)
     chroma_dominant: SkinScoreWeightPreset = field(
-        default_factory=lambda: SkinScoreWeightPreset(chroma=0.70, luminance=0.20, knee=0.10)
+        default_factory=lambda: SkinScoreWeightPreset(chroma=0.70, luminance=0.20, knee=0.10, baseline=0.10)
     )
     high_risk: SkinScoreWeightPreset = field(
-        default_factory=lambda: SkinScoreWeightPreset(chroma=0.82, luminance=0.08, knee=0.10)
+        default_factory=lambda: SkinScoreWeightPreset(chroma=0.82, luminance=0.08, knee=0.10, baseline=0.10)
     )
 
 
@@ -217,6 +218,7 @@ class RuntimeConfig:
     profile_policy: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     external_config_status: Dict[str, bool] = field(default_factory=dict)
     anchor_registry: Dict[str, Any] = field(default_factory=dict)
+    layer_quotas: Dict[str, Any] = field(default_factory=dict)
     provider_policy: Dict[str, str] = field(default_factory=dict)
     quality_thresholds: QualityThresholds = field(default_factory=QualityThresholds)
 
@@ -308,22 +310,33 @@ def _default_profile_policy() -> Dict[str, Dict[str, Any]]:
         "identity_lock": {
             "identity_anchor_pool": "face",
             "quality_anchor_pool": "face",
+            "tone_anchor_pool": "face",
             "soft_quality_hits_to_warn": 1,
             "hard_quality_flags": {"FACE_UNDEREXPOSED_DARK", "FACE_NO_RELIABLE_SIGNAL"},
             "skin_lighting_high_caps_pass": False,
             "skin_sample_high_caps_pass": False,
+            "allowed_view_buckets": ["front", "three_quarter", "side_90"],
+            "soft_review_buckets": [],
+            "pass_cap_mode": "none",
+            "quota_bucket": "IDENTITY_LOCK",
         },
         "upper_body_product": {
             "identity_anchor_pool": "face",
             "quality_anchor_pool": "upper_first",
+            "tone_anchor_pool": "upper_first",
             "soft_quality_hits_to_warn": 1,
             "hard_quality_flags": {"FACE_UNDEREXPOSED_DARK", "FACE_NO_RELIABLE_SIGNAL"},
             "skin_lighting_high_caps_pass": False,
             "skin_sample_high_caps_pass": False,
+            "allowed_view_buckets": ["front", "three_quarter", "side_90"],
+            "soft_review_buckets": [],
+            "pass_cap_mode": "none",
+            "quota_bucket": "UPPER_BODY_PRODUCT",
         },
         "full_body_outfit": {
             "identity_anchor_pool": "face",
             "quality_anchor_pool": "upper_or_full",
+            "tone_anchor_pool": "upper_or_full",
             "soft_quality_hits_to_warn": 2,
             "hard_quality_flags": {
                 "FACE_UNDEREXPOSED_DARK",
@@ -332,18 +345,28 @@ def _default_profile_policy() -> Dict[str, Dict[str, Any]]:
             },
             "skin_lighting_high_caps_pass": False,
             "skin_sample_high_caps_pass": False,
+            "allowed_view_buckets": ["front", "three_quarter", "side_90"],
+            "soft_review_buckets": [],
+            "pass_cap_mode": "none",
+            "quota_bucket": "FULL_BODY_OUTFIT",
         },
         "lora_dataset": {
             "identity_anchor_pool": "face",
             "quality_anchor_pool": "face",
+            "tone_anchor_pool": "face",
             "soft_quality_hits_to_warn": 2,
             "hard_quality_flags": {"FACE_UNDEREXPOSED_DARK", "FACE_NO_RELIABLE_SIGNAL"},
             "skin_lighting_high_caps_pass": False,
             "skin_sample_high_caps_pass": False,
+            "allowed_view_buckets": ["front", "three_quarter", "side_90"],
+            "soft_review_buckets": [],
+            "pass_cap_mode": "none",
+            "quota_bucket": "LORA_DATASET",
         },
         "body_gold_fullbody": {
             "identity_anchor_pool": "face",
             "quality_anchor_pool": "upper_or_full",
+            "tone_anchor_pool": "upper_or_full",
             "soft_quality_hits_to_warn": 2,
             "hard_quality_flags": {
                 "FACE_UNDEREXPOSED_DARK",
@@ -352,6 +375,10 @@ def _default_profile_policy() -> Dict[str, Dict[str, Any]]:
             },
             "skin_lighting_high_caps_pass": True,
             "skin_sample_high_caps_pass": True,
+            "allowed_view_buckets": ["front", "three_quarter", "side_90"],
+            "soft_review_buckets": ["three_quarter"],
+            "pass_cap_mode": "body_gold_front_core",
+            "quota_bucket": "BODY_GOLD.front_core",
         },
     }
 
@@ -361,6 +388,7 @@ def _default_external_config_status() -> Dict[str, bool]:
         "anchor_registry": False,
         "task_profiles": False,
         "consistency_thresholds": False,
+        "layer_quotas": False,
     }
 
 
@@ -368,6 +396,13 @@ def _default_anchor_registry() -> Dict[str, Any]:
     return {
         "anchors": {},
         "rules": {},
+    }
+
+
+def _default_layer_quotas() -> Dict[str, Any]:
+    return {
+        "training_layers": {},
+        "frozen_total_pass_target": 0,
     }
 
 
@@ -411,6 +446,13 @@ def _coerce_float(value: Any, default: float) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
 
 
 def _yaml_scalar_from_text(text: str) -> Any:
@@ -529,6 +571,14 @@ def _normalize_profile_policy_map(data: Any) -> Dict[str, Dict[str, Any]]:
             node["hard_quality_flags"] = set()
         else:
             node["hard_quality_flags"] = {str(flags)}
+        for key in ["allowed_view_buckets", "soft_review_buckets"]:
+            values = node.get(key, [])
+            if isinstance(values, list):
+                node[key] = [str(x) for x in values]
+            elif values is None:
+                node[key] = []
+            else:
+                node[key] = [str(values)]
         out[str(profile_name)] = node
     return out
 
@@ -546,16 +596,67 @@ def _normalize_anchor_registry(data: Any) -> Dict[str, Any]:
             if not isinstance(node, dict):
                 continue
             owns = node.get("owns", [])
+            supports = node.get("supports", [])
             out_anchors[str(anchor_id)] = {
                 "role": str(node.get("role", "")),
                 "priority": _coerce_float(node.get("priority", 0), 0.0),
                 "required_default": bool(node.get("required_default", False)),
                 "path": str(node.get("path", "")),
                 "owns": [str(x) for x in owns] if isinstance(owns, list) else [],
+                "view_bucket": str(node.get("view_bucket", "")),
+                "view_side": str(node.get("view_side", "unknown")),
+                "body_plane": str(node.get("body_plane", "")),
+                "supports": [str(x) for x in supports] if isinstance(supports, list) else [],
             }
 
     out_rules = copy.deepcopy(rules_node) if isinstance(rules_node, dict) else {}
     return {"anchors": out_anchors, "rules": out_rules}
+
+
+def _normalize_layer_quotas(data: Any) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        return _default_layer_quotas()
+
+    training_layers = data.get("training_layers", {})
+    out_layers: Dict[str, Dict[str, Any]] = {}
+    if isinstance(training_layers, dict):
+        for layer_name, node in training_layers.items():
+            if not isinstance(node, dict):
+                continue
+            child = copy.deepcopy(node)
+            if child.get("quota") is not None:
+                child["quota"] = _coerce_int(child["quota"], 0)
+            if child.get("priority") is not None:
+                child["priority"] = _coerce_int(child["priority"], 0)
+            sub_buckets = child.get("sub_buckets", None)
+            if isinstance(sub_buckets, dict):
+                normalized_buckets: Dict[str, Dict[str, Any]] = {}
+                for bucket_name, bucket_node in sub_buckets.items():
+                    if not isinstance(bucket_node, dict):
+                        continue
+                    bucket_child = copy.deepcopy(bucket_node)
+                    if bucket_child.get("quota") is not None:
+                        bucket_child["quota"] = _coerce_int(bucket_child["quota"], 0)
+                    if bucket_child.get("priority") is not None:
+                        bucket_child["priority"] = _coerce_int(bucket_child["priority"], 0)
+                    normalized_buckets[str(bucket_name)] = bucket_child
+                child["sub_buckets"] = normalized_buckets
+            out_layers[str(layer_name)] = child
+
+    return {
+        "training_layers": out_layers,
+        "frozen_total_pass_target": _coerce_int(data.get("frozen_total_pass_target", 0), 0),
+    }
+
+
+def _resolve_registry_path(config: RuntimeConfig, raw_path: str) -> Path:
+    expanded = str(raw_path).strip()
+    expanded = expanded.replace("${PROJECT_ROOT}", str(config.paths.base_dir))
+    expanded = expanded.replace("${CONFIG_DIR}", str(config.paths.config_dir))
+    path = Path(expanded)
+    if not path.is_absolute():
+        path = (config.paths.base_dir / path).resolve()
+    return path
 
 
 def _list_image_files_in_dir(directory: Path) -> List[Path]:
@@ -619,6 +720,12 @@ def apply_external_project_configs(config: RuntimeConfig) -> None:
     if anchor_data is not None:
         config.anchor_registry = _normalize_anchor_registry(anchor_data)
         config.external_config_status["anchor_registry"] = True
+
+    layer_quota_path = config.paths.config_dir / "layer_quotas.yaml"
+    quota_data = _load_simple_yaml(layer_quota_path)
+    if quota_data is not None:
+        config.layer_quotas = _normalize_layer_quotas(quota_data)
+        config.external_config_status["layer_quotas"] = True
 
     consistency_path = config.paths.config_dir / "consistency_thresholds.yaml"
     consistency_data = _load_simple_yaml(consistency_path)
@@ -788,6 +895,8 @@ def apply_external_project_configs(config: RuntimeConfig) -> None:
                         target.luminance = float(node["luminance"])
                     if node.get("knee") is not None:
                         target.knee = float(node["knee"])
+                    if node.get("baseline") is not None:
+                        target.baseline = float(node["baseline"])
 
         algorithm_policy = consistency_data.get("algorithm_policy", None)
         if isinstance(algorithm_policy, dict):
@@ -818,6 +927,7 @@ def create_runtime_config(base_dir: Optional[Path] = None) -> RuntimeConfig:
         profile_policy=_default_profile_policy(),
         external_config_status=_default_external_config_status(),
         anchor_registry=_default_anchor_registry(),
+        layer_quotas=_default_layer_quotas(),
         provider_policy=_default_provider_policy(),
     )
     apply_external_project_configs(config)
@@ -835,6 +945,7 @@ def _anchor_paths_from_registry(config: RuntimeConfig) -> Dict[str, List[str]]:
     if not isinstance(anchors_node, dict):
         return grouped
 
+    missing_required: List[str] = []
     for anchor_id, node in anchors_node.items():
         if not isinstance(node, dict):
             continue
@@ -843,7 +954,7 @@ def _anchor_paths_from_registry(config: RuntimeConfig) -> Dict[str, List[str]]:
         if not path_str:
             continue
 
-        path = Path(path_str)
+        path = _resolve_registry_path(config, path_str)
         target_key: Optional[str] = None
 
         if role == "FACE_MASTER":
@@ -869,6 +980,20 @@ def _anchor_paths_from_registry(config: RuntimeConfig) -> Dict[str, List[str]]:
         else:
             print(f"[警告] Anchor registry 路径不存在，已跳过: {anchor_id} -> {path}")
 
+    for anchor_id, node in anchors_node.items():
+        if not isinstance(node, dict):
+            continue
+        if not bool(node.get("required_default", False)):
+            continue
+        path_str = str(node.get("path", "")).strip()
+        if not path_str:
+            continue
+        path = _resolve_registry_path(config, path_str)
+        if not path.exists():
+            missing_required.append(f"{anchor_id} -> {path}")
+
+    if missing_required:
+        raise FileNotFoundError("Required anchors missing from registry: " + "; ".join(sorted(set(missing_required))))
     return grouped
 
 
@@ -882,10 +1007,16 @@ def _default_anchor_paths_from_dirs(config: RuntimeConfig) -> Dict[str, List[str
 
 def resolve_anchor_paths(config: RuntimeConfig) -> Dict[str, List[str]]:
     default_paths = _default_anchor_paths_from_dirs(config)
-    if config.provider_policy.get("anchor_source", "registry_then_directory_fallback") != "registry_then_directory_fallback":
+    source_mode = str(config.provider_policy.get("anchor_source", "registry_then_directory_fallback"))
+    if source_mode == "directory_only":
         return default_paths
 
     registry_paths = _anchor_paths_from_registry(config)
+    if source_mode in {"registry_only", "registry_required"}:
+        return registry_paths
+    if source_mode != "registry_then_directory_fallback":
+        raise ValueError(f"Unsupported anchor_source mode: {source_mode}")
+
     out: Dict[str, List[str]] = {}
     for key in ["face_paths", "upper_paths", "full_paths"]:
         vals = registry_paths.get(key, [])
@@ -896,10 +1027,40 @@ def resolve_anchor_paths(config: RuntimeConfig) -> Dict[str, List[str]]:
 def anchor_registry_summary(config: RuntimeConfig) -> Dict[str, int]:
     resolved = resolve_anchor_paths(config)
     return {
+        "registered_anchors": len(config.anchor_registry.get("anchors", {})),
         "face_paths": len(resolved.get("face_paths", [])),
         "upper_paths": len(resolved.get("upper_paths", [])),
         "full_paths": len(resolved.get("full_paths", [])),
     }
+
+
+def anchor_registry_snapshot(config: RuntimeConfig) -> Dict[str, Any]:
+    anchors_node = config.anchor_registry.get("anchors", {})
+    snapshot: Dict[str, Any] = {
+        "anchor_source": str(config.provider_policy.get("anchor_source", "registry_then_directory_fallback")),
+        "entries": {},
+    }
+    if not isinstance(anchors_node, dict):
+        return snapshot
+
+    for anchor_id, node in anchors_node.items():
+        if not isinstance(node, dict):
+            continue
+        raw_path = str(node.get("path", "")).strip()
+        resolved_path = _resolve_registry_path(config, raw_path) if raw_path else None
+        snapshot["entries"][str(anchor_id)] = {
+            "role": str(node.get("role", "")),
+            "required_default": bool(node.get("required_default", False)),
+            "view_bucket": str(node.get("view_bucket", "")),
+            "view_side": str(node.get("view_side", "unknown")),
+            "body_plane": str(node.get("body_plane", "")),
+            "owns": list(node.get("owns", [])) if isinstance(node.get("owns", []), list) else [],
+            "supports": list(node.get("supports", [])) if isinstance(node.get("supports", []), list) else [],
+            "path": raw_path,
+            "resolved_path": str(resolved_path) if resolved_path is not None else "",
+            "exists": bool(resolved_path and resolved_path.exists()),
+        }
+    return snapshot
 
 
 def save_thresholds_to_file(thresholds: Dict[str, float], path: Path) -> None:

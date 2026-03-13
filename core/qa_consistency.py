@@ -468,6 +468,7 @@ def extract_skin_consistency_metrics(
     img_bgr: np.ndarray,
     face_feat: FaceFeat,
     pose_feat: PoseFeat,
+    tone_reference_lab: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "is_valid": False,
@@ -494,6 +495,13 @@ def extract_skin_consistency_metrics(
         "knee_dark_patch_score": None,
         "chroma_consistency_score": None,
         "luminance_consistency_score": None,
+        "tone_baseline_face_deltaL": None,
+        "tone_baseline_face_deltaAB": None,
+        "tone_baseline_thigh_deltaL": None,
+        "tone_baseline_thigh_deltaAB": None,
+        "tone_baseline_calf_deltaL": None,
+        "tone_baseline_calf_deltaAB": None,
+        "tone_baseline_consistency_score": None,
         "sample_risk_score": None,
         "lighting_risk_score": None,
         "skin_score_mode": "strict",
@@ -725,6 +733,15 @@ def extract_skin_consistency_metrics(
         out[f"{prefix}_deltaL"] = _delta_l_lab(face_lab, region_lab)
         out[f"{prefix}_deltaAB"] = _delta_ab_lab(face_lab, region_lab)
 
+    if tone_reference_lab is not None:
+        tone_lab = tone_reference_lab.astype(np.float32)
+        out["tone_baseline_face_deltaL"] = _delta_l_lab(face_lab, tone_lab)
+        out["tone_baseline_face_deltaAB"] = _delta_ab_lab(face_lab, tone_lab)
+        out["tone_baseline_thigh_deltaL"] = _delta_l_lab(thigh_lab, tone_lab)
+        out["tone_baseline_thigh_deltaAB"] = _delta_ab_lab(thigh_lab, tone_lab)
+        out["tone_baseline_calf_deltaL"] = _delta_l_lab(calf_lab, tone_lab)
+        out["tone_baseline_calf_deltaAB"] = _delta_ab_lab(calf_lab, tone_lab)
+
     out["face_side_deltaL"] = None
     if face_left.mean_l is not None and face_right.mean_l is not None:
         out["face_side_deltaL"] = float(abs(face_left.mean_l - face_right.mean_l))
@@ -775,6 +792,16 @@ def extract_skin_consistency_metrics(
                 ),
                 0.44,
             ),
+        ]
+    )
+    out["tone_baseline_consistency_score"] = weighted_mean_valid(
+        [
+            (_exp_decay_score(out["tone_baseline_face_deltaAB"], split.delta_ab_decay_thigh), 0.24),
+            (_exp_decay_score(out["tone_baseline_face_deltaL"], split.delta_l_decay_thigh), 0.16),
+            (_exp_decay_score(out["tone_baseline_thigh_deltaAB"], split.delta_ab_decay_thigh), 0.24),
+            (_exp_decay_score(out["tone_baseline_calf_deltaAB"], split.delta_ab_decay_calf), 0.18),
+            (_exp_decay_score(out["tone_baseline_thigh_deltaL"], split.delta_l_decay_thigh), 0.10),
+            (_exp_decay_score(out["tone_baseline_calf_deltaL"], split.delta_l_decay_calf), 0.08),
         ]
     )
 
@@ -905,6 +932,7 @@ def extract_skin_consistency_metrics(
             (out["chroma_consistency_score"], weight_preset.chroma),
             (out["luminance_consistency_score"], weight_preset.luminance),
             (out["knee_dark_patch_score"], weight_preset.knee),
+            (out["tone_baseline_consistency_score"], weight_preset.baseline),
         ]
     )
 
@@ -951,6 +979,10 @@ def extract_depth_3d_lite_metrics(
     hw = pose_feat.upper_geom.get("hip_width_norm", None)
     spine_angle = pose_feat.upper_geom.get("spine_angle_deg", None)
     torso_len = pose_feat.upper_geom.get("torso_len_norm", None)
+    torso_compactness = pose_feat.upper_geom.get("torso_compactness", None)
+    center_offset = pose_feat.upper_geom.get("shoulder_hip_center_offset_norm", None)
+    leg_straightness = pose_feat.full_geom.get("leg_straightness_min_deg", None)
+    ankle_gap = pose_feat.full_geom.get("ankle_gap_norm", None)
     if sw is None or hw is None:
         out["reasons"].append("DEPTH_3D_LITE_GEOM_MISSING")
         return out
@@ -972,6 +1004,16 @@ def extract_depth_3d_lite_metrics(
     ratio_score = soft_range_score(hip_shoulder_ratio, 0.46, 0.72, 0.18)
     spine_score = soft_range_score(spine_angle, 0.0, 10.0, 6.0)
     torso_score = soft_range_score(torso_len, 0.20, 0.30, 0.08)
+    side_profile_score = None
+    if view_bucket in {"profile_like", "side_90", "back_180"}:
+        side_profile_score = weighted_mean_valid(
+            [
+                (soft_range_score(center_offset, 0.00, 0.10, 0.10), 0.34),
+                (soft_range_score(leg_straightness, 166.0, 180.0, 10.0), 0.40),
+                (soft_range_score(torso_compactness, 0.52, 1.08, 0.34), 0.18),
+                (soft_range_score(ankle_gap, 0.02, 0.16, 0.10), 0.08),
+            ]
+        )
 
     torso_volume_score = weighted_mean_valid(
         [
@@ -980,6 +1022,7 @@ def extract_depth_3d_lite_metrics(
             (ratio_score, 0.20),
             (spine_score, 0.14),
             (torso_score, 0.12),
+            (side_profile_score, 0.18 if view_bucket in {"profile_like", "side_90", "back_180"} else 0.0),
         ]
     )
 
@@ -990,6 +1033,7 @@ def extract_depth_3d_lite_metrics(
             (torso_volume_score, 0.52),
             (spine_score, 0.14),
             (torso_score, 0.10),
+            (side_profile_score, 0.16 if view_bucket in {"profile_like", "side_90", "back_180"} else 0.0),
         ]
     )
 
@@ -1008,13 +1052,15 @@ def extract_depth_3d_lite_metrics(
             [
                 (soft_range_score(yaw_proxy, 0.24, 0.42, 0.14), 0.45),
                 (torso_volume_score, 0.35),
-                (spine_score, 0.20),
+                (spine_score, 0.10),
+                (side_profile_score, 0.10),
             ]
         )
 
     out["confidence"] = 0.0 if conf is None else float(conf)
     out["torso_volume_score"] = torso_volume_score
     out["pelvis_depth_score"] = ratio_score
+    out["side_profile_score"] = side_profile_score
     out["is_valid"] = out["depth_3d_score"] is not None
     out["reasons"].append("DEPTH_3D_LITE_READY" if out["is_valid"] else "DEPTH_3D_LITE_EMPTY")
     return out
@@ -1077,6 +1123,7 @@ def apply_consistency_soft_gate(
     skin_mode = str(skin_metrics.get("skin_score_mode", "strict") or "strict")
     chroma_score = skin_metrics.get("chroma_consistency_score", None)
     luminance_score = skin_metrics.get("luminance_consistency_score", None)
+    tone_baseline_score = skin_metrics.get("tone_baseline_consistency_score", None)
     gate_debug["skin"] = {
         "score": s_score,
         "confidence": s_conf,
@@ -1086,6 +1133,7 @@ def apply_consistency_soft_gate(
         "score_mode": skin_mode,
         "chroma_score": chroma_score,
         "luminance_score": luminance_score,
+        "tone_baseline_score": tone_baseline_score,
     }
     reasons_all.extend(
         [reason for reason in skin_metrics.get("reasons", []) if reason != "SKIN_UNIFORMITY_EMPTY"]
@@ -1131,15 +1179,29 @@ def apply_consistency_soft_gate(
                 and float(luminance_score) < consistency.skin_split.severe_luminance_score
             ):
                 severe_luminance = True
+        severe_tone_baseline = (
+            lighting_stable
+            and tone_baseline_score is not None
+            and float(tone_baseline_score) < consistency.skin_strong_warn_th
+        )
+        warn_tone_baseline = (
+            lighting_stable
+            and tone_baseline_score is not None
+            and float(tone_baseline_score) < consistency.skin_soft_warn_th
+        )
 
         if risk_skip_skin_gate:
             gate_debug["skin"]["risk_gate_skip"] = True
         elif s_conf >= consistency.skin_min_conf:
-            severe_skin = severe_chroma or (skin_mode == "strict" and severe_luminance)
+            severe_skin = severe_chroma or (skin_mode == "strict" and severe_luminance) or severe_tone_baseline
             if severe_skin or float(s_score) < consistency.skin_strong_warn_th:
+                if severe_tone_baseline:
+                    reasons_all.append("SKIN_TONE_BASELINE_STRONG_WARN")
                 reasons_all.append("SKIN_UNIFORMITY_STRONG_WARN")
                 downgrade_pass_to_warn("SKIN_UNIFORMITY_STRONG_WARN")
-            elif float(s_score) < consistency.skin_soft_warn_th:
+            elif warn_tone_baseline or float(s_score) < consistency.skin_soft_warn_th:
+                if warn_tone_baseline:
+                    reasons_all.append("SKIN_TONE_BASELINE_WARN")
                 reasons_all.append("SKIN_UNIFORMITY_WARN")
                 downgrade_pass_to_warn("SKIN_UNIFORMITY_WARN")
         else:
@@ -1156,7 +1218,7 @@ def apply_consistency_soft_gate(
     }
     if d_valid and d_score is not None:
         reasons_all.extend(depth_3d_metrics.get("reasons", []))
-        if view_bucket in {"three_quarter", "profile_like"}:
+        if view_bucket in {"three_quarter", "profile_like", "side_90", "back_180"}:
             if d_conf >= consistency.depth3d_min_conf:
                 if float(d_score) < consistency.depth3d_strong_warn_th:
                     reasons_all.append("DEPTH_3D_LITE_STRONG_WARN")

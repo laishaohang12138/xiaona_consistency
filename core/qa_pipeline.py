@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import shutil
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +25,7 @@ from .qa_runtime import (
     FaceFeat,
     PoseFeat,
     RuntimeContext,
+    anchor_registry_snapshot,
     anchor_registry_summary,
     create_runtime_config,
     load_thresholds_from_file as load_runtime_thresholds_from_file,
@@ -30,6 +33,7 @@ from .qa_runtime import (
     save_thresholds_to_file,
 )
 from .qa_scoring import (
+    build_tone_reference_stats,
     build_quality_reference_stats,
     classify_module,
     filter_face_anchors_by_view,
@@ -37,6 +41,7 @@ from .qa_scoring import (
     get_identity_anchor_pool,
     get_profile_policy,
     get_quality_anchor_pool,
+    get_tone_anchor_pool,
     get_stats_for_bucket,
     make_recommendations,
     score_face_against_anchor_set,
@@ -45,8 +50,10 @@ from .qa_scoring import (
 )
 from .qa_utils import (
     SKIMAGE_SSIM_AVAILABLE,
+    canonicalize_view_lane,
     dedupe_keep_order,
     estimate_view_bucket_and_side,
+    get_face_size_bucket,
     get_quality_tolerances_by_face_size,
     image_read_bgr,
     list_images_in_dir,
@@ -71,6 +78,7 @@ def print_runtime_config(runtime: RuntimeContext) -> None:
     print(f"[CONFIG] PROVIDER_POLICY={config.provider_policy}")
     print(f"[CONFIG] PROVIDERS={runtime.providers.describe()}")
     print(f"[CONFIG] ANCHOR_REGISTRY_SUMMARY={anchor_registry_summary(config)}")
+    print(f"[CONFIG] LAYER_QUOTAS_LOADED={bool(config.layer_quotas.get('training_layers'))}")
     print("[CONFIG] FACE_CONF_MAP = linear_map_to_01(bbox_ratio, 0.006, 0.035)")
     print(f"[CONFIG] FACE_NO_RELIABLE_SIGNAL_TH = {config.review.face_no_signal_conf_th}")
     print(f"[CONFIG] MIN_CONF_FOR_STRICT_FAIL = {config.review.min_conf_for_strict_fail}")
@@ -139,6 +147,130 @@ def load_anchor_set(runtime: RuntimeContext) -> AnchorSet:
     )
     print(f"  Face Buckets => front={face_front} | three_quarter={face_3q} | profile_like={face_profile}")
     return anchors
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, set):
+        return sorted(_json_ready(item) for item in value)
+    if isinstance(value, dict):
+        return {str(key): _json_ready(node) for key, node in value.items()}
+    if isinstance(value, list):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_ready(item) for item in value]
+    return value
+
+
+def _build_threshold_snapshot(runtime: RuntimeContext, profile_name: str) -> Dict[str, Any]:
+    profile_thresholds = runtime.config.task_profiles.get(profile_name, {}).get("thresholds", {})
+    snapshot = {
+        "consistency": {
+            "mode": runtime.config.consistency.mode,
+            "constitution_min_conf": runtime.config.consistency.constitution_min_conf,
+            "skin_min_conf": runtime.config.consistency.skin_min_conf,
+            "depth3d_min_conf": runtime.config.consistency.depth3d_min_conf,
+            "constitution_soft_warn_th": runtime.config.consistency.constitution_soft_warn_th,
+            "constitution_strong_warn_th": runtime.config.consistency.constitution_strong_warn_th,
+            "skin_soft_warn_th": runtime.config.consistency.skin_soft_warn_th,
+            "skin_strong_warn_th": runtime.config.consistency.skin_strong_warn_th,
+            "depth3d_soft_warn_th": runtime.config.consistency.depth3d_soft_warn_th,
+            "depth3d_strong_warn_th": runtime.config.consistency.depth3d_strong_warn_th,
+            "skin_risk": _json_ready(runtime.config.consistency.skin_risk.__dict__),
+            "skin_split": _json_ready(runtime.config.consistency.skin_split.__dict__),
+            "skin_score_weights": {
+                "strict": _json_ready(runtime.config.consistency.skin_score_weights.strict.__dict__),
+                "chroma_dominant": _json_ready(runtime.config.consistency.skin_score_weights.chroma_dominant.__dict__),
+                "high_risk": _json_ready(runtime.config.consistency.skin_score_weights.high_risk.__dict__),
+            },
+        },
+        "quality_thresholds": runtime.config.quality_thresholds.to_json_dict(),
+        "task_profile_thresholds": _json_ready(profile_thresholds),
+    }
+    payload = json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    snapshot["hash"] = hashlib.sha1(payload).hexdigest()[:12]
+    return snapshot
+
+
+def _build_report_meta(
+    runtime: RuntimeContext,
+    target_profile: str,
+    anchors: AnchorSet,
+    input_count: int,
+) -> Dict[str, Any]:
+    profile_policy = get_profile_policy(runtime, target_profile)
+    return {
+        "schema_version": "qa_report_v2",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "active_profile": target_profile,
+        "review_policy": {
+            "active_profile_default": runtime.config.review.active_profile,
+            "strict_fail_min_conf": runtime.config.review.min_conf_for_strict_fail,
+            "face_no_signal_conf_th": runtime.config.review.face_no_signal_conf_th,
+        },
+        "profile_policy": _json_ready(profile_policy),
+        "provider_policy": _json_ready(runtime.config.provider_policy),
+        "providers": _json_ready(runtime.providers.describe()),
+        "anchor_registry_summary": anchor_registry_summary(runtime.config),
+        "anchor_registry_snapshot": anchor_registry_snapshot(runtime.config),
+        "anchor_paths_resolved": _json_ready(anchors.meta),
+        "layer_quotas": _json_ready(runtime.config.layer_quotas),
+        "threshold_snapshot": _build_threshold_snapshot(runtime, target_profile),
+        "engine": {
+            "face": runtime.engines.face_mode,
+            "pose": runtime.engines.pose_mode,
+            "ssim_backend": "skimage" if SKIMAGE_SSIM_AVAILABLE else "ncc_fallback",
+        },
+        "view_detector": {
+            "raw_buckets": ["front", "three_quarter", "profile_like"],
+            "canonical_lanes": ["front", "three_quarter", "side_90"],
+            "back_180_native_detection": False,
+        },
+        "input_count": int(input_count),
+    }
+
+
+def _apply_profile_view_policy(
+    target_profile: str,
+    policy: Dict[str, Any],
+    view_lane: str,
+    final_status: str,
+    overall_state: str,
+    reasons_all: List[str],
+) -> tuple[str, str]:
+    def downgrade(reason: str) -> None:
+        nonlocal final_status, overall_state
+        reasons_all.append(reason)
+        if final_status == "PASS":
+            final_status = "WARN"
+            overall_state = "WARN"
+
+    allowed_view_buckets = policy.get("allowed_view_buckets", [])
+    if isinstance(allowed_view_buckets, list) and len(allowed_view_buckets) > 0:
+        allowed = {str(item) for item in allowed_view_buckets}
+        if view_lane not in allowed:
+            downgrade("VIEW_LANE_NOT_ALLOWED_FOR_PROFILE")
+
+    for bucket in policy.get("soft_review_buckets", []) or []:
+        if view_lane == str(bucket):
+            if view_lane == "three_quarter":
+                reasons_all.append("THREE_QUARTER_SOFT_REVIEW")
+            else:
+                reasons_all.append("VIEW_LANE_SOFT_REVIEW")
+
+    pass_cap_mode = str(policy.get("pass_cap_mode", "none"))
+    if pass_cap_mode == "always_warn" and final_status == "PASS":
+        downgrade("PROFILE_PASS_CAPPED_TO_WARN")
+    elif pass_cap_mode == "warn_non_front" and view_lane != "front" and final_status == "PASS":
+        downgrade("NON_FRONT_PASS_CAPPED_TO_WARN")
+    elif pass_cap_mode == "body_gold_front_core":
+        if view_lane == "side_90" and final_status == "PASS":
+            downgrade("PROFILE_LIKE_NO_SIDE_ANCHOR_PASS_CAPPED")
+        elif target_profile == "body_gold_fullbody" and view_lane == "unknown":
+            reasons_all.append("BODY_GOLD_VIEW_LANE_UNKNOWN")
+
+    return final_status, overall_state
 
 
 def calibrate_quality_thresholds(
@@ -395,6 +527,7 @@ def _apply_threshold_override(
                 "chroma": ("chroma", float),
                 "luminance": ("luminance", float),
                 "knee": ("knee", float),
+                "baseline": ("baseline", float),
             }
             for preset_name, preset_node in skin_score_weights_node.items():
                 if not isinstance(preset_node, dict):
@@ -520,7 +653,9 @@ def _run_pipeline_impl(
     anchors = load_anchor_set(runtime)
     face_identity_anchors = get_identity_anchor_pool(runtime, target_profile, anchors)
     face_quality_anchors = get_quality_anchor_pool(runtime, target_profile, anchors)
+    face_tone_anchors = get_tone_anchor_pool(runtime, target_profile, anchors)
     quality_ref_stats = build_quality_reference_stats(face_quality_anchors)
+    tone_ref_stats = build_tone_reference_stats(face_tone_anchors)
 
     if len(face_identity_anchors) == 0:
         print("[警告] 没有可用面部身份锚点，将导致 face 模块不可用")
@@ -529,7 +664,9 @@ def _run_pipeline_impl(
     if len(anchors.full_pose_feats) == 0:
         print("[警告] 没有全身锚点，将导致 full 模块不可用")
 
-    report: List[Dict[str, Any]] = []
+    report_items: List[Dict[str, Any]] = []
+    print(f"[RUN] TONE_FACE_REFS={len(face_tone_anchors)}")
+    report_meta = _build_report_meta(runtime, target_profile, anchors, len(images))
     print(f"\n[运行中] 任务模板: {target_profile}")
     print(f"[运行中] 身份锚池(face): {len(face_identity_anchors)}")
     print(f"[运行中] 质量锚池(face-like): {len(face_quality_anchors)}")
@@ -550,6 +687,23 @@ def _run_pipeline_impl(
             cand_face = extract_face_feat(runtime, img, img_path)
             cand_pose = extract_pose_feat(runtime, img)
             view_bucket, view_side, yaw_proxy = estimate_view_bucket_and_side(cand_face)
+            view_lane = canonicalize_view_lane(cand_face, view_bucket)
+            face_size_bucket = get_face_size_bucket(cand_face.bbox_area_ratio if cand_face.ok else 0.0)
+            tone_bucket_stats = get_stats_for_bucket(tone_ref_stats, face_size_bucket)
+            tone_reference_lab = None
+            if (
+                len(tone_bucket_stats.get("L", [])) > 0
+                and len(tone_bucket_stats.get("a", [])) > 0
+                and len(tone_bucket_stats.get("b", [])) > 0
+            ):
+                tone_reference_lab = np.array(
+                    [
+                        float(np.mean(tone_bucket_stats["L"])),
+                        float(np.mean(tone_bucket_stats["a"])),
+                        float(np.mean(tone_bucket_stats["b"])),
+                    ],
+                    dtype=np.float32,
+                )
 
             constitution_metrics = extract_body_constitution_metrics(
                 runtime,
@@ -558,11 +712,17 @@ def _run_pipeline_impl(
                 cand_pose,
                 view_bucket=view_bucket,
             )
-            skin_metrics = extract_skin_consistency_metrics(runtime, img, cand_face, cand_pose)
+            skin_metrics = extract_skin_consistency_metrics(
+                runtime,
+                img,
+                cand_face,
+                cand_pose,
+                tone_reference_lab=tone_reference_lab,
+            )
             depth_3d_metrics = extract_depth_3d_lite_metrics(
                 cand_face,
                 cand_pose,
-                view_bucket=view_bucket,
+                view_bucket=view_lane,
                 yaw_proxy=yaw_proxy,
             )
 
@@ -570,12 +730,12 @@ def _run_pipeline_impl(
             skin_score = skin_metrics.get("skin_uniformity_score", None)
             depth_3d_score = depth_3d_metrics.get("depth_3d_score", None)
 
-            face_identity_anchors_view = filter_face_anchors_by_view(face_identity_anchors, view_bucket)
+            face_identity_anchors_view = filter_face_anchors_by_view(face_identity_anchors, view_lane)
             face_score_o, face_conf_o, face_reasons_o, face_debug_o = score_face_against_anchor_set(
                 runtime,
                 cand_face,
                 face_identity_anchors_view,
-                view_bucket=view_bucket,
+                view_bucket=view_lane,
             )
 
             face_score = face_score_o
@@ -583,6 +743,7 @@ def _run_pipeline_impl(
             face_reasons = face_reasons_o
             face_debug = {
                 "view_bucket": view_bucket,
+                "view_lane": view_lane,
                 "view_side": view_side,
                 "yaw_proxy": yaw_proxy,
                 "flip_canonicalized": False,
@@ -597,7 +758,7 @@ def _run_pipeline_impl(
                     runtime,
                     cand_face_flip,
                     face_identity_anchors_view,
-                    view_bucket=view_bucket,
+                    view_bucket=view_lane,
                 )
                 face_debug["flipped"] = face_debug_f
                 if face_score_f > face_score_o:
@@ -609,11 +770,12 @@ def _run_pipeline_impl(
             upper_score, upper_conf, upper_reasons, upper_debug = score_upper_against_anchor_set(
                 cand_pose,
                 anchors.upper_pose_feats,
-                view_bucket=view_bucket,
+                view_bucket=view_lane,
             )
             full_score, full_conf, full_reasons, full_debug = score_full_against_anchor_set(
                 cand_pose,
                 anchors.full_pose_feats,
+                view_bucket=view_lane,
             )
 
             face_state, face_state_reasons = classify_module(
@@ -685,22 +847,37 @@ def _run_pipeline_impl(
                 qtol = get_quality_tolerances_by_face_size(cand_face.bbox_area_ratio, quality_thresholds)
                 bucket = qtol["bucket"]
                 bucket_stats = get_stats_for_bucket(quality_ref_stats, bucket)
+                tone_bucket_stats = get_stats_for_bucket(tone_ref_stats, bucket)
 
                 quality_debug["face_size_bucket"] = bucket
                 quality_debug["bucket_quality_ref_count"] = bucket_stats.get("count", 0)
+                quality_debug["bucket_tone_ref_count"] = tone_bucket_stats.get("count", 0)
                 quality_debug["bucket_quality_tolerances"] = qtol
 
                 if cand_face.lab_mean is not None:
                     cand_L = float(cand_face.lab_mean[0])
+                    cand_a = float(cand_face.lab_mean[1])
+                    cand_b = float(cand_face.lab_mean[2])
                     quality_debug["candidate_face_L"] = cand_L
+                    quality_debug["candidate_face_ab"] = [cand_a, cand_b]
                     if cand_L < qtol["abs_luma_warn"]:
                         extra_flags.append("FACE_UNDEREXPOSED_DARK")
 
-                    if len(bucket_stats.get("L", [])) > 0:
-                        anchor_L_mean = float(np.mean(bucket_stats["L"]))
-                        quality_debug["anchor_face_L_mean_bucket"] = anchor_L_mean
-                        if cand_L < (anchor_L_mean - qtol["dark_delta_L"]):
-                            extra_flags.append("FACE_DARKER_THAN_ANCHOR")
+                    if len(tone_bucket_stats.get("L", [])) > 0:
+                        tone_L_mean = float(np.mean(tone_bucket_stats["L"]))
+                        quality_debug["tone_face_L_mean_bucket"] = tone_L_mean
+                        if cand_L < (tone_L_mean - qtol["dark_delta_L"]):
+                            extra_flags.append("FACE_DARKER_THAN_TONE_ANCHOR")
+                        elif cand_L > (tone_L_mean + qtol["dark_delta_L"]):
+                            extra_flags.append("FACE_BRIGHTER_THAN_TONE_ANCHOR")
+
+                    if len(tone_bucket_stats.get("a", [])) > 0 and len(tone_bucket_stats.get("b", [])) > 0:
+                        tone_a_mean = float(np.mean(tone_bucket_stats["a"]))
+                        tone_b_mean = float(np.mean(tone_bucket_stats["b"]))
+                        quality_debug["tone_face_ab_mean_bucket"] = [tone_a_mean, tone_b_mean]
+                        quality_debug["tone_face_delta_ab_bucket"] = float(
+                            np.linalg.norm(np.array([cand_a - tone_a_mean, cand_b - tone_b_mean], dtype=np.float32))
+                        )
 
                 if cand_face.lap_var > 0:
                     quality_debug["candidate_face_lap_var"] = cand_face.lap_var
@@ -735,7 +912,7 @@ def _run_pipeline_impl(
                 constitution_metrics=constitution_metrics,
                 skin_metrics=skin_metrics,
                 depth_3d_metrics=depth_3d_metrics,
-                view_bucket=view_bucket,
+                view_bucket=view_lane,
             )
 
             hard_quality_flags = set(policy.get("hard_quality_flags", set()))
@@ -772,19 +949,21 @@ def _run_pipeline_impl(
                     overall_state = "WARN"
                     reasons_all.append("BODY_GOLD_SKIN_LIGHTING_RISK_PASS_CAPPED")
 
-            if target_profile == "body_gold_fullbody":
-                if view_bucket == "profile_like" and final_status == "PASS":
-                    final_status = "WARN"
-                    overall_state = "WARN"
-                    reasons_all.append("PROFILE_LIKE_NO_SIDE_ANCHOR_PASS_CAPPED")
-                elif view_bucket == "three_quarter":
-                    reasons_all.append("THREE_QUARTER_SOFT_REVIEW")
+            final_status, overall_state = _apply_profile_view_policy(
+                target_profile=target_profile,
+                policy=policy,
+                view_lane=view_lane,
+                final_status=final_status,
+                overall_state=overall_state,
+                reasons_all=reasons_all,
+            )
 
             reasons_all = dedupe_keep_order(reasons_all)
 
             result_node = {
                 "image": img_path.name,
                 "task_profile": target_profile,
+                "quota_bucket": policy.get("quota_bucket"),
                 "status": final_status,
                 "scores": {
                     "face": round(face_score, 4),
@@ -838,8 +1017,10 @@ def _run_pipeline_impl(
                     "quality_gate_soft_hits": soft_hits,
                     "quality_gate_hard_hits": hard_hits,
                     "quality_anchor_pool_mode": policy.get("quality_anchor_pool"),
+                    "tone_anchor_pool_mode": policy.get("tone_anchor_pool"),
                     "quality_ref_stats": quality_debug,
                     "view_bucket": view_bucket,
+                    "view_lane": view_lane,
                     "view_side": view_side,
                     "yaw_proxy": yaw_proxy,
                     "identity_anchor_count_view": len(face_identity_anchors_view),
@@ -848,7 +1029,7 @@ def _run_pipeline_impl(
             }
 
             result_node["recommendations"] = make_recommendations(runtime, result_node, target_profile)
-            report.append(result_node)
+            report_items.append(result_node)
 
             constitution_show = "NA" if constitution_score is None else f"{constitution_score:.3f}"
             skin_show = "NA" if skin_score is None else f"{skin_score:.3f}"
@@ -859,31 +1040,32 @@ def _run_pipeline_impl(
                 print(
                     f"   PASS | overall={overall_score:.3f} | face={face_score:.3f} upper={upper_score:.3f} full={full_score:.3f} "
                     f"| constitution={constitution_show} skin={skin_show} depth3d={depth_show} "
-                    f"| view={view_bucket}/{view_side} | faceAnchors={len(face_identity_anchors_view)}"
+                    f"| view={view_bucket}->{view_lane}/{view_side} | faceAnchors={len(face_identity_anchors_view)}"
                 )
             elif final_status == "WARN":
                 shutil.copy2(img_path, config.paths.dir_out_warn / img_path.name)
                 print(
                     f"   WARN | overall={overall_score:.3f} | face={face_score:.3f} upper={upper_score:.3f} full={full_score:.3f} "
                     f"| constitution={constitution_show} skin={skin_show} depth3d={depth_show} "
-                    f"| view={view_bucket}/{view_side} | faceAnchors={len(face_identity_anchors_view)}"
+                    f"| view={view_bucket}->{view_lane}/{view_side} | faceAnchors={len(face_identity_anchors_view)}"
                 )
             else:
                 shutil.copy2(img_path, config.paths.dir_out_fail / img_path.name)
                 print(
                     f"   FAIL | overall={overall_score:.3f} | face={face_score:.3f} upper={upper_score:.3f} full={full_score:.3f} "
                     f"| constitution={constitution_show} skin={skin_show} depth3d={depth_show} "
-                    f"| view={view_bucket}/{view_side} | faceAnchors={len(face_identity_anchors_view)}"
+                    f"| view={view_bucket}->{view_lane}/{view_side} | faceAnchors={len(face_identity_anchors_view)}"
                 )
 
         except Exception as exc:
             print(f"   FAIL (异常): {exc}")
             traceback.print_exc()
 
-            report.append(
+            report_items.append(
                 {
                     "image": img_path.name,
                     "task_profile": target_profile,
+                    "quota_bucket": policy.get("quota_bucket"),
                     "status": "FAIL",
                     "scores": {
                         "face": 0.0,
@@ -924,8 +1106,12 @@ def _run_pipeline_impl(
                 pass
 
     config.paths.dir_output.mkdir(parents=True, exist_ok=True)
+    report_payload = {
+        "report_meta": report_meta,
+        "items": report_items,
+    }
     with open(config.paths.report_file, "w", encoding="utf-8") as file:
-        json.dump(report, file, indent=2, ensure_ascii=False)
+        json.dump(report_payload, file, indent=2, ensure_ascii=False)
 
     print("\n[完工] 质检完成 [OK]")
     print(f"[报告] {config.paths.report_file}")

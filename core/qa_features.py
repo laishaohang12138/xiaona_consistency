@@ -189,6 +189,29 @@ def compute_face_geom_from_kps5(
     }
 
 
+def _joint_angle_deg(
+    xy: np.ndarray,
+    vis: np.ndarray,
+    idx_a: int,
+    idx_b: int,
+    idx_c: int,
+    vis_th: float = 0.35,
+) -> Optional[float]:
+    if any(vis[idx] <= vis_th for idx in [idx_a, idx_b, idx_c]):
+        return None
+
+    v1 = xy[idx_a] - xy[idx_b]
+    v2 = xy[idx_c] - xy[idx_b]
+    n1 = float(np.linalg.norm(v1))
+    n2 = float(np.linalg.norm(v2))
+    if n1 < 1e-6 or n2 < 1e-6:
+        return None
+
+    cos_theta = float(np.dot(v1, v2) / max(1e-6, n1 * n2))
+    cos_theta = clamp(cos_theta, -1.0, 1.0)
+    return float(math.degrees(math.acos(cos_theta)))
+
+
 def extract_face_feat(
     runtime: RuntimeContext,
     img_bgr: np.ndarray,
@@ -286,7 +309,10 @@ def extract_pose_feat(runtime: RuntimeContext, img_bgr: np.ndarray) -> PoseFeat:
         NOSE = 0
         L_SHOULDER, R_SHOULDER = 11, 12
         L_HIP, R_HIP = 23, 24
+        L_KNEE, R_KNEE = 25, 26
         L_ANKLE, R_ANKLE = 27, 28
+        L_HEEL, R_HEEL = 29, 30
+        L_FOOT, R_FOOT = 31, 32
 
         ankles = [xy[L_ANKLE], xy[R_ANKLE]]
         ankles_vis = [vis[L_ANKLE], vis[R_ANKLE]]
@@ -340,6 +366,14 @@ def extract_pose_feat(runtime: RuntimeContext, img_bgr: np.ndarray) -> PoseFeat:
             else:
                 spine_angle_deg = 90.0
             upper_geom["spine_angle_deg"] = spine_angle_deg
+            upper_geom["shoulder_hip_center_offset_norm"] = abs(spine_dx) / max(1e-6, upper_geom["torso_len_norm"])
+            if "shoulder_width_norm" in upper_geom and "hip_width_norm" in upper_geom:
+                upper_geom["hip_shoulder_ratio"] = upper_geom["hip_width_norm"] / max(
+                    1e-6, upper_geom["shoulder_width_norm"]
+                )
+                upper_geom["torso_compactness"] = (
+                    upper_geom["shoulder_width_norm"] + upper_geom["hip_width_norm"]
+                ) / max(1e-6, 2.0 * upper_geom["torso_len_norm"])
             if spine_angle_deg > 12.0:
                 reasons.append("HIP_POP_DETECTED_POSSIBLE_MODEL_POSE")
 
@@ -358,6 +392,23 @@ def extract_pose_feat(runtime: RuntimeContext, img_bgr: np.ndarray) -> PoseFeat:
             leg_len = float(np.linalg.norm(hip_mid - ankles_mid))
             if subject_height > 1e-5:
                 full_geom["leg_ratio"] = leg_len / subject_height
+                full_geom["ankle_gap_norm"] = float(np.linalg.norm(xy[L_ANKLE] - xy[R_ANKLE])) / subject_height
+
+        knee_angles = [
+            _joint_angle_deg(xy, vis, L_HIP, L_KNEE, L_ANKLE),
+            _joint_angle_deg(xy, vis, R_HIP, R_KNEE, R_ANKLE),
+        ]
+        knee_angles = [float(angle) for angle in knee_angles if angle is not None]
+        if len(knee_angles) > 0:
+            full_geom["leg_straightness_min_deg"] = float(min(knee_angles))
+            full_geom["leg_straightness_mean_deg"] = float(np.mean(np.array(knee_angles, dtype=np.float32)))
+
+        foot_lengths = []
+        for heel_idx, foot_idx in [(L_HEEL, L_FOOT), (R_HEEL, R_FOOT)]:
+            if vis[heel_idx] > 0.35 and vis[foot_idx] > 0.35 and subject_height > 1e-5:
+                foot_lengths.append(float(np.linalg.norm(xy[heel_idx] - xy[foot_idx])) / subject_height)
+        if len(foot_lengths) > 0:
+            full_geom["foot_length_proxy_norm"] = float(np.mean(np.array(foot_lengths, dtype=np.float32)))
 
         feat.full_geom = full_geom
 
