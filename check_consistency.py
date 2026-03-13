@@ -84,7 +84,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--profile",
-        help="Override the active task profile for QA mode, e.g. body_gold_fullbody.",
+        help="Override the active task profile for QA mode, for example the BODY GOLD front-core profile.",
     )
     parser.add_argument(
         "--mode",
@@ -126,6 +126,7 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
     )
     return 0
 
+
 __all__ = [
     "AnchorSet",
     "EngineState",
@@ -145,6 +146,7 @@ __all__ = [
     "run_pipeline",
     "save_thresholds_to_file",
 ]
+
 
 if __name__ == "__main__":
     raise SystemExit(cli())
