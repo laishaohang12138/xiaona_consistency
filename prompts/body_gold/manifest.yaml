@@ -1,21 +1,68 @@
 prompt_asset:
-  id: body_gold_bg01_v1
+  id: body_gold_flow_runtime_v1_1F_compat
   scope: BODY_GOLD
-  status: frozen
-  version: v1
-  source_import: D:/xiaona_consistency/prompts/archive/body_gold_master_import_2026-03-11.txt
+  status: active
+  version: v1.1F-compat
+  source_import: D:/xiaona_consistency/prompts/archive/body_gold_v1_1F_compat_flow_runtime_pack_2026-03-13.txt
   refs_required:
     - ref_1_face_master
     - ref_2_full_body_master
   refs_optional:
     - ref_3_upper_support_94
     - ref_3_upper_support_97
-  compose_order:
-    - universal_base_v1.txt
-    - shot_plugin_bg01_front_neutral_symmetry_v1.txt
-    - universal_negative_v1.txt
+  runtime_presets:
+    flow_first_pass:
+      base: flow_runtime_base_v1_1F_compat.txt
+      plugin_family: BG-01~BG-12
+      negatives:
+        - negative_core_v1_1F.txt
+    flow_shortlist_reroll:
+      base: flow_runtime_base_v1_1F_compat.txt
+      plugin_family: BG-01~BG-12
+      negatives:
+        - negative_core_v1_1F.txt
+        - negative_finish_v1_1F.txt
+    shadow_observation:
+      base: flow_runtime_base_v1_1F_compat.txt
+      plugin_family: BG-13~BG-16
+      negatives:
+        - negative_core_v1_1F.txt
+        - negative_shadow_v1_1F.txt
+    alt_experimental:
+      base: flow_runtime_base_v1_1F_compat.txt
+      plugin_family:
+        - BG-05A
+        - BG-06A
+        - BG-09A
+      negatives:
+        - negative_core_v1_1F.txt
+  plugin_registry:
+    main:
+      - shot_plugin_bg01_front_neutral_symmetry_v1_1F.txt
+      - shot_plugin_bg02_front_stable_natural_stance_v1_1F.txt
+      - shot_plugin_bg03_front_subtle_weight_bias_left_v1_1F.txt
+      - shot_plugin_bg04_front_subtle_weight_bias_right_v1_1F.txt
+      - shot_plugin_bg05_three_quarter_left_static_v1_1F.txt
+      - shot_plugin_bg06_three_quarter_right_static_v1_1F.txt
+      - shot_plugin_bg07_three_quarter_left_subtle_weight_bias_v1_1F.txt
+      - shot_plugin_bg08_three_quarter_right_subtle_weight_bias_v1_1F.txt
+      - shot_plugin_bg09_front_lower_limb_safety_v1_1F.txt
+      - shot_plugin_bg10_front_static_staggered_v1_1F.txt
+      - shot_plugin_bg11_three_quarter_left_lower_limb_read_v1_1F.txt
+      - shot_plugin_bg12_three_quarter_right_lower_limb_read_v1_1F.txt
+    shadow:
+      - shot_plugin_bg13_side_90_left_shadow_v1_1F.txt
+      - shot_plugin_bg14_side_90_right_shadow_v1_1F.txt
+      - shot_plugin_bg15_back_180_neutral_shadow_v1_1F.txt
+      - shot_plugin_bg16_back_180_heel_spacing_shadow_v1_1F.txt
+    alt:
+      - shot_plugin_bg05a_three_quarter_left_depth_read_v1_1F.txt
+      - shot_plugin_bg06a_three_quarter_right_depth_read_v1_1F.txt
+      - shot_plugin_bg09a_front_toe_heel_read_micro_open_v1_1F.txt
   notes:
     - BODY GOLD only
-    - not a whole-project master prompt
-    - use as calibration prompt asset, not as style prompt
-
+    - flow runtime base plus one plugin family lane plus the matching negative stack
+    - old BG numbering semantics are preserved and must not be rebound
+    - BG-07 and BG-08 remain subtle three-quarter weight-bias plugins
+    - BG-10 remains front static staggered and must stay non-dynamic
+    - negative_current_reference.txt is archive/reference only and not part of the active runtime compose

@@ -1,0 +1,11 @@
+[SHOT PLUGIN | BG-06A THREE-QUARTER RIGHT DEPTH READ]
+Pose: static standing calibration pose.
+Body rotates approximately 40-45 degrees to the right.
+Head returns only slightly toward camera.
+Shoulders stay calm.
+Pelvis stays visually stable.
+Weight distribution remains calm and nearly even.
+Hands relaxed at sides with a clear narrow visible air gap from the thighs.
+No arm-thigh contact.
+Ribcage-to-pelvis thickness and waist continuity must remain readable.
+Goal: stronger three-quarter spatial thickness read while remaining technical and quiet.

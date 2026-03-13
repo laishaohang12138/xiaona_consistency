@@ -1,0 +1,12 @@
+[SHOT PLUGIN | BG-16 BACK-180 HEEL-SPACING SHADOW]
+Pose: static back-facing technical calibration pose with minimal heel spacing.
+Body faces directly away from camera.
+Head aligns naturally with the body.
+Shoulders calm and nearly level.
+Pelvis neutral and visually stable.
+Weight evenly distributed.
+Heels separated only by a small natural gap.
+Calf lines, Achilles lines, heel shapes, and posterior leg symmetry remain clearly readable.
+Arms relaxed with slight clean separation from the torso.
+No torso twist. No look-back gesture.
+Goal: posterior lower-body constitutional read.

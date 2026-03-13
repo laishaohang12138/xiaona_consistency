@@ -1,9 +1,23 @@
 [REFERENCE PRIORITY RULE | MUST BE FIRST]
-Ref #1 = FACE MASTER (Identity + Craniofacial Anchor). Highest priority for identity and face geometry. Copy exactly.
-Ref #2 = FULL BODY MASTER (Proportion + Framing + Body Tone Baseline Anchor). Highest priority for body proportions, full-body framing, and non-facial body tone baseline.
-Ref #3 = UPPER SUPPORT anchor only if shoulders/neck drift.
-Conflict rule: Ref #1 always wins for face identity and facial geometry; Ref #2 always wins for body proportions, body architecture, full-body framing, and body-side tone baseline.
+Ref #1 = FACE MASTER (Identity Geometry Anchor). Highest priority for facial identity geometry.
+Ref #2 = FULL BODY MASTER (Body Architecture + Framing + Global Skin Read Anchor). Highest priority for body proportions, body architecture, full-body framing, and overall skin read.
+Ref #3 = UPPER SUPPORT anchor only if shoulders, neck, clavicle, or upper-boundary drift appears.
+Conflict rule: Ref #1 always wins for facial identity geometry. Ref #2 always wins for body proportions, body architecture, full-body framing, and full-body skin read. Ref #3 is auxiliary only.
 Single person only. No redesign. No beautify. No face replacement style drift.
+
+[ANCHOR ROLE SPLIT | PROMPT DOCTRINE]
+Ref #1 governs facial identity geometry only:
+facial proportions, eye-nose-lip spacing, jawline, chin shape, nose structure, lip shape, hairline, and expression read.
+
+Ref #2 governs body architecture and global skin read:
+full-body proportions, shoulder-pelvis relationship, waistline, leg shape, full-body framing,
+and the neutral-cool skin palette from face to neck, torso, arms, legs, knees, calves, ankles, and feet.
+
+If Ref #1 facial skin appears paler than the global body read, preserve Ref #1 facial geometry exactly,
+but harmonize facial luminance and chroma into the same overall skin family as Ref #2.
+
+Ref #2 must never alter facial feature geometry.
+Ref #1 must never override body proportions or full-body framing.
 
 [SUBJECT / PURPOSE]
 Subject: MODEL A "Xiao Na" - Master Reference Clone.
@@ -12,10 +26,10 @@ Calibration body study only. Neutral full-body reference for identity + body pro
 Non-fashion, non-sensual, non-erotic, non-editorial. Do not stylize.
 
 [IDENTITY HARD-LOCK]
-Identity must match Ref #1 exactly.
+Facial identity geometry must match Ref #1 exactly.
 Do NOT beautify.
 Do NOT change facial proportions.
-Do NOT make the face more generic, younger, cuter, more glamorous, or more "influencer-like".
+Do NOT make the face more generic, younger, cuter, more glamorous, or more influencer-like.
 Layout Lock: inter-feature distances consistent with Ref #1.
 Ratio Lock: face width / face length ratio consistent with Ref #1.
 Face geometry must remain stable across the whole batch.
@@ -38,16 +52,17 @@ No additional accessories.
 [SKIN / TEXTURE / LIGHTING LOCK]
 Lighting: soft studio broad lighting with subtle rim light and soft frontal fill.
 Even exposure from head to toe.
-CRITICAL: uniform skin tone from face to neck, arms, abdomen, thighs, knees, calves, ankles, and feet.
-Legs must match the face in brightness and tone.
-No darker legs. No darker knees. No orange cast. No tan shift.
-White balance: neutral.
+CRITICAL: uniform skin read from face to neck, arms, abdomen, thighs, knees, calves, ankles, and feet.
+Legs must match the face in luminance family and overall chroma family.
+White balance: strictly neutral-cool.
+Skin palette: low-saturation, neutral-cool, clean and healthy, aligned to Ref #2.
 Skin texture: realistic natural skin texture, visible natural pores, fine vellus hair, subtle uneven highlights, realistic micro-contrast.
 Skin must look real and healthy, smooth but not waxy.
 No beauty filter. No airbrushed skin. No plastic skin. No over-smoothed limbs.
-Face brightness must stay natural and consistent with the active tone/body anchor baseline.
+Face geometry must stay locked to Ref #1.
+Face skin brightness must harmonize with the global full-body skin read from Ref #2.
 Avoid auto-exposure darkening.
-Add enough frontal fill so face and legs stay equally bright.
+Add enough frontal fill so face, knees, calves, ankles, and feet stay in the same exposure family.
 No harsh specular hot spots.
 
 [BACKGROUND / STUDIO FIX]
@@ -57,6 +72,12 @@ Floor: subtle natural floor shadow grounding the feet.
 No bright white background.
 No black void background.
 No textured wall.
+
+[LAYOUT CONSISTENCY]
+Vertical full-body framing preferred.
+Keep clear breathing space above the head and below the feet.
+Do not crop the silhouette.
+The whole body must read clearly in one glance.
 
 [BODY ARCHITECTURE HARD-LOCK]
 Slim Chinese female, 170cm visual height, 50kg visual weight, slender professional model physique, long-leg proportion, measurements B82cm/W59cm/H86cm, 1:7.5 to 1:8 head-to-body ratio.
@@ -112,23 +133,31 @@ No wide-angle look.
 No zoom crop inconsistency.
 Whole body scale should remain stable across the batch.
 
-[POSE GLOBAL RULES]
-Static standing reference or subtle weight shift only.
+[POSE GLOBAL RULES | NATURAL LOW-ENTROPY]
+Static technical standing reference only.
+Neutral symmetry or very subtle natural asymmetry only.
+Body must obey natural anatomy, gravity, perspective, and joint logic.
 Choose only one main pose logic per image.
 No exaggerated walking stride.
-No hip pop.
-No crossed legs.
-No chest-forward pose.
-No contrapposto.
+No visible contrapposto.
+No visible hip pop.
 No dramatic twist.
 No fashion-model attitude.
+No runway feeling.
+No chest-forward display pose.
+No fake dynamic transition.
 Hands relaxed and natural.
 Hands must not cover knees.
-Shoulders relaxed.
+Hands must not press into torso or thighs.
+Shoulders relaxed and calm.
 Neck natural.
 No motion blur.
 No occlusion of key joints.
+If weight distribution is not perfectly even, it must remain minimal and visually calm.
+Pelvis must stay visually stable.
+Shoulders must stay calm and nearly level.
 Body language must feel neutral, technical, and reference-like.
+The image must still read as a calibration reference, not as a lifestyle pose.
 
 [IMAGE QUALITY LOCK]
 Photorealistic.

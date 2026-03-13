@@ -1,0 +1,14 @@
+[SHOT PLUGIN | BG-09 FRONT LOWER-LIMB SAFETY]
+Pose: static front-facing calibration standing pose with explicit lower-limb readability priority.
+Body faces camera directly.
+Head faces camera directly.
+Shoulders level and calm.
+Pelvis neutral and visually stable.
+Weight evenly distributed.
+Feet separated only by a small natural gap.
+Hands remain clear of thighs and knees, with a narrow visible air gap from the outer thighs.
+Both kneecaps clearly readable.
+Both ankle bones and Achilles lines clearly readable.
+Heels, arches, and all toes fully visible and unobstructed.
+Leg silhouette must stay clean from hip to toe.
+Goal: clean front knee-ankle-foot constitutional read.

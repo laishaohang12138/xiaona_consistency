@@ -1,0 +1,14 @@
+[SHOT PLUGIN | BG-04 FRONT SUBTLE WEIGHT BIAS RIGHT]
+Pose: static front-facing calibration standing pose with a very subtle right-side weight bias.
+Body faces camera directly.
+Head faces camera directly.
+Right leg bears slightly more load.
+Left leg remains quiet and relaxed with only minimal softening.
+Pelvis stays visually stable.
+No visible hip pop.
+Shoulders remain calm and nearly level.
+This must still read as a technical calibration reference, not a fashion pose.
+Hands relaxed at sides with a clear narrow visible air gap from the outer thighs.
+No arm-thigh contact.
+Knees, ankles, and both feet remain fully visible and readable.
+Goal: low-entropy natural asymmetry without runway energy.

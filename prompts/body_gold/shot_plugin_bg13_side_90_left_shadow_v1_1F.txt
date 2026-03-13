@@ -1,0 +1,12 @@
+[SHOT PLUGIN | BG-13 SIDE-90 LEFT SHADOW]
+Pose: static pure side-view technical calibration pose.
+Body rotates 90 degrees to the left.
+Head aligns naturally with the body.
+No looking back toward camera.
+Shoulders stay calm and naturally stacked.
+Pelvis remains neutral and visually stable.
+Spine remains natural and quiet.
+Arms relaxed with a small clean separation from the torso so the body contour remains readable.
+Legs straight but not rigid.
+Feet remain natural and quiet in a narrow side-view stance.
+Goal: sagittal-plane body depth observation.

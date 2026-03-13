@@ -1,0 +1,13 @@
+[SHOT PLUGIN | BG-06 THREE-QUARTER RIGHT STATIC]
+Pose: static standing calibration pose.
+Body rotates approximately 30-35 degrees to the right.
+Head follows the body naturally, with only a minimal return toward camera to preserve stable identity read.
+Shoulders remain calm and nearly level.
+Pelvis remains visually stable.
+Weight distribution stays calm and nearly even.
+Hands relaxed at sides with a clear narrow visible air gap from the thighs.
+No arm-thigh contact.
+No dramatic neck twist.
+Clavicle line, waist continuity, and abdomen read remain clean.
+Both knees, ankles, and feet remain fully visible with only minimal overlap.
+Goal: clean three-quarter constitutional read.

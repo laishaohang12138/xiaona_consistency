@@ -1,0 +1,21 @@
+[SHOT PLUGIN | BG-01 FRONT NEUTRAL SYMMETRY]
+Pose: static neutral front-facing calibration standing pose.
+Body faces camera directly.
+Head faces camera directly.
+Both shoulders level and calm.
+Pelvis neutral and visually stable.
+Weight evenly distributed on both feet.
+Both legs straight but not rigidly locked.
+Feet parallel or very slightly outward in a natural stance.
+Hands relaxed at sides with a clear narrow visible air gap from the outer thighs.
+Arms must not press into the torso or thighs.
+No arm-thigh contact.
+No compression of the outer thigh silhouette.
+Elbows soft and natural.
+Clavicles clearly readable.
+Waistline clearly readable.
+Navel clearly visible.
+Knees fully visible and facing forward.
+Ankles and both feet fully visible and unobstructed.
+Maintain balanced left-right symmetry.
+Goal: front constitutional baseline.

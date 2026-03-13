@@ -1,0 +1,13 @@
+[SHOT PLUGIN | BG-11 THREE-QUARTER LEFT LOWER-LIMB READ]
+Pose: static standing calibration pose.
+Body rotates approximately 25-30 degrees to the left.
+Head follows the body naturally with a minimal return toward camera.
+Lower-limb readability takes priority over pose character.
+Pelvis stays visually stable.
+Weight remains calm and nearly even.
+No leg crossing.
+Only minimal lower-limb overlap is allowed.
+Both knees and both ankles must remain clearly readable.
+Rear heel shape and front toe shape remain readable.
+Hands remain clear of thighs and knees.
+Goal: lower-limb constitutional read under mild depth.

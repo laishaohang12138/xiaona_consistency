@@ -1,0 +1,15 @@
+[SHOT PLUGIN | BG-02 FRONT STABLE NATURAL STANCE]
+Pose: static front-facing calibration standing pose in a stable natural stance.
+Body faces camera directly.
+Head faces camera directly.
+Shoulders remain calm and nearly level.
+Pelvis remains neutral and visually stable.
+Weight distribution remains even and quiet.
+Feet rest in a small natural stance width.
+No stepping.
+No motion cue.
+Hands relaxed at sides with a clear narrow visible air gap from the outer thighs.
+No arm-thigh contact.
+Clavicles, waistline, and navel remain readable.
+Both knees, ankles, heels, and toes remain fully visible.
+Goal: front constitutional read with slightly more natural standing comfort, still technical and low-entropy.

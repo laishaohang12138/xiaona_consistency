@@ -1,0 +1,12 @@
+[SHOT PLUGIN | BG-15 BACK-180 NEUTRAL SHADOW]
+Pose: static back-facing technical calibration pose.
+Body faces directly away from camera.
+Head aligns naturally with the body.
+No looking back over the shoulder.
+Shoulders level and calm.
+Pelvis neutral and visually stable.
+Weight evenly distributed.
+Arms relaxed with slight clean separation from the torso so the side contour remains readable.
+Both legs straight but not rigid.
+Heels, calves, Achilles lines, and back silhouette remain clearly readable.
+Goal: posterior body constitution observation.

@@ -1,0 +1,13 @@
+[SHOT PLUGIN | BG-10 FRONT STATIC STAGGERED]
+Pose: static front-facing calibration standing pose with a minimal staggered stance.
+Body faces camera directly.
+Head faces camera directly.
+Shoulders remain calm and nearly level.
+Pelvis remains visually stable.
+One foot rests slightly forward in a very small static offset.
+This is a motionless technical reference pose, not a walking moment.
+Weight distribution remains calm and controlled.
+Hands relaxed at sides with a clear narrow visible air gap from the outer thighs.
+No arm-thigh contact.
+Both knees, ankles, heels, and toes remain fully visible and readable.
+Goal: preserve front identity while adding a small z-axis depth cue.
