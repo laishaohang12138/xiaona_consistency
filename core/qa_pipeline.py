@@ -22,9 +22,11 @@ from .qa_consistency import (
 from .qa_features import extract_face_feat, extract_pose_feat, init_engines
 from .qa_runtime import (
     AnchorSet,
+    EngineState,
     FaceFeat,
     PoseFeat,
     RuntimeContext,
+    _deep_merge_dict,
     anchor_registry_snapshot,
     anchor_registry_summary,
     create_runtime_config,
@@ -71,12 +73,13 @@ def create_runtime(base_dir: Optional[Path] = None) -> RuntimeContext:
 
 def print_runtime_config(runtime: RuntimeContext) -> None:
     config = runtime.config
+    providers_desc = runtime.providers.describe() if hasattr(runtime.providers, "describe") else {"mode": "config_only"}
     print(f"[CONFIG] RUN_MODE={config.run_mode}")
     print(f"[CONFIG] ACTIVE_PROFILE={config.review.active_profile}")
     print(f"[CONFIG] CONFIG_DIR={config.paths.config_dir}")
     print(f"[CONFIG] EXTERNAL_CONFIG_STATUS={config.external_config_status}")
     print(f"[CONFIG] PROVIDER_POLICY={config.provider_policy}")
-    print(f"[CONFIG] PROVIDERS={runtime.providers.describe()}")
+    print(f"[CONFIG] PROVIDERS={providers_desc}")
     print(f"[CONFIG] ANCHOR_REGISTRY_SUMMARY={anchor_registry_summary(config)}")
     print(f"[CONFIG] LAYER_QUOTAS_LOADED={bool(config.layer_quotas.get('training_layers'))}")
     print("[CONFIG] FACE_CONF_MAP = linear_map_to_01(bbox_ratio, 0.006, 0.035)")
@@ -165,6 +168,7 @@ def _json_ready(value: Any) -> Any:
 
 def _build_threshold_snapshot(runtime: RuntimeContext, profile_name: str) -> Dict[str, Any]:
     profile_thresholds = runtime.config.task_profiles.get(profile_name, {}).get("thresholds", {})
+    profile_weights = runtime.config.task_profiles.get(profile_name, {}).get("weights", {})
     snapshot = {
         "consistency": {
             "mode": runtime.config.consistency.mode,
@@ -184,9 +188,12 @@ def _build_threshold_snapshot(runtime: RuntimeContext, profile_name: str) -> Dic
                 "chroma_dominant": _json_ready(runtime.config.consistency.skin_score_weights.chroma_dominant.__dict__),
                 "high_risk": _json_ready(runtime.config.consistency.skin_score_weights.high_risk.__dict__),
             },
+            "body_constitution_scoring": _json_ready(runtime.config.consistency.body_constitution_scoring),
+            "depth3d_scoring": _json_ready(runtime.config.consistency.depth3d_scoring),
         },
         "quality_thresholds": runtime.config.quality_thresholds.to_json_dict(),
         "task_profile_thresholds": _json_ready(profile_thresholds),
+        "task_profile_weights": _json_ready(profile_weights),
     }
     payload = json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode("utf-8")
     snapshot["hash"] = hashlib.sha1(payload).hexdigest()[:12]
@@ -443,8 +450,19 @@ def _apply_threshold_override(
         "overall_pass": float,
         "overall_warn": float,
     }
+    profile_weight_map = {
+        "face": float,
+        "upper": float,
+        "full": float,
+    }
 
-    allowed_top_level = {"consistency", "quality_thresholds", "profile_thresholds", "task_profiles"}
+    allowed_top_level = {
+        "consistency",
+        "quality_thresholds",
+        "profile_thresholds",
+        "profile_weights",
+        "task_profiles",
+    }
     unknown_top_level = sorted(set(threshold_override.keys()) - allowed_top_level)
     if unknown_top_level:
         raise ValueError(f"Unsupported threshold_override sections: {unknown_top_level}")
@@ -453,7 +471,15 @@ def _apply_threshold_override(
     if consistency_node is not None:
         if not isinstance(consistency_node, dict):
             raise ValueError("threshold_override.consistency must be a dict")
-        nested_consistency_keys = {"min_confidence", "warn_threshold", "skin_risk", "skin_split", "skin_score_weights"}
+        nested_consistency_keys = {
+            "min_confidence",
+            "warn_threshold",
+            "skin_risk",
+            "skin_split",
+            "skin_score_weights",
+            "body_constitution_scoring",
+            "depth3d_scoring",
+        }
         direct_consistency_node = {
             key: value for key, value in consistency_node.items() if key not in nested_consistency_keys
         }
@@ -542,6 +568,26 @@ def _apply_threshold_override(
                     applied,
                 )
 
+        body_constitution_scoring_node = consistency_node.get("body_constitution_scoring", None)
+        if body_constitution_scoring_node is not None:
+            if not isinstance(body_constitution_scoring_node, dict):
+                raise ValueError("threshold_override.consistency.body_constitution_scoring must be a dict")
+            config.consistency.body_constitution_scoring = _deep_merge_dict(
+                config.consistency.body_constitution_scoring,
+                body_constitution_scoring_node,
+            )
+            applied["consistency.body_constitution_scoring"] = copy.deepcopy(body_constitution_scoring_node)
+
+        depth3d_scoring_node = consistency_node.get("depth3d_scoring", None)
+        if depth3d_scoring_node is not None:
+            if not isinstance(depth3d_scoring_node, dict):
+                raise ValueError("threshold_override.consistency.depth3d_scoring must be a dict")
+            config.consistency.depth3d_scoring = _deep_merge_dict(
+                config.consistency.depth3d_scoring,
+                depth3d_scoring_node,
+            )
+            applied["consistency.depth3d_scoring"] = copy.deepcopy(depth3d_scoring_node)
+
     quality_threshold_node = threshold_override.get("quality_thresholds", None)
     if quality_threshold_node is not None:
         if not isinstance(quality_threshold_node, dict):
@@ -553,6 +599,26 @@ def _apply_threshold_override(
             "quality_thresholds",
             applied,
         )
+
+    profile_weight_node = threshold_override.get("profile_weights", None)
+    if profile_weight_node is not None:
+        if not isinstance(profile_weight_node, dict):
+            raise ValueError("threshold_override.profile_weights must be a dict")
+        if target_profile not in config.task_profiles:
+            raise ValueError(f"Unknown target profile for threshold_override.profile_weights: {target_profile}")
+        unknown_profile_weights = sorted(set(profile_weight_node.keys()) - set(profile_weight_map.keys()))
+        if unknown_profile_weights:
+            raise ValueError(
+                f"Unsupported threshold_override.profile_weights keys: {unknown_profile_weights}"
+            )
+        for key, raw_value in profile_weight_node.items():
+            cast_type = profile_weight_map[key]
+            try:
+                value = cast_type(raw_value)
+            except Exception as exc:
+                raise ValueError(f"Invalid threshold_override.profile_weights.{key}: {raw_value!r}") from exc
+            config.task_profiles[target_profile]["weights"][key] = value
+            applied[f"task_profiles.{target_profile}.weights.{key}"] = value
 
     profile_threshold_node = threshold_override.get("profile_thresholds", None)
     if profile_threshold_node is not None:
@@ -583,25 +649,55 @@ def _apply_threshold_override(
                 raise ValueError(f"Unknown threshold_override task profile: {profile_name}")
             if not isinstance(profile_node, dict):
                 raise ValueError(f"threshold_override.task_profiles.{profile_name} must be a dict")
-            threshold_node = profile_node.get("thresholds", profile_node)
-            if not isinstance(threshold_node, dict):
-                raise ValueError(f"threshold_override.task_profiles.{profile_name}.thresholds must be a dict")
-            unknown_threshold_keys = sorted(set(threshold_node.keys()) - set(profile_threshold_map.keys()))
-            if unknown_threshold_keys:
+            unknown_profile_sections = sorted(set(profile_node.keys()) - {"thresholds", "weights"})
+            if unknown_profile_sections:
                 raise ValueError(
-                    f"Unsupported threshold_override.task_profiles.{profile_name}.thresholds keys: "
-                    f"{unknown_threshold_keys}"
+                    f"Unsupported threshold_override.task_profiles.{profile_name} sections: {unknown_profile_sections}"
                 )
-            for key, raw_value in threshold_node.items():
-                cast_type = profile_threshold_map[key]
-                try:
-                    value = cast_type(raw_value)
-                except Exception as exc:
+
+            threshold_node = profile_node.get("thresholds", None)
+            if threshold_node is None and any(key in profile_threshold_map for key in profile_node.keys()):
+                threshold_node = {key: value for key, value in profile_node.items() if key in profile_threshold_map}
+            if threshold_node is not None:
+                if not isinstance(threshold_node, dict):
+                    raise ValueError(f"threshold_override.task_profiles.{profile_name}.thresholds must be a dict")
+                unknown_threshold_keys = sorted(set(threshold_node.keys()) - set(profile_threshold_map.keys()))
+                if unknown_threshold_keys:
                     raise ValueError(
-                        f"Invalid threshold_override.task_profiles.{profile_name}.thresholds.{key}: {raw_value!r}"
-                    ) from exc
-                config.task_profiles[profile_name]["thresholds"][key] = value
-                applied[f"task_profiles.{profile_name}.thresholds.{key}"] = value
+                        f"Unsupported threshold_override.task_profiles.{profile_name}.thresholds keys: "
+                        f"{unknown_threshold_keys}"
+                    )
+                for key, raw_value in threshold_node.items():
+                    cast_type = profile_threshold_map[key]
+                    try:
+                        value = cast_type(raw_value)
+                    except Exception as exc:
+                        raise ValueError(
+                            f"Invalid threshold_override.task_profiles.{profile_name}.thresholds.{key}: {raw_value!r}"
+                        ) from exc
+                    config.task_profiles[profile_name]["thresholds"][key] = value
+                    applied[f"task_profiles.{profile_name}.thresholds.{key}"] = value
+
+            weight_node = profile_node.get("weights", None)
+            if weight_node is not None:
+                if not isinstance(weight_node, dict):
+                    raise ValueError(f"threshold_override.task_profiles.{profile_name}.weights must be a dict")
+                unknown_weight_keys = sorted(set(weight_node.keys()) - set(profile_weight_map.keys()))
+                if unknown_weight_keys:
+                    raise ValueError(
+                        f"Unsupported threshold_override.task_profiles.{profile_name}.weights keys: "
+                        f"{unknown_weight_keys}"
+                    )
+                for key, raw_value in weight_node.items():
+                    cast_type = profile_weight_map[key]
+                    try:
+                        value = cast_type(raw_value)
+                    except Exception as exc:
+                        raise ValueError(
+                            f"Invalid threshold_override.task_profiles.{profile_name}.weights.{key}: {raw_value!r}"
+                        ) from exc
+                    config.task_profiles[profile_name]["weights"][key] = value
+                    applied[f"task_profiles.{profile_name}.weights.{key}"] = value
 
     return applied
 
@@ -724,6 +820,7 @@ def _run_pipeline_impl(
                 cand_pose,
                 view_bucket=view_lane,
                 yaw_proxy=yaw_proxy,
+                scoring=config.consistency.depth3d_scoring,
             )
 
             constitution_score = constitution_metrics.get("body_constitution_score", None)
@@ -1126,18 +1223,32 @@ def main(
     run_mode: Optional[str] = None,
     auto_load_thresholds: Optional[bool] = None,
     threshold_override: Optional[Dict[str, Any]] = None,
+    benchmark_report_path: Optional[Path] = None,
+    benchmark_labels_path: Optional[Path] = None,
+    benchmark_output_path: Optional[Path] = None,
+    benchmark_template_out: Optional[Path] = None,
 ) -> None:
-    runtime = create_runtime(base_dir)
-    if run_mode is not None:
-        runtime.config.run_mode = str(run_mode)
+    effective_run_mode = str(run_mode) if run_mode is not None else "qa"
+    if effective_run_mode == "benchmark":
+        config = create_runtime_config(base_dir)
+        runtime = RuntimeContext(
+            config=config,
+            providers=None,
+            engines=EngineState(face_mode="disabled", pose_mode="disabled"),
+        )
+        runtime.config.run_mode = "benchmark"
+    else:
+        runtime = create_runtime(base_dir)
+        if run_mode is not None:
+            runtime.config.run_mode = str(run_mode)
     if profile_name is not None:
         runtime.config.review.active_profile = str(profile_name)
     if auto_load_thresholds is not None:
         runtime.config.auto_load_thresholds = bool(auto_load_thresholds)
     print_runtime_config(runtime)
 
-    if runtime.config.run_mode not in {"qa", "calibrate"}:
-        raise ValueError("RUN_MODE 只能是 'qa' 或 'calibrate'")
+    if runtime.config.run_mode not in {"qa", "calibrate", "benchmark"}:
+        raise ValueError("RUN_MODE 只能是 'qa'、'calibrate' 或 'benchmark'")
 
     if runtime.config.run_mode == "calibrate":
         print(f"[校准模式] 从目录读取样本: {runtime.config.paths.dir_calib}")
@@ -1146,6 +1257,34 @@ def main(
         print("\n[自动校准完成 ✅]")
         print(json.dumps(thresholds, indent=2, ensure_ascii=False))
         print(f"[阈值文件已保存] {runtime.config.paths.thresh_file}")
+        return
+
+    if runtime.config.run_mode == "benchmark":
+        from .qa_benchmark import benchmark_report, export_benchmark_template
+
+        report_path = (benchmark_report_path or runtime.config.paths.report_file).resolve()
+        if benchmark_template_out is not None:
+            template = export_benchmark_template(report_path, benchmark_template_out.resolve())
+            print(f"[Benchmark 模板] {benchmark_template_out.resolve()}")
+            print(json.dumps(template, indent=2, ensure_ascii=False))
+            return
+        if benchmark_labels_path is None:
+            raise ValueError("benchmark 模式需要 --benchmark-labels，或使用 --benchmark-template-out 导出模板")
+
+        result = benchmark_report(
+            runtime=runtime,
+            report_path=report_path,
+            labels_path=benchmark_labels_path.resolve(),
+            threshold_override=threshold_override,
+        )
+        if benchmark_output_path is not None:
+            benchmark_output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
+            benchmark_output_path.resolve().write_text(
+                json.dumps(result, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            print(f"[Benchmark 输出] {benchmark_output_path.resolve()}")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
         return
 
     if runtime.config.auto_load_thresholds:

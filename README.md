@@ -10,12 +10,14 @@ XiaoNa LoRA training engineering repository.
 - Versioned prompt assets in `prompts/`
 - Custom GPT knowledge export in `kb_export/`
 - Anchor assets in `anchors/`
+- Offline benchmark replay support for threshold tuning
 
 ## Runtime Status
 - The QA pipeline is modularized into `core/qa_runtime.py`, `core/qa_pipeline.py`, `core/qa_scoring.py`, `core/qa_consistency.py`, `core/qa_features.py`, and `core/providers.py`
 - Human Parsing is the default upstream provider for `subject_mask` and `skin_region`, with legacy fallback retained
 - BODY GOLD currently runs as a conservative front-core lane, while side/back work is staged through shadow profile lanes
 - `outputs/qa_report.json` now writes `report_meta` plus `items`, including provider policy, anchor snapshot, layer quota snapshot, and threshold hash
+- Benchmark replay can re-score a saved `qa_report.json` under threshold overrides without rerunning vision models
 
 ## Confirmed Route
 1. Engineering decoupling first

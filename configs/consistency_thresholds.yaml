@@ -56,6 +56,205 @@ consistency:
       luminance: 0.08
       knee: 0.10
       baseline: 0.10
+  body_constitution_scoring:
+    views:
+      front:
+        waist_to_shoulder:
+          lo: 0.42
+          hi: 0.62
+          margin: 0.18
+        chest_to_waist:
+          lo: 1.08
+          hi: 1.48
+          margin: 0.26
+        hip_to_waist:
+          lo: 1.12
+          hi: 1.56
+          margin: 0.28
+        hip_to_shoulder:
+          lo: 0.46
+          hi: 0.72
+          margin: 0.20
+        thigh_to_calf:
+          lo: 1.10
+          hi: 1.76
+          margin: 0.40
+        view_factor: 1.0
+      three_quarter:
+        waist_to_shoulder:
+          lo: 0.44
+          hi: 0.70
+          margin: 0.22
+        chest_to_waist:
+          lo: 1.00
+          hi: 1.42
+          margin: 0.28
+        hip_to_waist:
+          lo: 1.04
+          hi: 1.52
+          margin: 0.32
+        hip_to_shoulder:
+          lo: 0.40
+          hi: 0.76
+          margin: 0.24
+        thigh_to_calf:
+          lo: 1.08
+          hi: 1.82
+          margin: 0.44
+        view_factor: 0.88
+      profile_like:
+        waist_to_shoulder:
+          lo: 0.46
+          hi: 0.78
+          margin: 0.26
+        chest_to_waist:
+          lo: 0.96
+          hi: 1.38
+          margin: 0.32
+        hip_to_waist:
+          lo: 1.00
+          hi: 1.48
+          margin: 0.36
+        hip_to_shoulder:
+          lo: 0.36
+          hi: 0.78
+          margin: 0.28
+        thigh_to_calf:
+          lo: 1.06
+          hi: 1.88
+          margin: 0.50
+        view_factor: 0.75
+    common_ranges:
+      leg_ratio:
+        lo: 0.44
+        hi: 0.58
+        margin: 0.10
+      waist_height_ratio:
+        lo: 0.54
+        hi: 0.67
+        margin: 0.10
+    weights:
+      leg_ratio: 0.18
+      waist_height_ratio: 0.18
+      waist_to_shoulder: 0.20
+      chest_to_waist: 0.12
+      hip_to_waist: 0.14
+      hip_to_shoulder: 0.10
+      thigh_to_calf: 0.08
+    confidence_weights:
+      width_ready: 0.34
+      pose_visibility: 0.34
+      torso_fill: 0.22
+      view_factor: 0.10
+    validity:
+      min_width_metrics: 3
+  depth3d_scoring:
+    views:
+      front:
+        yaw:
+          lo: 0.00
+          hi: 0.10
+          margin: 0.06
+        shoulder_width:
+          lo: 0.22
+          hi: 0.31
+          margin: 0.08
+        hip_width:
+          lo: 0.11
+          hi: 0.19
+          margin: 0.06
+        confidence_fixed: 0.20
+      three_quarter:
+        yaw:
+          lo: 0.10
+          hi: 0.28
+          margin: 0.08
+        shoulder_width:
+          lo: 0.21
+          hi: 0.28
+          margin: 0.07
+        hip_width:
+          lo: 0.10
+          hi: 0.18
+          margin: 0.06
+        confidence_yaw:
+          lo: 0.10
+          hi: 0.28
+          margin: 0.10
+      profile_like:
+        yaw:
+          lo: 0.24
+          hi: 0.42
+          margin: 0.10
+        shoulder_width:
+          lo: 0.16
+          hi: 0.24
+          margin: 0.08
+        hip_width:
+          lo: 0.08
+          hi: 0.16
+          margin: 0.06
+        confidence_yaw:
+          lo: 0.24
+          hi: 0.42
+          margin: 0.14
+    common_ranges:
+      hip_shoulder_ratio:
+        lo: 0.46
+        hi: 0.72
+        margin: 0.18
+      spine_angle:
+        lo: 0.0
+        hi: 10.0
+        margin: 6.0
+      torso_length:
+        lo: 0.20
+        hi: 0.30
+        margin: 0.08
+      side_profile_center_offset:
+        lo: 0.00
+        hi: 0.10
+        margin: 0.10
+      side_profile_leg_straightness:
+        lo: 166.0
+        hi: 180.0
+        margin: 10.0
+      side_profile_torso_compactness:
+        lo: 0.52
+        hi: 1.08
+        margin: 0.34
+      side_profile_ankle_gap:
+        lo: 0.02
+        hi: 0.16
+        margin: 0.10
+    weights:
+      side_profile:
+        center_offset: 0.34
+        leg_straightness: 0.40
+        torso_compactness: 0.18
+        ankle_gap: 0.08
+      torso_volume:
+        shoulder_width: 0.30
+        hip_width: 0.24
+        hip_shoulder_ratio: 0.20
+        spine_angle: 0.14
+        torso_length: 0.12
+        side_profile: 0.18
+      overall:
+        yaw: 0.24
+        torso_volume: 0.52
+        spine_angle: 0.14
+        torso_length: 0.10
+        side_profile: 0.16
+      confidence_three_quarter:
+        yaw: 0.45
+        torso_volume: 0.35
+        spine_angle: 0.20
+      confidence_profile_like:
+        yaw: 0.45
+        torso_volume: 0.35
+        spine_angle: 0.10
+        side_profile: 0.10
 
 algorithm_policy:
   route_order:

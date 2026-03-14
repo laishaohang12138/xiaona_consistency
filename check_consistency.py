@@ -88,7 +88,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=["qa", "calibrate"],
+        choices=["qa", "calibrate", "benchmark"],
         help="Override runtime.config.run_mode for this invocation.",
     )
     parser.add_argument(
@@ -104,6 +104,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--threshold-override-json",
         help="Inline JSON object whose values override runtime thresholds in memory for this run only.",
+    )
+    parser.add_argument(
+        "--benchmark-report",
+        type=Path,
+        help="Report JSON used by benchmark replay mode. Defaults to outputs/qa_report.json.",
+    )
+    parser.add_argument(
+        "--benchmark-labels",
+        type=Path,
+        help="Benchmark label JSON for replay mode.",
+    )
+    parser.add_argument(
+        "--benchmark-output",
+        type=Path,
+        help="Optional output path for benchmark metrics JSON.",
+    )
+    parser.add_argument(
+        "--benchmark-template-out",
+        type=Path,
+        help="Export a benchmark label template from the chosen report file and exit.",
     )
     return parser
 
@@ -123,6 +143,10 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
         run_mode=args.mode,
         auto_load_thresholds=True if args.auto_load_thresholds else None,
         threshold_override=threshold_override,
+        benchmark_report_path=_resolve_cli_path(args.benchmark_report, base_dir) if args.benchmark_report else None,
+        benchmark_labels_path=_resolve_cli_path(args.benchmark_labels, base_dir) if args.benchmark_labels else None,
+        benchmark_output_path=_resolve_cli_path(args.benchmark_output, base_dir) if args.benchmark_output else None,
+        benchmark_template_out=_resolve_cli_path(args.benchmark_template_out, base_dir) if args.benchmark_template_out else None,
     )
     return 0
 

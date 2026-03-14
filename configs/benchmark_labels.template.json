@@ -1,0 +1,10 @@
+{
+  "schema_version": "qa_benchmark_labels_v1",
+  "items": {
+    "example.png": {
+      "expected_status": "WARN",
+      "weight": 1.0,
+      "notes": ""
+    }
+  }
+}
