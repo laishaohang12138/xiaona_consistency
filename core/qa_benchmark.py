@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -17,13 +18,14 @@ from .qa_utils import dedupe_keep_order, get_face_size_bucket, get_quality_toler
 
 
 VALID_STATUSES = ("PASS", "WARN", "FAIL")
+BENCHMARK_LABEL_SCHEMA = "qa_benchmark_labels_v1"
 
 
 def export_benchmark_template(report_path: Path, output_path: Path) -> Dict[str, Any]:
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     items = payload.get("items", [])
     template = {
-        "schema_version": "qa_benchmark_labels_v1",
+        "schema_version": BENCHMARK_LABEL_SCHEMA,
         "report_file": str(report_path),
         "items": {},
     }
@@ -31,9 +33,16 @@ def export_benchmark_template(report_path: Path, output_path: Path) -> Dict[str,
         image_name = str(item.get("image", "")).strip()
         if not image_name:
             continue
+        debug = item.get("debug", {}) if isinstance(item.get("debug", {}), dict) else {}
         template["items"][image_name] = {
             "expected_status": "",
             "current_status": str(item.get("status", "")),
+            "expected_task_profile": "",
+            "current_task_profile": str(item.get("task_profile", "")),
+            "expected_view_lane": "",
+            "current_view_lane": str(debug.get("view_lane", "")),
+            "must_have_reasons": [],
+            "must_not_have_reasons": [],
             "weight": 1.0,
             "notes": "",
         }
@@ -49,32 +58,65 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
-def _normalize_label_node(node: Any) -> Optional[Dict[str, Any]]:
+def _normalize_string_list(value: Any, field_name: str, image_name: str) -> List[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"benchmark label {image_name!r} field {field_name} must be a list")
+    out: List[str] = []
+    for raw in value:
+        text = str(raw).strip()
+        if not text:
+            continue
+        out.append(text)
+    return dedupe_keep_order(out)
+
+
+def _normalize_label_node(image_name: str, node: Any) -> Dict[str, Any]:
     if not isinstance(node, dict):
-        return None
+        raise ValueError(f"benchmark label {image_name!r} must be an object")
     expected_status = str(node.get("expected_status", node.get("status", ""))).strip().upper()
     if expected_status not in VALID_STATUSES:
-        return None
+        raise ValueError(
+            f"benchmark label {image_name!r} expected_status must be one of {list(VALID_STATUSES)}"
+        )
     weight = _safe_float(node.get("weight", 1.0), 1.0)
+    if not math.isfinite(weight):
+        raise ValueError(f"benchmark label {image_name!r} weight must be finite")
+    if weight < 0.0:
+        raise ValueError(f"benchmark label {image_name!r} weight must be >= 0")
     return {
         "expected_status": expected_status,
-        "weight": max(0.0, weight),
+        "weight": weight,
+        "expected_task_profile": str(node.get("expected_task_profile", "")).strip(),
+        "expected_view_lane": str(node.get("expected_view_lane", "")).strip(),
+        "must_have_reasons": _normalize_string_list(node.get("must_have_reasons", []), "must_have_reasons", image_name),
+        "must_not_have_reasons": _normalize_string_list(
+            node.get("must_not_have_reasons", []), "must_not_have_reasons", image_name
+        ),
         "notes": str(node.get("notes", "")),
     }
 
 
 def load_benchmark_labels(labels_path: Path) -> Dict[str, Dict[str, Any]]:
     payload = json.loads(labels_path.read_text(encoding="utf-8"))
+    schema_version = str(payload.get("schema_version", "")).strip()
+    if schema_version != BENCHMARK_LABEL_SCHEMA:
+        raise ValueError(
+            f"benchmark labels schema_version must be {BENCHMARK_LABEL_SCHEMA!r}, got {schema_version!r}"
+        )
     items = payload.get("items", payload.get("images", {}))
     if not isinstance(items, dict):
         raise ValueError("benchmark labels must contain an 'items' object")
 
     labels: Dict[str, Dict[str, Any]] = {}
-    for image_name, node in items.items():
-        normalized = _normalize_label_node(node)
-        if normalized is None:
-            continue
-        labels[str(image_name)] = normalized
+    for raw_image_name, node in items.items():
+        image_name = str(raw_image_name).strip()
+        if not image_name:
+            raise ValueError("benchmark labels contain an empty image key")
+        if image_name in labels:
+            raise ValueError(f"benchmark labels contain duplicate image key after normalization: {image_name!r}")
+        labels[image_name] = _normalize_label_node(image_name, node)
     if len(labels) == 0:
         raise ValueError("benchmark labels file contains no valid expected_status entries")
     return labels
@@ -288,6 +330,7 @@ def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[st
         {"face": face_score, "upper": upper_score, "full": full_score},
         {"face": face_conf, "upper": upper_conf, "full": full_conf},
         weights,
+        scoring=runtime.config.consistency.score_fusion,
     )
     if overall_score >= th["overall_pass"]:
         overall_state = "PASS"
@@ -460,6 +503,12 @@ def _precision_recall_f1(confusion: Dict[Tuple[str, str], float], label: str) ->
     return {"precision": precision, "recall": recall, "f1": f1}
 
 
+def _optional_accuracy(matched_weight: float, checked_weight: float) -> Optional[float]:
+    if checked_weight <= 0.0:
+        return None
+    return round(_safe_div(matched_weight, checked_weight, default=0.0), 6)
+
+
 def benchmark_report(
     runtime: RuntimeContext,
     report_path: Path,
@@ -481,6 +530,12 @@ def benchmark_report(
     predicted_pass_weight = 0.0
     expected_pass_weight = 0.0
     missing_from_report: List[str] = []
+    task_profile_checked_weight = 0.0
+    task_profile_matched_weight = 0.0
+    view_lane_checked_weight = 0.0
+    view_lane_matched_weight = 0.0
+    reason_constraint_checked_weight = 0.0
+    reason_constraint_matched_weight = 0.0
 
     for image_name, label in labels.items():
         report_item = items_by_name.get(image_name)
@@ -510,6 +565,40 @@ def benchmark_report(
         if predicted == "PASS" and expected != "PASS":
             false_pass_weight += weight
 
+        replay_debug = replayed.get("debug", {}) if isinstance(replayed.get("debug", {}), dict) else {}
+        predicted_view_lane = str(replay_debug.get("view_lane", ""))
+        predicted_reasons = set(str(reason) for reason in replayed.get("reasons", []))
+        expected_task_profile = str(label.get("expected_task_profile", "")).strip()
+        expected_view_lane = str(label.get("expected_view_lane", "")).strip()
+        must_have_reasons = [str(reason) for reason in label.get("must_have_reasons", [])]
+        must_not_have_reasons = [str(reason) for reason in label.get("must_not_have_reasons", [])]
+
+        task_profile_match: Optional[bool] = None
+        if expected_task_profile:
+            task_profile_checked_weight += weight
+            task_profile_match = replayed["task_profile"] == expected_task_profile
+            if task_profile_match:
+                task_profile_matched_weight += weight
+
+        view_lane_match: Optional[bool] = None
+        if expected_view_lane:
+            view_lane_checked_weight += weight
+            view_lane_match = predicted_view_lane == expected_view_lane
+            if view_lane_match:
+                view_lane_matched_weight += weight
+
+        missing_reasons = [reason for reason in must_have_reasons if reason not in predicted_reasons]
+        unexpected_reasons = [reason for reason in must_not_have_reasons if reason in predicted_reasons]
+        reason_constraint_match: Optional[bool] = None
+        if must_have_reasons or must_not_have_reasons:
+            reason_constraint_checked_weight += weight
+            reason_constraint_match = (len(missing_reasons) == 0) and (len(unexpected_reasons) == 0)
+            if reason_constraint_match:
+                reason_constraint_matched_weight += weight
+
+        constraint_values = [value for value in [task_profile_match, view_lane_match, reason_constraint_match] if value is not None]
+        all_constraints_match = all(constraint_values) if constraint_values else None
+
         per_item.append(
             {
                 "image": image_name,
@@ -520,6 +609,14 @@ def benchmark_report(
                 "scores": replayed["scores"],
                 "module_state": replayed["module_state"],
                 "reasons": replayed["reasons"],
+                "agreement": {
+                    "task_profile_match": task_profile_match,
+                    "view_lane_match": view_lane_match,
+                    "missing_reasons": missing_reasons,
+                    "unexpected_reasons": unexpected_reasons,
+                    "reason_constraints_match": reason_constraint_match,
+                    "all_constraints_match": all_constraints_match,
+                },
                 "notes": label.get("notes", ""),
             }
         )
@@ -559,6 +656,17 @@ def benchmark_report(
             "release_safety_score": round(release_safety_score, 6),
             "predicted_pass_weight": round(predicted_pass_weight, 6),
             "expected_pass_weight": round(expected_pass_weight, 6),
+        },
+        "agreement_metrics": {
+            "task_profile_accuracy": _optional_accuracy(task_profile_matched_weight, task_profile_checked_weight),
+            "view_lane_accuracy": _optional_accuracy(view_lane_matched_weight, view_lane_checked_weight),
+            "reason_constraint_accuracy": _optional_accuracy(
+                reason_constraint_matched_weight,
+                reason_constraint_checked_weight,
+            ),
+            "task_profile_checked_weight": round(task_profile_checked_weight, 6),
+            "view_lane_checked_weight": round(view_lane_checked_weight, 6),
+            "reason_constraint_checked_weight": round(reason_constraint_checked_weight, 6),
         },
         "class_metrics": {
             status: {key: round(value, 6) for key, value in metrics.items()}

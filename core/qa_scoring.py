@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .qa_runtime import AnchorSet, FaceFeat, PoseFeat, RuntimeContext
+from .qa_runtime import AnchorSet, FaceFeat, PoseFeat, RuntimeContext, _default_score_fusion
 from .qa_utils import (
     clamp,
     cosine_sim,
@@ -18,6 +18,50 @@ from .qa_utils import (
     ssim_similarity,
     valid_face_feats,
 )
+
+
+DEFAULT_SCORE_FUSION = _default_score_fusion()
+
+
+def _normalize_view_bucket_key(view_bucket: str) -> str:
+    if view_bucket == "front":
+        return "front"
+    if view_bucket == "three_quarter":
+        return "three_quarter"
+    return "profile_like"
+
+
+def _score_fusion_config(scoring: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    return scoring if isinstance(scoring, dict) else DEFAULT_SCORE_FUSION
+
+
+def _view_scoring_node(
+    scoring: Optional[Dict[str, Any]],
+    section: str,
+    view_bucket: str,
+) -> Dict[str, Any]:
+    fusion = _score_fusion_config(scoring)
+    section_node = fusion.get(section, {})
+    views = section_node.get("views", {}) if isinstance(section_node, dict) else {}
+    view_node = views.get(_normalize_view_bucket_key(view_bucket), {})
+    return view_node if isinstance(view_node, dict) else {}
+
+
+def _topk_settings(node: Dict[str, Any]) -> Tuple[int, float, float]:
+    limit = max(1, int(node.get("limit", 3)))
+    mean_weight = float(node.get("mean", 0.60))
+    median_weight = float(node.get("median", 0.40))
+    return limit, mean_weight, median_weight
+
+
+def _blend_topk_scores(score_values: List[float], node: Dict[str, Any]) -> float:
+    if len(score_values) == 0:
+        return 0.0
+    limit, mean_weight, median_weight = _topk_settings(node)
+    topk_scores = sorted(score_values, reverse=True)[: min(limit, len(score_values))]
+    weight_sum = max(1e-8, mean_weight + median_weight)
+    blended = (mean_weight * float(np.mean(topk_scores))) + (median_weight * float(np.median(topk_scores)))
+    return float(blended / weight_sum)
 
 
 def geom_similarity_face(g1: Dict[str, float], g2: Dict[str, float]) -> Optional[float]:
@@ -116,34 +160,13 @@ def compare_face_feat(
 def fuse_face_identity_metrics(
     metrics: Dict[str, Optional[float]],
     view_bucket: str = "front",
+    scoring: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, Dict[str, float], List[str]]:
-    if view_bucket == "front":
-        base_weights = {
-            "embedding": 0.42,
-            "geom": 0.22,
-            "hog": 0.14,
-            "lbp": 0.10,
-            "phash": 0.04,
-            "ssim": 0.08,
-        }
-    elif view_bucket == "three_quarter":
-        base_weights = {
-            "embedding": 0.58,
-            "geom": 0.10,
-            "hog": 0.10,
-            "lbp": 0.06,
-            "phash": 0.02,
-            "ssim": 0.14,
-        }
-    else:
-        base_weights = {
-            "embedding": 0.70,
-            "geom": 0.05,
-            "hog": 0.08,
-            "lbp": 0.05,
-            "phash": 0.00,
-            "ssim": 0.12,
-        }
+    view_node = _view_scoring_node(scoring, "face_identity", view_bucket)
+    base_weights = view_node.get("weights", {})
+    if not isinstance(base_weights, dict) or len(base_weights) == 0:
+        fallback = _view_scoring_node(DEFAULT_SCORE_FUSION, "face_identity", view_bucket)
+        base_weights = fallback.get("weights", {})
 
     reasons: List[str] = []
     used: Dict[str, float] = {}
@@ -173,6 +196,21 @@ def score_face_against_anchor_set(
 ) -> Tuple[float, float, List[str], Dict[str, Any]]:
     reasons: List[str] = []
     debug: Dict[str, Any] = {"anchor_scores": []}
+    fusion = runtime.config.consistency.score_fusion
+    face_cfg = fusion.get("face_identity", {})
+    conf_cfg = face_cfg.get("confidence", {}) if isinstance(face_cfg, dict) else {}
+    topk_cfg = face_cfg.get("topk", {}) if isinstance(face_cfg, dict) else {}
+    face_views = face_cfg.get("views", {}) if isinstance(face_cfg, dict) else {}
+    face_view_node = face_views.get(_normalize_view_bucket_key(view_bucket), {})
+    face_weight_map = face_view_node.get("weights", {}) if isinstance(face_view_node, dict) else {}
+    if not isinstance(face_weight_map, dict) or len(face_weight_map) == 0:
+        face_weight_map = DEFAULT_SCORE_FUSION["face_identity"]["views"][_normalize_view_bucket_key(view_bucket)]["weights"]
+    coverage_base = float(conf_cfg.get("base", 0.60))
+    coverage_weight = float(conf_cfg.get("coverage", 0.40))
+    coverage_denom = max(
+        1.0,
+        float(len([key for key, weight in face_weight_map.items() if float(weight) > 0.0]) or len(face_weight_map) or 1),
+    )
 
     if not candidate.ok:
         return 0.0, 0.0, ["FACE_NOT_AVAILABLE"] + candidate.reasons, debug
@@ -186,9 +224,13 @@ def score_face_against_anchor_set(
         if not anchor.ok:
             continue
         metrics = compare_face_feat(candidate, anchor, runtime.engines.face_mode)
-        fused, used, rs = fuse_face_identity_metrics(metrics, view_bucket=view_bucket)
-        coverage = clamp(len(used) / 6.0, 0.0, 1.0)
-        conf = clamp(candidate.confidence * anchor.confidence * (0.6 + 0.4 * coverage), 0.0, 1.0)
+        fused, used, rs = fuse_face_identity_metrics(metrics, view_bucket=view_bucket, scoring=fusion)
+        coverage = clamp(len(used) / coverage_denom, 0.0, 1.0)
+        conf = clamp(
+            candidate.confidence * anchor.confidence * (coverage_base + coverage_weight * coverage),
+            0.0,
+            1.0,
+        )
 
         anchor_scores.append((fused, conf))
         anchor_used_metrics.append(
@@ -205,12 +247,13 @@ def score_face_against_anchor_set(
     if len(anchor_scores) == 0:
         return 0.0, 0.0, ["NO_VALID_FACE_ANCHORS"], debug
 
+    limit, _, _ = _topk_settings(topk_cfg if isinstance(topk_cfg, dict) else {})
     anchor_scores_sorted = sorted(anchor_scores, key=lambda item: item[0], reverse=True)
-    topk = anchor_scores_sorted[: min(3, len(anchor_scores_sorted))]
+    topk = anchor_scores_sorted[: min(limit, len(anchor_scores_sorted))]
     scores = [score for score, _ in topk]
     confs = [conf for _, conf in topk]
 
-    score = float(0.6 * np.mean(scores) + 0.4 * np.median(scores))
+    score = _blend_topk_scores(scores, topk_cfg if isinstance(topk_cfg, dict) else {})
     conf = float(np.mean(confs))
 
     if candidate.bbox_area_ratio < 0.01:
@@ -379,33 +422,17 @@ def upper_geom_similarity(
     g1: Dict[str, float],
     g2: Dict[str, float],
     view_bucket: str = "front",
+    scoring: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
-    if view_bucket == "front":
-        weight_map = {
-            "shoulder_width_norm": 0.45,
-            "torso_len_norm": 0.35,
-            "hip_width_norm": 0.20,
-        }
-        tilt_weight = 0.10
-        spine_weight = 0.04
-    elif view_bucket == "three_quarter":
-        weight_map = {
-            "shoulder_width_norm": 0.10,
-            "torso_len_norm": 0.50,
-            "hip_width_norm": 0.40,
-        }
-        tilt_weight = 0.04
-        spine_weight = 0.10
-    else:
-        weight_map = {
-            "torso_len_norm": 0.34,
-            "shoulder_hip_center_offset_norm": 0.24,
-            "torso_compactness": 0.18,
-            "hip_width_norm": 0.14,
-            "hip_shoulder_ratio": 0.10,
-        }
-        tilt_weight = 0.00
-        spine_weight = 0.18
+    view_node = _view_scoring_node(scoring, "upper_geom", view_bucket)
+    weight_map = view_node.get("weights", {})
+    tilt_weight = float(view_node.get("tilt_weight", 0.0))
+    spine_weight = float(view_node.get("spine_weight", 0.0))
+    if not isinstance(weight_map, dict) or len(weight_map) == 0:
+        fallback = _view_scoring_node(DEFAULT_SCORE_FUSION, "upper_geom", view_bucket)
+        weight_map = fallback.get("weights", {})
+        tilt_weight = float(fallback.get("tilt_weight", tilt_weight))
+        spine_weight = float(fallback.get("spine_weight", spine_weight))
 
     avail = [key for key in weight_map.keys() if key in g1 and key in g2]
     if len(avail) == 0:
@@ -441,28 +468,13 @@ def full_geom_similarity(
     g1: Dict[str, float],
     g2: Dict[str, float],
     view_bucket: str = "front",
+    scoring: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
-    if view_bucket == "front":
-        weight_map = {
-            "head_body_ratio": 0.58,
-            "leg_ratio": 0.42,
-        }
-    elif view_bucket == "three_quarter":
-        weight_map = {
-            "head_body_ratio": 0.46,
-            "leg_ratio": 0.36,
-            "leg_straightness_mean_deg": 0.10,
-            "ankle_gap_norm": 0.08,
-        }
-    else:
-        weight_map = {
-            "head_body_ratio": 0.22,
-            "leg_ratio": 0.28,
-            "leg_straightness_min_deg": 0.24,
-            "leg_straightness_mean_deg": 0.12,
-            "ankle_gap_norm": 0.08,
-            "foot_length_proxy_norm": 0.06,
-        }
+    view_node = _view_scoring_node(scoring, "full_geom", view_bucket)
+    weight_map = view_node.get("weights", {})
+    if not isinstance(weight_map, dict) or len(weight_map) == 0:
+        fallback = _view_scoring_node(DEFAULT_SCORE_FUSION, "full_geom", view_bucket)
+        weight_map = fallback.get("weights", {})
 
     avail = [key for key in weight_map.keys() if key in g1 and key in g2]
     if len(avail) == 0:
@@ -486,8 +498,14 @@ def full_geom_similarity(
     )
 
 
-def framing_score_from_pose_feat(pose_feat: PoseFeat) -> Tuple[float, List[str]]:
+def framing_score_from_pose_feat(
+    pose_feat: PoseFeat,
+    scoring: Optional[Dict[str, Any]] = None,
+) -> Tuple[float, List[str]]:
     reasons: List[str] = []
+    framing_cfg = _score_fusion_config(scoring).get("framing", {})
+    opencv_cfg = framing_cfg.get("opencv", {}) if isinstance(framing_cfg, dict) else {}
+    mediapipe_cfg = framing_cfg.get("mediapipe", {}) if isinstance(framing_cfg, dict) else {}
     if not pose_feat.ok:
         return 0.0, ["POSE_NOT_AVAILABLE"]
 
@@ -496,9 +514,21 @@ def framing_score_from_pose_feat(pose_feat: PoseFeat) -> Tuple[float, List[str]]
         subj = safe_float(framing.get("subject_height_ratio", 0.0))
         headroom = safe_float(framing.get("headroom_ratio", 1.0))
         feet = safe_float(framing.get("feet_in_frame", 0.0))
-        score = 0.4 * linear_map_to_01(subj, 0.45, 0.85)
-        score += 0.3 * (1.0 - clamp(abs(headroom - 0.08) / 0.20, 0.0, 1.0))
-        score += 0.3 * feet
+        score = float(opencv_cfg.get("subject_height_weight", 0.40)) * linear_map_to_01(
+            subj,
+            float(opencv_cfg.get("subject_height_low", 0.45)),
+            float(opencv_cfg.get("subject_height_high", 0.85)),
+        )
+        score += float(opencv_cfg.get("headroom_weight", 0.30)) * (
+            1.0
+            - clamp(
+                abs(headroom - float(opencv_cfg.get("headroom_target", 0.08)))
+                / max(1e-8, float(opencv_cfg.get("headroom_margin", 0.20))),
+                0.0,
+                1.0,
+            )
+        )
+        score += float(opencv_cfg.get("feet_weight", 0.30)) * feet
         reasons.append("FRAMING_APPROX_OPENCV")
         return clamp(score, 0.0, 1.0), reasons
 
@@ -508,9 +538,23 @@ def framing_score_from_pose_feat(pose_feat: PoseFeat) -> Tuple[float, List[str]]
     headroom = safe_float(framing.get("headroom_ratio", 1.0))
 
     score_feet = feet
-    score_subj = 1.0 - clamp(abs(subj - 0.82) / 0.22, 0.0, 1.0)
-    score_headroom = 1.0 - clamp(abs(headroom - 0.07) / 0.12, 0.0, 1.0)
-    score = 0.40 * score_feet + 0.35 * score_subj + 0.25 * score_headroom
+    score_subj = 1.0 - clamp(
+        abs(subj - float(mediapipe_cfg.get("subject_height_target", 0.82)))
+        / max(1e-8, float(mediapipe_cfg.get("subject_height_margin", 0.22))),
+        0.0,
+        1.0,
+    )
+    score_headroom = 1.0 - clamp(
+        abs(headroom - float(mediapipe_cfg.get("headroom_target", 0.07)))
+        / max(1e-8, float(mediapipe_cfg.get("headroom_margin", 0.12))),
+        0.0,
+        1.0,
+    )
+    score = (
+        float(mediapipe_cfg.get("feet_weight", 0.40)) * score_feet
+        + float(mediapipe_cfg.get("subject_height_weight", 0.35)) * score_subj
+        + float(mediapipe_cfg.get("headroom_weight", 0.25)) * score_headroom
+    )
 
     if feet < 0.5:
         reasons.append("FEET_CROPPED_OR_NOT_IN_FRAME")
@@ -524,12 +568,19 @@ def framing_score_from_pose_feat(pose_feat: PoseFeat) -> Tuple[float, List[str]]
 
 
 def score_upper_against_anchor_set(
+    runtime: RuntimeContext,
     candidate: PoseFeat,
     anchors: List[PoseFeat],
     view_bucket: str = "front",
 ) -> Tuple[float, float, List[str], Dict[str, Any]]:
     reasons: List[str] = []
     debug: Dict[str, Any] = {"anchor_scores": [], "view_bucket_used": view_bucket}
+    fusion = runtime.config.consistency.score_fusion
+    upper_anchor_cfg = fusion.get("upper_anchor", {})
+    upper_parts = upper_anchor_cfg.get("parts", {}) if isinstance(upper_anchor_cfg, dict) else {}
+    upper_opencv = upper_anchor_cfg.get("opencv", {}) if isinstance(upper_anchor_cfg, dict) else {}
+    upper_conf = upper_anchor_cfg.get("confidence", {}) if isinstance(upper_anchor_cfg, dict) else {}
+    upper_topk = upper_anchor_cfg.get("topk", {}) if isinstance(upper_anchor_cfg, dict) else {}
 
     if not candidate.ok:
         return 0.0, 0.0, ["UPPER_POSE_NOT_AVAILABLE"] + candidate.reasons, debug
@@ -537,9 +588,13 @@ def score_upper_against_anchor_set(
         return 0.0, 0.0, ["NO_UPPER_ANCHORS"], debug
 
     if candidate.mode == "opencv":
-        fr_score, fr_reasons = framing_score_from_pose_feat(candidate)
+        fr_score, fr_reasons = framing_score_from_pose_feat(candidate, scoring=fusion)
         conf = clamp(candidate.confidence_upper, 0.0, 1.0)
-        return fr_score * 0.6 + 0.2, conf, ["UPPER_APPROX_ONLY_OPENCV"] + fr_reasons + candidate.reasons, debug
+        score = (
+            fr_score * float(upper_opencv.get("framing_scale", 0.60))
+            + float(upper_opencv.get("framing_bias", 0.20))
+        )
+        return clamp(score, 0.0, 1.0), conf, ["UPPER_APPROX_ONLY_OPENCV"] + fr_reasons + candidate.reasons, debug
 
     vec_c, cov_c = normalize_pose_subset(candidate.lm_xy, candidate.lm_vis, UPPER_LM_IDS, mode="upper")
 
@@ -550,19 +605,28 @@ def score_upper_against_anchor_set(
 
         vec_a, cov_a = normalize_pose_subset(anchor.lm_xy, anchor.lm_vis, UPPER_LM_IDS, mode="upper")
         s_pose = pose_vector_similarity(vec_c, vec_a)
-        s_geom = upper_geom_similarity(candidate.upper_geom, anchor.upper_geom, view_bucket=view_bucket)
+        s_geom = upper_geom_similarity(
+            candidate.upper_geom,
+            anchor.upper_geom,
+            view_bucket=view_bucket,
+            scoring=fusion,
+        )
 
         parts = []
         if s_pose is not None:
-            parts.append(("pose", s_pose, 0.35))
+            parts.append(("pose", s_pose, float(upper_parts.get("pose", 0.35))))
         if s_geom is not None:
-            parts.append(("geom", s_geom, 0.65))
+            parts.append(("geom", s_geom, float(upper_parts.get("geom", 0.65))))
         if len(parts) == 0:
             continue
 
         ws = sum(weight for _, _, weight in parts)
         fused = sum(value * weight for _, value, weight in parts) / max(1e-8, ws)
-        conf = clamp((cov_c * cov_a) * 0.9 + 0.1, 0.0, 1.0)
+        conf = clamp(
+            (cov_c * cov_a) * float(upper_conf.get("mul", 0.90)) + float(upper_conf.get("bias", 0.10)),
+            0.0,
+            1.0,
+        )
 
         scores.append((fused, conf))
         debug["anchor_scores"].append(
@@ -578,10 +642,11 @@ def score_upper_against_anchor_set(
     if len(scores) == 0:
         return 0.0, clamp(candidate.confidence_upper, 0.0, 1.0), ["NO_VALID_UPPER_ANCHORS"] + candidate.reasons, debug
 
-    topk = sorted(scores, key=lambda item: item[0], reverse=True)[: min(3, len(scores))]
+    limit, _, _ = _topk_settings(upper_topk if isinstance(upper_topk, dict) else {})
+    topk = sorted(scores, key=lambda item: item[0], reverse=True)[: min(limit, len(scores))]
     svals = [score for score, _ in topk]
     cvals = [conf for _, conf in topk]
-    score = float(0.6 * np.mean(svals) + 0.4 * np.median(svals))
+    score = _blend_topk_scores(svals, upper_topk if isinstance(upper_topk, dict) else {})
     conf = float(np.mean(cvals))
 
     if candidate.confidence_upper < 0.5:
@@ -591,24 +656,39 @@ def score_upper_against_anchor_set(
 
 
 def score_full_against_anchor_set(
+    runtime: RuntimeContext,
     candidate: PoseFeat,
     anchors: List[PoseFeat],
     view_bucket: str = "front",
 ) -> Tuple[float, float, List[str], Dict[str, Any]]:
     reasons: List[str] = []
     debug: Dict[str, Any] = {"anchor_scores": [], "view_bucket_used": view_bucket}
+    fusion = runtime.config.consistency.score_fusion
+    full_anchor_cfg = fusion.get("full_anchor", {})
+    full_views = full_anchor_cfg.get("views", {}) if isinstance(full_anchor_cfg, dict) else {}
+    full_opencv = full_anchor_cfg.get("opencv", {}) if isinstance(full_anchor_cfg, dict) else {}
+    full_conf = full_anchor_cfg.get("confidence", {}) if isinstance(full_anchor_cfg, dict) else {}
+    full_topk = full_anchor_cfg.get("topk", {}) if isinstance(full_anchor_cfg, dict) else {}
 
     if not candidate.ok:
         return 0.0, 0.0, ["FULL_POSE_NOT_AVAILABLE"] + candidate.reasons, debug
     if len(anchors) == 0:
         return 0.0, 0.0, ["NO_FULL_ANCHORS"], debug
 
-    fr_score, fr_reasons = framing_score_from_pose_feat(candidate)
+    fr_score, fr_reasons = framing_score_from_pose_feat(candidate, scoring=fusion)
     reasons.extend(fr_reasons)
 
     if candidate.mode == "opencv":
         conf = clamp(candidate.confidence_full, 0.0, 1.0)
-        score = 0.8 * fr_score + 0.2 * linear_map_to_01(candidate.person_bbox_area_ratio, 0.12, 0.45)
+        score = (
+            float(full_opencv.get("framing", 0.80)) * fr_score
+            + float(full_opencv.get("bbox", 0.20))
+            * linear_map_to_01(
+                candidate.person_bbox_area_ratio,
+                float(full_opencv.get("bbox_low", 0.12)),
+                float(full_opencv.get("bbox_high", 0.45)),
+            )
+        )
         reasons.append("FULL_APPROX_ONLY_OPENCV")
         return clamp(score, 0.0, 1.0), conf, reasons + candidate.reasons, debug
 
@@ -621,14 +701,17 @@ def score_full_against_anchor_set(
 
         vec_a, cov_a = normalize_pose_subset(anchor.lm_xy, anchor.lm_vis, FULL_LM_IDS, mode="full")
         s_pose = pose_vector_similarity(vec_c, vec_a)
-        s_geom = full_geom_similarity(candidate.full_geom, anchor.full_geom, view_bucket=view_bucket)
+        s_geom = full_geom_similarity(
+            candidate.full_geom,
+            anchor.full_geom,
+            view_bucket=view_bucket,
+            scoring=fusion,
+        )
 
-        if view_bucket == "front":
-            part_weights = {"framing": 0.45, "geom": 0.35, "pose": 0.20}
-        elif view_bucket == "three_quarter":
-            part_weights = {"framing": 0.40, "geom": 0.40, "pose": 0.20}
-        else:
-            part_weights = {"framing": 0.30, "geom": 0.50, "pose": 0.20}
+        view_key = _normalize_view_bucket_key(view_bucket)
+        part_weights = full_views.get(view_key, {})
+        if not isinstance(part_weights, dict) or len(part_weights) == 0:
+            part_weights = DEFAULT_SCORE_FUSION["full_anchor"]["views"].get(view_key, {})
 
         parts = [("framing", fr_score, part_weights["framing"])]
         if s_geom is not None:
@@ -638,7 +721,11 @@ def score_full_against_anchor_set(
 
         ws = sum(weight for _, _, weight in parts)
         fused = sum(value * weight for _, value, weight in parts) / max(1e-8, ws)
-        conf = clamp((cov_c * cov_a) * 0.9 + 0.1, 0.0, 1.0)
+        conf = clamp(
+            (cov_c * cov_a) * float(full_conf.get("mul", 0.90)) + float(full_conf.get("bias", 0.10)),
+            0.0,
+            1.0,
+        )
         scores.append((fused, conf))
         debug["anchor_scores"].append(
             {
@@ -654,10 +741,11 @@ def score_full_against_anchor_set(
     if len(scores) == 0:
         return fr_score, clamp(candidate.confidence_full, 0.0, 1.0), ["NO_VALID_FULL_ANCHORS"] + reasons + candidate.reasons, debug
 
-    topk = sorted(scores, key=lambda item: item[0], reverse=True)[: min(3, len(scores))]
+    limit, _, _ = _topk_settings(full_topk if isinstance(full_topk, dict) else {})
+    topk = sorted(scores, key=lambda item: item[0], reverse=True)[: min(limit, len(scores))]
     svals = [score for score, _ in topk]
     cvals = [conf for _, conf in topk]
-    score = float(0.6 * np.mean(svals) + 0.4 * np.median(svals))
+    score = _blend_topk_scores(svals, full_topk if isinstance(full_topk, dict) else {})
     conf = float(np.mean(cvals))
 
     if candidate.confidence_full < 0.5:
@@ -690,14 +778,22 @@ def classify_module(
     return "FAIL", [f"{module_name.upper()}_FAIL"]
 
 
-def fuse_overall(scores: Dict[str, float], confs: Dict[str, float], weights: Dict[str, float]) -> float:
+def fuse_overall(
+    scores: Dict[str, float],
+    confs: Dict[str, float],
+    weights: Dict[str, float],
+    scoring: Optional[Dict[str, Any]] = None,
+) -> float:
+    overall_cfg = _score_fusion_config(scoring).get("overall", {})
+    conf_floor = float(overall_cfg.get("confidence_floor", 0.25))
+    conf_scale = float(overall_cfg.get("confidence_scale", 0.75))
     ws = 0.0
     acc = 0.0
     for key in ["face", "upper", "full"]:
         weight = float(weights.get(key, 0.0))
         conf = float(confs.get(key, 0.0))
         score = float(scores.get(key, 0.0))
-        eff = weight * (0.25 + 0.75 * conf)
+        eff = weight * (conf_floor + conf_scale * conf)
         acc += score * eff
         ws += eff
     if ws < 1e-8:

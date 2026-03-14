@@ -190,6 +190,7 @@ def _build_threshold_snapshot(runtime: RuntimeContext, profile_name: str) -> Dic
             },
             "body_constitution_scoring": _json_ready(runtime.config.consistency.body_constitution_scoring),
             "depth3d_scoring": _json_ready(runtime.config.consistency.depth3d_scoring),
+            "score_fusion": _json_ready(runtime.config.consistency.score_fusion),
         },
         "quality_thresholds": runtime.config.quality_thresholds.to_json_dict(),
         "task_profile_thresholds": _json_ready(profile_thresholds),
@@ -479,6 +480,7 @@ def _apply_threshold_override(
             "skin_score_weights",
             "body_constitution_scoring",
             "depth3d_scoring",
+            "score_fusion",
         }
         direct_consistency_node = {
             key: value for key, value in consistency_node.items() if key not in nested_consistency_keys
@@ -587,6 +589,16 @@ def _apply_threshold_override(
                 depth3d_scoring_node,
             )
             applied["consistency.depth3d_scoring"] = copy.deepcopy(depth3d_scoring_node)
+
+        score_fusion_node = consistency_node.get("score_fusion", None)
+        if score_fusion_node is not None:
+            if not isinstance(score_fusion_node, dict):
+                raise ValueError("threshold_override.consistency.score_fusion must be a dict")
+            config.consistency.score_fusion = _deep_merge_dict(
+                config.consistency.score_fusion,
+                score_fusion_node,
+            )
+            applied["consistency.score_fusion"] = copy.deepcopy(score_fusion_node)
 
     quality_threshold_node = threshold_override.get("quality_thresholds", None)
     if quality_threshold_node is not None:
@@ -865,11 +877,13 @@ def _run_pipeline_impl(
                     face_debug["flip_canonicalized"] = True
 
             upper_score, upper_conf, upper_reasons, upper_debug = score_upper_against_anchor_set(
+                runtime,
                 cand_pose,
                 anchors.upper_pose_feats,
                 view_bucket=view_lane,
             )
             full_score, full_conf, full_reasons, full_debug = score_full_against_anchor_set(
+                runtime,
                 cand_pose,
                 anchors.full_pose_feats,
                 view_bucket=view_lane,
@@ -887,7 +901,7 @@ def _run_pipeline_impl(
 
             scores = {"face": face_score, "upper": upper_score, "full": full_score}
             confs = {"face": face_conf, "upper": upper_conf, "full": full_conf}
-            overall_score = fuse_overall(scores, confs, weights)
+            overall_score = fuse_overall(scores, confs, weights, scoring=config.consistency.score_fusion)
 
             if overall_score >= th["overall_pass"]:
                 overall_state = "PASS"

@@ -3,6 +3,14 @@
   "items": {
     "example.png": {
       "expected_status": "WARN",
+      "expected_task_profile": "body_gold_fullbody",
+      "expected_view_lane": "front",
+      "must_have_reasons": [
+        "SKIN_LIGHTING_RISK_WARN"
+      ],
+      "must_not_have_reasons": [
+        "FACE_NO_RELIABLE_SIGNAL"
+      ],
       "weight": 1.0,
       "notes": ""
     }

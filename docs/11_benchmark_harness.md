@@ -11,6 +11,7 @@
 - Consistency gates from `configs/consistency_thresholds.yaml`
 - BODY CONSTITUTION scoring ranges and weights
 - DEPTH 3D LITE scoring ranges and weights
+- Face/upper/full/overall fusion weights from `consistency.score_fusion`
 - Face-quality warning flags derived from report debug fields
 
 ## What It Does Not Replay
@@ -33,6 +34,10 @@
   "items": {
     "example.png": {
       "expected_status": "WARN",
+      "expected_task_profile": "body_gold_fullbody",
+      "expected_view_lane": "front",
+      "must_have_reasons": ["SKIN_LIGHTING_RISK_WARN"],
+      "must_not_have_reasons": ["FACE_NO_RELIABLE_SIGNAL"],
       "weight": 1.0,
       "notes": "human sealed as backup only"
     }
@@ -47,9 +52,14 @@
 - `pass_recall`
 - `false_pass_rate`
 - `release_safety_score`
+- `agreement_metrics.task_profile_accuracy`
+- `agreement_metrics.view_lane_accuracy`
+- `agreement_metrics.reason_constraint_accuracy`
 
 ## Usage Rule
 - Benchmark labels should come from frozen human arbitration, not temporary mood judgments
+- `schema_version` is mandatory and must stay at `qa_benchmark_labels_v1`
+- `must_have_reasons` / `must_not_have_reasons` are optional, but useful for regression protection on soft-gate behavior
 - Prefer a benchmark set that covers:
   - front core
   - three-quarter soft review

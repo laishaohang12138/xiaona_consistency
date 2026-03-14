@@ -133,6 +133,192 @@ def _default_depth3d_scoring() -> Dict[str, Any]:
     }
 
 
+def _default_score_fusion() -> Dict[str, Any]:
+    return {
+        "face_identity": {
+            "views": {
+                "front": {
+                    "weights": {
+                        "embedding": 0.42,
+                        "geom": 0.22,
+                        "hog": 0.14,
+                        "lbp": 0.10,
+                        "phash": 0.04,
+                        "ssim": 0.08,
+                    }
+                },
+                "three_quarter": {
+                    "weights": {
+                        "embedding": 0.58,
+                        "geom": 0.10,
+                        "hog": 0.10,
+                        "lbp": 0.06,
+                        "phash": 0.02,
+                        "ssim": 0.14,
+                    }
+                },
+                "profile_like": {
+                    "weights": {
+                        "embedding": 0.70,
+                        "geom": 0.05,
+                        "hog": 0.08,
+                        "lbp": 0.05,
+                        "phash": 0.00,
+                        "ssim": 0.12,
+                    }
+                },
+            },
+            "confidence": {
+                "base": 0.60,
+                "coverage": 0.40,
+            },
+            "topk": {
+                "limit": 3,
+                "mean": 0.60,
+                "median": 0.40,
+            },
+        },
+        "upper_geom": {
+            "views": {
+                "front": {
+                    "weights": {
+                        "shoulder_width_norm": 0.45,
+                        "torso_len_norm": 0.35,
+                        "hip_width_norm": 0.20,
+                    },
+                    "tilt_weight": 0.10,
+                    "spine_weight": 0.04,
+                },
+                "three_quarter": {
+                    "weights": {
+                        "shoulder_width_norm": 0.10,
+                        "torso_len_norm": 0.50,
+                        "hip_width_norm": 0.40,
+                    },
+                    "tilt_weight": 0.04,
+                    "spine_weight": 0.10,
+                },
+                "profile_like": {
+                    "weights": {
+                        "torso_len_norm": 0.34,
+                        "shoulder_hip_center_offset_norm": 0.24,
+                        "torso_compactness": 0.18,
+                        "hip_width_norm": 0.14,
+                        "hip_shoulder_ratio": 0.10,
+                    },
+                    "tilt_weight": 0.00,
+                    "spine_weight": 0.18,
+                },
+            }
+        },
+        "full_geom": {
+            "views": {
+                "front": {
+                    "weights": {
+                        "head_body_ratio": 0.58,
+                        "leg_ratio": 0.42,
+                    }
+                },
+                "three_quarter": {
+                    "weights": {
+                        "head_body_ratio": 0.46,
+                        "leg_ratio": 0.36,
+                        "leg_straightness_mean_deg": 0.10,
+                        "ankle_gap_norm": 0.08,
+                    }
+                },
+                "profile_like": {
+                    "weights": {
+                        "head_body_ratio": 0.22,
+                        "leg_ratio": 0.28,
+                        "leg_straightness_min_deg": 0.24,
+                        "leg_straightness_mean_deg": 0.12,
+                        "ankle_gap_norm": 0.08,
+                        "foot_length_proxy_norm": 0.06,
+                    }
+                },
+            }
+        },
+        "framing": {
+            "opencv": {
+                "subject_height_weight": 0.40,
+                "subject_height_low": 0.45,
+                "subject_height_high": 0.85,
+                "headroom_weight": 0.30,
+                "headroom_target": 0.08,
+                "headroom_margin": 0.20,
+                "feet_weight": 0.30,
+            },
+            "mediapipe": {
+                "feet_weight": 0.40,
+                "subject_height_weight": 0.35,
+                "subject_height_target": 0.82,
+                "subject_height_margin": 0.22,
+                "headroom_weight": 0.25,
+                "headroom_target": 0.07,
+                "headroom_margin": 0.12,
+            },
+        },
+        "upper_anchor": {
+            "parts": {
+                "pose": 0.35,
+                "geom": 0.65,
+            },
+            "opencv": {
+                "framing_scale": 0.60,
+                "framing_bias": 0.20,
+            },
+            "confidence": {
+                "mul": 0.90,
+                "bias": 0.10,
+            },
+            "topk": {
+                "limit": 3,
+                "mean": 0.60,
+                "median": 0.40,
+            },
+        },
+        "full_anchor": {
+            "views": {
+                "front": {
+                    "framing": 0.45,
+                    "geom": 0.35,
+                    "pose": 0.20,
+                },
+                "three_quarter": {
+                    "framing": 0.40,
+                    "geom": 0.40,
+                    "pose": 0.20,
+                },
+                "profile_like": {
+                    "framing": 0.30,
+                    "geom": 0.50,
+                    "pose": 0.20,
+                },
+            },
+            "opencv": {
+                "framing": 0.80,
+                "bbox": 0.20,
+                "bbox_low": 0.12,
+                "bbox_high": 0.45,
+            },
+            "confidence": {
+                "mul": 0.90,
+                "bias": 0.10,
+            },
+            "topk": {
+                "limit": 3,
+                "mean": 0.60,
+                "median": 0.40,
+            },
+        },
+        "overall": {
+            "confidence_floor": 0.25,
+            "confidence_scale": 0.75,
+        },
+    }
+
+
 @dataclass(frozen=True)
 class ProjectPaths:
     base_dir: Path
@@ -236,6 +422,7 @@ class ConsistencySettings:
     skin_score_weights: SkinScoreWeightSettings = field(default_factory=SkinScoreWeightSettings)
     body_constitution_scoring: Dict[str, Any] = field(default_factory=_default_body_constitution_scoring)
     depth3d_scoring: Dict[str, Any] = field(default_factory=_default_depth3d_scoring)
+    score_fusion: Dict[str, Any] = field(default_factory=_default_score_fusion)
 
 
 @dataclass
@@ -1033,6 +1220,13 @@ def apply_external_project_configs(config: RuntimeConfig) -> None:
                 config.consistency.depth3d_scoring = _deep_merge_dict(
                     config.consistency.depth3d_scoring,
                     depth3d_node,
+                )
+
+            score_fusion_node = consistency_node.get("score_fusion", None)
+            if isinstance(score_fusion_node, dict):
+                config.consistency.score_fusion = _deep_merge_dict(
+                    config.consistency.score_fusion,
+                    score_fusion_node,
                 )
 
         algorithm_policy = consistency_data.get("algorithm_policy", None)
