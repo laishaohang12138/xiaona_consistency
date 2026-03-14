@@ -55,6 +55,8 @@
 - `agreement_metrics.task_profile_accuracy`
 - `agreement_metrics.view_lane_accuracy`
 - `agreement_metrics.reason_constraint_accuracy`
+- `group_metrics.view_lane.*`
+- `group_metrics.task_profile.*`
 
 ## Usage Rule
 - Benchmark labels should come from frozen human arbitration, not temporary mood judgments

@@ -509,6 +509,121 @@ def _optional_accuracy(matched_weight: float, checked_weight: float) -> Optional
     return round(_safe_div(matched_weight, checked_weight, default=0.0), 6)
 
 
+def _new_aggregate_state() -> Dict[str, Any]:
+    return {
+        "num_items": 0,
+        "confusion": {},
+        "total_weight": 0.0,
+        "matched_weight": 0.0,
+        "false_pass_weight": 0.0,
+        "predicted_pass_weight": 0.0,
+        "expected_pass_weight": 0.0,
+        "task_profile_checked_weight": 0.0,
+        "task_profile_matched_weight": 0.0,
+        "view_lane_checked_weight": 0.0,
+        "view_lane_matched_weight": 0.0,
+        "reason_constraint_checked_weight": 0.0,
+        "reason_constraint_matched_weight": 0.0,
+    }
+
+
+def _update_aggregate_state(
+    state: Dict[str, Any],
+    *,
+    expected: str,
+    predicted: str,
+    weight: float,
+    task_profile_match: Optional[bool],
+    view_lane_match: Optional[bool],
+    reason_constraint_match: Optional[bool],
+) -> None:
+    confusion = state["confusion"]
+    state["num_items"] += 1
+    state["total_weight"] += weight
+    confusion[(expected, predicted)] = confusion.get((expected, predicted), 0.0) + weight
+    if expected == predicted:
+        state["matched_weight"] += weight
+    if predicted == "PASS":
+        state["predicted_pass_weight"] += weight
+    if expected == "PASS":
+        state["expected_pass_weight"] += weight
+    if predicted == "PASS" and expected != "PASS":
+        state["false_pass_weight"] += weight
+    if task_profile_match is not None:
+        state["task_profile_checked_weight"] += weight
+        if task_profile_match:
+            state["task_profile_matched_weight"] += weight
+    if view_lane_match is not None:
+        state["view_lane_checked_weight"] += weight
+        if view_lane_match:
+            state["view_lane_matched_weight"] += weight
+    if reason_constraint_match is not None:
+        state["reason_constraint_checked_weight"] += weight
+        if reason_constraint_match:
+            state["reason_constraint_matched_weight"] += weight
+
+
+def _finalize_aggregate_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    confusion = state["confusion"]
+    class_metrics = {
+        status: _precision_recall_f1(confusion, status)
+        for status in VALID_STATUSES
+    }
+    active_statuses = [
+        status
+        for status in VALID_STATUSES
+        if any(expected == status or predicted == status for expected, predicted in confusion.keys())
+    ]
+    if len(active_statuses) == 0:
+        active_statuses = list(VALID_STATUSES)
+    macro_f1 = sum(class_metrics[status]["f1"] for status in active_statuses) / len(active_statuses)
+    exact_accuracy = _safe_div(state["matched_weight"], state["total_weight"], default=0.0)
+    pass_precision = class_metrics["PASS"]["precision"]
+    pass_recall = class_metrics["PASS"]["recall"]
+    false_pass_rate = _safe_div(state["false_pass_weight"], state["total_weight"], default=0.0)
+    release_safety_score = 0.45 * macro_f1 + 0.35 * pass_precision + 0.20 * (1.0 - false_pass_rate)
+
+    return {
+        "num_items": int(state["num_items"]),
+        "weight_sum": round(state["total_weight"], 6),
+        "metrics": {
+            "exact_accuracy": round(exact_accuracy, 6),
+            "macro_f1": round(macro_f1, 6),
+            "pass_precision": round(pass_precision, 6),
+            "pass_recall": round(pass_recall, 6),
+            "false_pass_rate": round(false_pass_rate, 6),
+            "release_safety_score": round(release_safety_score, 6),
+            "predicted_pass_weight": round(state["predicted_pass_weight"], 6),
+            "expected_pass_weight": round(state["expected_pass_weight"], 6),
+        },
+        "agreement_metrics": {
+            "task_profile_accuracy": _optional_accuracy(
+                state["task_profile_matched_weight"],
+                state["task_profile_checked_weight"],
+            ),
+            "view_lane_accuracy": _optional_accuracy(
+                state["view_lane_matched_weight"],
+                state["view_lane_checked_weight"],
+            ),
+            "reason_constraint_accuracy": _optional_accuracy(
+                state["reason_constraint_matched_weight"],
+                state["reason_constraint_checked_weight"],
+            ),
+            "task_profile_checked_weight": round(state["task_profile_checked_weight"], 6),
+            "view_lane_checked_weight": round(state["view_lane_checked_weight"], 6),
+            "reason_constraint_checked_weight": round(state["reason_constraint_checked_weight"], 6),
+        },
+        "class_metrics": {
+            status: {key: round(value, 6) for key, value in metrics.items()}
+            for status, metrics in class_metrics.items()
+        },
+        "confusion": {
+            f"{expected}->{predicted}": round(weight, 6)
+            for (expected, predicted), weight in sorted(confusion.items())
+        },
+    }
+
+
 def benchmark_report(
     runtime: RuntimeContext,
     report_path: Path,
@@ -536,6 +651,8 @@ def benchmark_report(
     view_lane_matched_weight = 0.0
     reason_constraint_checked_weight = 0.0
     reason_constraint_matched_weight = 0.0
+    aggregate_by_view_lane: Dict[str, Dict[str, Any]] = {}
+    aggregate_by_task_profile: Dict[str, Dict[str, Any]] = {}
 
     for image_name, label in labels.items():
         report_item = items_by_name.get(image_name)
@@ -599,11 +716,27 @@ def benchmark_report(
         constraint_values = [value for value in [task_profile_match, view_lane_match, reason_constraint_match] if value is not None]
         all_constraints_match = all(constraint_values) if constraint_values else None
 
+        view_lane_key = predicted_view_lane or "unknown"
+        task_profile_key = str(replayed["task_profile"] or "unknown")
+        lane_state = aggregate_by_view_lane.setdefault(view_lane_key, _new_aggregate_state())
+        profile_state = aggregate_by_task_profile.setdefault(task_profile_key, _new_aggregate_state())
+        for state in [lane_state, profile_state]:
+            _update_aggregate_state(
+                state,
+                expected=expected,
+                predicted=predicted,
+                weight=weight,
+                task_profile_match=task_profile_match,
+                view_lane_match=view_lane_match,
+                reason_constraint_match=reason_constraint_match,
+            )
+
         per_item.append(
             {
                 "image": image_name,
                 "expected_status": expected,
                 "predicted_status": predicted,
+                "view_lane": view_lane_key,
                 "weight": weight,
                 "match": expected == predicted,
                 "scores": replayed["scores"],
@@ -638,6 +771,16 @@ def benchmark_report(
     pass_recall = class_metrics["PASS"]["recall"]
     false_pass_rate = _safe_div(false_pass_weight, total_weight, default=0.0)
     release_safety_score = 0.45 * macro_f1 + 0.35 * pass_precision + 0.20 * (1.0 - false_pass_rate)
+    group_metrics = {
+        "view_lane": {
+            key: _finalize_aggregate_state(state)
+            for key, state in sorted(aggregate_by_view_lane.items())
+        },
+        "task_profile": {
+            key: _finalize_aggregate_state(state)
+            for key, state in sorted(aggregate_by_task_profile.items())
+        },
+    }
 
     return {
         "schema_version": "qa_benchmark_result_v1",
@@ -676,5 +819,6 @@ def benchmark_report(
             f"{expected}->{predicted}": round(weight, 6)
             for (expected, predicted), weight in sorted(confusion.items())
         },
+        "group_metrics": group_metrics,
         "items": per_item,
     }

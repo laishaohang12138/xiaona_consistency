@@ -69,6 +69,9 @@
   - `metrics.macro_f1`
   - `metrics.pass_precision`
   - `agreement_metrics.view_lane_accuracy`
+  - `group_metrics.view_lane.front.metrics.release_safety_score`
+  - `group_metrics.view_lane.three_quarter.metrics.release_safety_score`
+  - `group_metrics.task_profile.body_gold_side90_shadow.metrics.release_safety_score`
 
 ## Notes
 - `fixed_override` is merged before trial values
