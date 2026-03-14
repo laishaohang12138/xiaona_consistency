@@ -1,0 +1,144 @@
+{
+  "schema_version": "qa_optuna_search_space_v1",
+  "objective": {
+    "metric_path": "group_metrics.view_lane.front.metrics.release_safety_score",
+    "direction": "maximize"
+  },
+  "study": {
+    "name": "body_gold_front_core",
+    "sampler": "tpe",
+    "seed": 42,
+    "n_trials": 40
+  },
+  "fixed_override": {},
+  "parameters": [
+    {
+      "name": "overall_pass",
+      "path": "profile_thresholds.overall_pass",
+      "type": "float",
+      "low": 0.70,
+      "high": 0.82,
+      "step": 0.01
+    },
+    {
+      "name": "overall_warn",
+      "path": "profile_thresholds.overall_warn",
+      "type": "float",
+      "low": 0.54,
+      "high": 0.68,
+      "step": 0.01
+    },
+    {
+      "name": "full_pass",
+      "path": "profile_thresholds.full_pass",
+      "type": "float",
+      "low": 0.68,
+      "high": 0.82,
+      "step": 0.01
+    },
+    {
+      "name": "full_warn",
+      "path": "profile_thresholds.full_warn",
+      "type": "float",
+      "low": 0.52,
+      "high": 0.64,
+      "step": 0.01
+    },
+    {
+      "name": "constitution_soft",
+      "path": "consistency.warn_threshold.constitution_soft",
+      "type": "float",
+      "low": 0.52,
+      "high": 0.66,
+      "step": 0.01
+    },
+    {
+      "name": "constitution_strong",
+      "path": "consistency.warn_threshold.constitution_strong",
+      "type": "float",
+      "low": 0.34,
+      "high": 0.48,
+      "step": 0.01
+    },
+    {
+      "name": "skin_soft",
+      "path": "consistency.warn_threshold.skin_soft",
+      "type": "float",
+      "low": 0.50,
+      "high": 0.64,
+      "step": 0.01
+    },
+    {
+      "name": "skin_strong",
+      "path": "consistency.warn_threshold.skin_strong",
+      "type": "float",
+      "low": 0.34,
+      "high": 0.46,
+      "step": 0.01
+    },
+    {
+      "name": "lighting_warn",
+      "path": "consistency.skin_risk.lighting_warn",
+      "type": "float",
+      "low": 0.22,
+      "high": 0.38,
+      "step": 0.01
+    },
+    {
+      "name": "lighting_high",
+      "path": "consistency.skin_risk.lighting_high",
+      "type": "float",
+      "low": 0.44,
+      "high": 0.68,
+      "step": 0.01
+    },
+    {
+      "name": "overall_conf_floor",
+      "path": "consistency.score_fusion.overall.confidence_floor",
+      "type": "float",
+      "low": 0.10,
+      "high": 0.40,
+      "step": 0.01
+    },
+    {
+      "name": "overall_conf_scale",
+      "path": "consistency.score_fusion.overall.confidence_scale",
+      "type": "float",
+      "low": 0.50,
+      "high": 0.90,
+      "step": 0.01
+    }
+  ],
+  "constraints": [
+    {
+      "type": "order",
+      "lower_path": "profile_thresholds.overall_warn",
+      "upper_path": "profile_thresholds.overall_pass",
+      "min_gap": 0.02
+    },
+    {
+      "type": "order",
+      "lower_path": "profile_thresholds.full_warn",
+      "upper_path": "profile_thresholds.full_pass",
+      "min_gap": 0.02
+    },
+    {
+      "type": "order",
+      "lower_path": "consistency.warn_threshold.constitution_strong",
+      "upper_path": "consistency.warn_threshold.constitution_soft",
+      "min_gap": 0.04
+    },
+    {
+      "type": "order",
+      "lower_path": "consistency.warn_threshold.skin_strong",
+      "upper_path": "consistency.warn_threshold.skin_soft",
+      "min_gap": 0.04
+    },
+    {
+      "type": "order",
+      "lower_path": "consistency.skin_risk.lighting_warn",
+      "upper_path": "consistency.skin_risk.lighting_high",
+      "min_gap": 0.06
+    }
+  ]
+}

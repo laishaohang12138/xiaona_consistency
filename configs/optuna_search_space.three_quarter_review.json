@@ -1,0 +1,138 @@
+{
+  "schema_version": "qa_optuna_search_space_v1",
+  "objective": {
+    "metric_path": "group_metrics.view_lane.three_quarter.metrics.release_safety_score",
+    "direction": "maximize"
+  },
+  "study": {
+    "name": "body_gold_three_quarter_review",
+    "sampler": "tpe",
+    "seed": 42,
+    "n_trials": 40
+  },
+  "fixed_override": {},
+  "parameters": [
+    {
+      "name": "face_pass",
+      "path": "profile_thresholds.face_pass",
+      "type": "float",
+      "low": 0.72,
+      "high": 0.84,
+      "step": 0.01
+    },
+    {
+      "name": "face_warn",
+      "path": "profile_thresholds.face_warn",
+      "type": "float",
+      "low": 0.56,
+      "high": 0.70,
+      "step": 0.01
+    },
+    {
+      "name": "upper_pass",
+      "path": "profile_thresholds.upper_pass",
+      "type": "float",
+      "low": 0.64,
+      "high": 0.80,
+      "step": 0.01
+    },
+    {
+      "name": "upper_warn",
+      "path": "profile_thresholds.upper_warn",
+      "type": "float",
+      "low": 0.48,
+      "high": 0.64,
+      "step": 0.01
+    },
+    {
+      "name": "full_pass",
+      "path": "profile_thresholds.full_pass",
+      "type": "float",
+      "low": 0.66,
+      "high": 0.80,
+      "step": 0.01
+    },
+    {
+      "name": "full_warn",
+      "path": "profile_thresholds.full_warn",
+      "type": "float",
+      "low": 0.50,
+      "high": 0.64,
+      "step": 0.01
+    },
+    {
+      "name": "depth_soft",
+      "path": "consistency.warn_threshold.depth3d_soft",
+      "type": "float",
+      "low": 0.44,
+      "high": 0.66,
+      "step": 0.01
+    },
+    {
+      "name": "depth_strong",
+      "path": "consistency.warn_threshold.depth3d_strong",
+      "type": "float",
+      "low": 0.32,
+      "high": 0.52,
+      "step": 0.01
+    },
+    {
+      "name": "three_quarter_embedding",
+      "path": "consistency.score_fusion.face_identity.views.three_quarter.weights.embedding",
+      "type": "float",
+      "low": 0.45,
+      "high": 0.70,
+      "step": 0.01
+    },
+    {
+      "name": "three_quarter_ssim",
+      "path": "consistency.score_fusion.face_identity.views.three_quarter.weights.ssim",
+      "type": "float",
+      "low": 0.05,
+      "high": 0.20,
+      "step": 0.01
+    },
+    {
+      "name": "full_geom_weight",
+      "path": "consistency.score_fusion.full_anchor.views.three_quarter.geom",
+      "type": "float",
+      "low": 0.30,
+      "high": 0.55,
+      "step": 0.01
+    },
+    {
+      "name": "full_pose_weight",
+      "path": "consistency.score_fusion.full_anchor.views.three_quarter.pose",
+      "type": "float",
+      "low": 0.10,
+      "high": 0.30,
+      "step": 0.01
+    }
+  ],
+  "constraints": [
+    {
+      "type": "order",
+      "lower_path": "profile_thresholds.face_warn",
+      "upper_path": "profile_thresholds.face_pass",
+      "min_gap": 0.02
+    },
+    {
+      "type": "order",
+      "lower_path": "profile_thresholds.upper_warn",
+      "upper_path": "profile_thresholds.upper_pass",
+      "min_gap": 0.02
+    },
+    {
+      "type": "order",
+      "lower_path": "profile_thresholds.full_warn",
+      "upper_path": "profile_thresholds.full_pass",
+      "min_gap": 0.02
+    },
+    {
+      "type": "order",
+      "lower_path": "consistency.warn_threshold.depth3d_strong",
+      "upper_path": "consistency.warn_threshold.depth3d_soft",
+      "min_gap": 0.04
+    }
+  ]
+}

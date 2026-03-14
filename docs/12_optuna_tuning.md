@@ -17,6 +17,14 @@
 - Persist study to sqlite:
   - `python check_consistency.py --mode optuna --benchmark-labels configs/benchmark_labels.local.json --optuna-search-space configs/optuna_search_space.template.json --optuna-storage-path outputs/optuna_study.db`
 
+## Recommended Presets
+- Front mainline:
+  - `configs/optuna_search_space.front_core.json`
+- Three-quarter review lane:
+  - `configs/optuna_search_space.three_quarter_review.json`
+- Side-90 shadow lane:
+  - `configs/optuna_search_space.side90_shadow.json`
+
 ## Search Space Shape
 ```json
 {

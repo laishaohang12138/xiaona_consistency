@@ -1,0 +1,132 @@
+{
+  "schema_version": "qa_optuna_search_space_v1",
+  "objective": {
+    "metric_path": "group_metrics.task_profile.body_gold_side90_shadow.metrics.release_safety_score",
+    "direction": "maximize"
+  },
+  "study": {
+    "name": "body_gold_side90_shadow",
+    "sampler": "tpe",
+    "seed": 42,
+    "n_trials": 40
+  },
+  "fixed_override": {},
+  "parameters": [
+    {
+      "name": "full_pass",
+      "path": "profile_thresholds.full_pass",
+      "type": "float",
+      "low": 0.68,
+      "high": 0.82,
+      "step": 0.01
+    },
+    {
+      "name": "full_warn",
+      "path": "profile_thresholds.full_warn",
+      "type": "float",
+      "low": 0.50,
+      "high": 0.66,
+      "step": 0.01
+    },
+    {
+      "name": "overall_pass",
+      "path": "profile_thresholds.overall_pass",
+      "type": "float",
+      "low": 0.68,
+      "high": 0.80,
+      "step": 0.01
+    },
+    {
+      "name": "overall_warn",
+      "path": "profile_thresholds.overall_warn",
+      "type": "float",
+      "low": 0.52,
+      "high": 0.64,
+      "step": 0.01
+    },
+    {
+      "name": "depth_soft",
+      "path": "consistency.warn_threshold.depth3d_soft",
+      "type": "float",
+      "low": 0.42,
+      "high": 0.66,
+      "step": 0.01
+    },
+    {
+      "name": "depth_strong",
+      "path": "consistency.warn_threshold.depth3d_strong",
+      "type": "float",
+      "low": 0.30,
+      "high": 0.50,
+      "step": 0.01
+    },
+    {
+      "name": "profile_face_weight",
+      "path": "profile_weights.face",
+      "type": "float",
+      "low": 0.05,
+      "high": 0.25,
+      "step": 0.01
+    },
+    {
+      "name": "profile_upper_weight",
+      "path": "profile_weights.upper",
+      "type": "float",
+      "low": 0.15,
+      "high": 0.35,
+      "step": 0.01
+    },
+    {
+      "name": "profile_full_weight",
+      "path": "profile_weights.full",
+      "type": "float",
+      "low": 0.45,
+      "high": 0.70,
+      "step": 0.01
+    },
+    {
+      "name": "profile_like_embedding",
+      "path": "consistency.score_fusion.face_identity.views.profile_like.weights.embedding",
+      "type": "float",
+      "low": 0.55,
+      "high": 0.80,
+      "step": 0.01
+    },
+    {
+      "name": "profile_like_geom",
+      "path": "consistency.score_fusion.face_identity.views.profile_like.weights.geom",
+      "type": "float",
+      "low": 0.02,
+      "high": 0.12,
+      "step": 0.01
+    },
+    {
+      "name": "profile_like_full_geom",
+      "path": "consistency.score_fusion.full_anchor.views.profile_like.geom",
+      "type": "float",
+      "low": 0.40,
+      "high": 0.60,
+      "step": 0.01
+    }
+  ],
+  "constraints": [
+    {
+      "type": "order",
+      "lower_path": "profile_thresholds.full_warn",
+      "upper_path": "profile_thresholds.full_pass",
+      "min_gap": 0.02
+    },
+    {
+      "type": "order",
+      "lower_path": "profile_thresholds.overall_warn",
+      "upper_path": "profile_thresholds.overall_pass",
+      "min_gap": 0.02
+    },
+    {
+      "type": "order",
+      "lower_path": "consistency.warn_threshold.depth3d_strong",
+      "upper_path": "consistency.warn_threshold.depth3d_soft",
+      "min_gap": 0.04
+    }
+  ]
+}
