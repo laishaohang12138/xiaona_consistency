@@ -11,6 +11,7 @@ XiaoNa LoRA training engineering repository.
 - Custom GPT knowledge export in `kb_export/`
 - Anchor assets in `anchors/`
 - Offline benchmark replay support for threshold tuning
+- Offline Optuna tuning support on top of benchmark replay
 
 ## Runtime Status
 - The QA pipeline is modularized into `core/qa_runtime.py`, `core/qa_pipeline.py`, `core/qa_scoring.py`, `core/qa_consistency.py`, `core/qa_features.py`, and `core/providers.py`
@@ -18,6 +19,7 @@ XiaoNa LoRA training engineering repository.
 - BODY GOLD currently runs as a conservative front-core lane, while side/back work is staged through shadow profile lanes
 - `outputs/qa_report.json` now writes `report_meta` plus `items`, including provider policy, anchor snapshot, layer quota snapshot, and threshold hash
 - Benchmark replay can re-score a saved `qa_report.json` under threshold overrides without rerunning vision models
+- Optuna search can optimize replay metrics from `configs/optuna_search_space.template.json` without touching the main QA path
 
 ## Confirmed Route
 1. Engineering decoupling first

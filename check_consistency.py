@@ -88,7 +88,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=["qa", "calibrate", "benchmark"],
+        choices=["qa", "calibrate", "benchmark", "optuna"],
         help="Override runtime.config.run_mode for this invocation.",
     )
     parser.add_argument(
@@ -125,6 +125,35 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Export a benchmark label template from the chosen report file and exit.",
     )
+    parser.add_argument(
+        "--optuna-search-space",
+        type=Path,
+        help="Optuna search-space JSON used by offline benchmark tuning mode.",
+    )
+    parser.add_argument(
+        "--optuna-output",
+        type=Path,
+        help="Optional output JSON path for the Optuna study summary.",
+    )
+    parser.add_argument(
+        "--optuna-best-override-out",
+        type=Path,
+        help="Optional output JSON path for the best threshold override found by Optuna.",
+    )
+    parser.add_argument(
+        "--optuna-study-name",
+        help="Optional study name override for Optuna tuning mode.",
+    )
+    parser.add_argument(
+        "--optuna-storage-path",
+        type=Path,
+        help="Optional sqlite storage path for persisting the Optuna study.",
+    )
+    parser.add_argument(
+        "--optuna-trials",
+        type=int,
+        help="Optional trial-count override for Optuna tuning mode.",
+    )
     return parser
 
 
@@ -136,6 +165,33 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
         threshold_override = _load_threshold_override(args, base_dir)
     except ValueError as exc:
         parser.error(str(exc))
+
+    if args.mode == "optuna":
+        if args.optuna_search_space is None:
+            parser.error("optuna mode requires --optuna-search-space")
+        if args.benchmark_labels is None:
+            parser.error("optuna mode requires --benchmark-labels")
+
+        from core.qa_optuna import run_optuna_search
+
+        result = run_optuna_search(
+            base_dir=base_dir,
+            report_path=_resolve_cli_path(args.benchmark_report, base_dir)
+            if args.benchmark_report
+            else (base_dir / "outputs" / "qa_report.json").resolve(),
+            labels_path=_resolve_cli_path(args.benchmark_labels, base_dir),
+            search_space_path=_resolve_cli_path(args.optuna_search_space, base_dir),
+            cli_fixed_override=threshold_override,
+            output_path=_resolve_cli_path(args.optuna_output, base_dir) if args.optuna_output else None,
+            best_override_out=_resolve_cli_path(args.optuna_best_override_out, base_dir)
+            if args.optuna_best_override_out
+            else None,
+            study_name_override=args.optuna_study_name,
+            storage_path=_resolve_cli_path(args.optuna_storage_path, base_dir) if args.optuna_storage_path else None,
+            trials_override=args.optuna_trials,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
 
     pipeline_main(
         base_dir=base_dir,
