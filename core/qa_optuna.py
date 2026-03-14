@@ -6,12 +6,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .qa_benchmark import benchmark_report
+from .qa_benchmark import (
+    DEFAULT_BENCHMARK_FROZEN_ROLE,
+    DEFAULT_BENCHMARK_LABEL_ROLE,
+    benchmark_report,
+    load_benchmark_label_bundle,
+)
 from .qa_pipeline import print_runtime_config
-from .qa_runtime import EngineState, RuntimeContext, create_runtime_config
+from .qa_runtime import EngineState, RuntimeContext, anchor_registry_snapshot, create_runtime_config
 
 
 OPTUNA_SEARCH_SPACE_SCHEMA = "qa_optuna_search_space_v1"
+OPTUNA_GUARD_SCHEMA = "qa_optuna_guard_v1"
 SUPPORTED_PARAM_TYPES = {"float", "int", "categorical"}
 SUPPORTED_SAMPLERS = {"tpe", "random"}
 SUPPORTED_DIRECTIONS = {"maximize", "minimize"}
@@ -63,6 +69,13 @@ def _coerce_bool(node: Dict[str, Any], key: str, default: bool = False) -> bool:
         if text in {"0", "false", "no", "off"}:
             return False
     return bool(value)
+
+
+def _read_json_object(path: Path) -> Dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON file must decode to an object: {path}")
+    return payload
 
 
 def _normalize_objective_path(raw_value: Any) -> str:
@@ -152,10 +165,92 @@ def _normalize_constraint_spec(index: int, node: Any) -> Dict[str, Any]:
     }
 
 
+def _default_anchor_requirements() -> List[Dict[str, Any]]:
+    return [
+        {
+            "role": "FACE_MASTER",
+            "view_buckets": ["front", "three_quarter", "profile_like"],
+            "min_count": 1,
+        },
+        {
+            "role": "UPPER_SUPPORT",
+            "view_buckets": ["front", "three_quarter", "side_90"],
+            "min_count": 1,
+        },
+        {
+            "role": "FULL_BODY_MASTER",
+            "view_buckets": ["front", "side_90", "back_180"],
+            "min_count": 1,
+        },
+    ]
+
+
+def _normalize_guard_requirement(index: int, node: Any) -> Dict[str, Any]:
+    if not isinstance(node, dict):
+        raise ValueError(f"optuna_guard.anchor_requirements[{index}] must be an object")
+    role = str(node.get("role", "")).strip().upper()
+    if not role:
+        raise ValueError(f"optuna_guard.anchor_requirements[{index}] is missing role")
+    raw_buckets = node.get("view_buckets", [])
+    if not isinstance(raw_buckets, list) or len(raw_buckets) == 0:
+        raise ValueError(f"optuna_guard.anchor_requirements[{index}] must define a non-empty view_buckets list")
+    view_buckets = [str(bucket).strip() for bucket in raw_buckets if str(bucket).strip()]
+    if len(view_buckets) == 0:
+        raise ValueError(f"optuna_guard.anchor_requirements[{index}] has no valid view_buckets")
+    min_count = int(node.get("min_count", 1))
+    if min_count <= 0:
+        raise ValueError(f"optuna_guard.anchor_requirements[{index}] min_count must be > 0")
+    return {
+        "role": role,
+        "view_buckets": view_buckets,
+        "min_count": min_count,
+    }
+
+
+def load_optuna_guard(path: Path) -> Dict[str, Any]:
+    path = path.resolve()
+    if not path.exists():
+        return {
+            "schema_version": OPTUNA_GUARD_SCHEMA,
+            "path": str(path),
+            "optuna_locked": True,
+            "lock_reason": f"Optuna guard file is missing: {path}",
+            "required_label_role": DEFAULT_BENCHMARK_FROZEN_ROLE,
+            "require_optuna_ready": True,
+            "anchor_requirements": _default_anchor_requirements(),
+        }
+
+    payload = _read_json_object(path)
+
+    schema_version = str(payload.get("schema_version", "")).strip()
+    if schema_version != OPTUNA_GUARD_SCHEMA:
+        raise ValueError(
+            f"Optuna guard schema_version must be {OPTUNA_GUARD_SCHEMA!r}, got {schema_version!r}"
+        )
+
+    requirements_node = payload.get("anchor_requirements", _default_anchor_requirements())
+    if requirements_node is None:
+        requirements_node = []
+    if not isinstance(requirements_node, list):
+        raise ValueError("optuna_guard.anchor_requirements must be a list")
+
+    return {
+        "schema_version": OPTUNA_GUARD_SCHEMA,
+        "path": str(path),
+        "optuna_locked": _coerce_bool(payload, "optuna_locked", default=True),
+        "lock_reason": str(payload.get("lock_reason", "")).strip(),
+        "required_label_role": str(payload.get("required_label_role", DEFAULT_BENCHMARK_FROZEN_ROLE)).strip()
+        or DEFAULT_BENCHMARK_FROZEN_ROLE,
+        "require_optuna_ready": _coerce_bool(payload, "require_optuna_ready", default=True),
+        "anchor_requirements": [
+            _normalize_guard_requirement(index, node)
+            for index, node in enumerate(requirements_node)
+        ],
+    }
+
+
 def load_optuna_search_space(path: Path) -> Dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("Optuna search space file must decode to a JSON object")
+    payload = _read_json_object(path)
 
     schema_version = str(payload.get("schema_version", "")).strip()
     if schema_version != OPTUNA_SEARCH_SPACE_SCHEMA:
@@ -315,6 +410,112 @@ def _build_runtime(base_dir: Optional[Path]) -> RuntimeContext:
     return runtime
 
 
+def _evaluate_anchor_guard(runtime: RuntimeContext, requirements: List[Dict[str, Any]]) -> Dict[str, Any]:
+    snapshot = anchor_registry_snapshot(runtime.config)
+    entries = snapshot.get("entries", {})
+    if not isinstance(entries, dict):
+        entries = {}
+
+    available_by_role_bucket: Dict[Tuple[str, str], List[str]] = {}
+    existing_anchor_count = 0
+    for anchor_id, node in entries.items():
+        if not isinstance(node, dict) or not bool(node.get("exists", False)):
+            continue
+        existing_anchor_count += 1
+        role = str(node.get("role", "")).strip().upper()
+        view_bucket = str(node.get("view_bucket", "")).strip()
+        if not role or not view_bucket:
+            continue
+        available_by_role_bucket.setdefault((role, view_bucket), []).append(str(anchor_id))
+
+    requirement_summaries: List[Dict[str, Any]] = []
+    missing_requirements: List[str] = []
+    for requirement in requirements:
+        role = str(requirement["role"]).strip().upper()
+        min_count = int(requirement.get("min_count", 1))
+        per_bucket: Dict[str, Dict[str, Any]] = {}
+        requirement_passed = True
+        for view_bucket in requirement["view_buckets"]:
+            matched_ids = sorted(available_by_role_bucket.get((role, view_bucket), []))
+            bucket_passed = len(matched_ids) >= min_count
+            per_bucket[view_bucket] = {
+                "matched_anchor_ids": matched_ids,
+                "count": len(matched_ids),
+                "min_count": min_count,
+                "passed": bucket_passed,
+            }
+            if not bucket_passed:
+                requirement_passed = False
+                missing_requirements.append(f"{role}:{view_bucket}<{min_count}")
+        requirement_summaries.append(
+            {
+                "role": role,
+                "passed": requirement_passed,
+                "per_view_bucket": per_bucket,
+            }
+        )
+
+    return {
+        "anchor_source": str(snapshot.get("anchor_source", "")),
+        "registered_entries": len(entries),
+        "existing_entries": existing_anchor_count,
+        "requirements": requirement_summaries,
+        "missing_requirements": missing_requirements,
+        "passed": len(missing_requirements) == 0,
+    }
+
+
+def _evaluate_optuna_guard(
+    runtime: RuntimeContext,
+    labels_bundle: Dict[str, Any],
+    guard: Dict[str, Any],
+) -> Dict[str, Any]:
+    errors: List[str] = []
+
+    if bool(guard.get("optuna_locked", True)):
+        reason = str(guard.get("lock_reason", "")).strip() or "Optuna is locked by guard config"
+        errors.append(reason)
+
+    dataset_role = str(labels_bundle.get("dataset_role", DEFAULT_BENCHMARK_LABEL_ROLE)).strip() or DEFAULT_BENCHMARK_LABEL_ROLE
+    required_role = str(guard.get("required_label_role", DEFAULT_BENCHMARK_FROZEN_ROLE)).strip()
+    if required_role and dataset_role != required_role:
+        errors.append(
+            f"Benchmark label dataset_role must be {required_role!r}, got {dataset_role!r}"
+        )
+
+    optuna_ready = bool(labels_bundle.get("optuna_ready", False))
+    if bool(guard.get("require_optuna_ready", True)) and not optuna_ready:
+        errors.append("Benchmark labels must set optuna_ready=true before Optuna can run")
+
+    anchor_guard = _evaluate_anchor_guard(runtime, guard.get("anchor_requirements", []))
+    if not anchor_guard["passed"]:
+        missing = ", ".join(anchor_guard["missing_requirements"][:8])
+        extra = ""
+        if len(anchor_guard["missing_requirements"]) > 8:
+            extra = f" (+{len(anchor_guard['missing_requirements']) - 8} more)"
+        errors.append(f"Anchor coverage is incomplete for Optuna guard: {missing}{extra}")
+
+    return {
+        "allowed": len(errors) == 0,
+        "errors": errors,
+        "guard_config": {
+            "path": str(guard.get("path", "")),
+            "optuna_locked": bool(guard.get("optuna_locked", True)),
+            "lock_reason": str(guard.get("lock_reason", "")),
+            "required_label_role": required_role,
+            "require_optuna_ready": bool(guard.get("require_optuna_ready", True)),
+        },
+        "label_bundle": {
+            "dataset_role": dataset_role,
+            "optuna_ready": optuna_ready,
+            "benchmark_id": str(labels_bundle.get("benchmark_id", "")),
+            "freeze_tag": str(labels_bundle.get("freeze_tag", "")),
+            "num_items": len(labels_bundle.get("items", {})),
+        },
+        "anchor_guard": anchor_guard,
+    }
+
+
 def run_optuna_search(
     *,
     base_dir: Optional[Path],
@@ -327,6 +528,7 @@ def run_optuna_search(
     study_name_override: Optional[str] = None,
     storage_path: Optional[Path] = None,
     trials_override: Optional[int] = None,
+    guard_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     try:
         import optuna
@@ -343,6 +545,18 @@ def run_optuna_search(
 
     report_path = report_path.resolve()
     labels_path = labels_path.resolve()
+    guard_path = (
+        guard_path.resolve()
+        if guard_path is not None
+        else (runtime.config.paths.config_dir / "optuna_guard.json").resolve()
+    )
+    labels_bundle = load_benchmark_label_bundle(labels_path)
+    guard = load_optuna_guard(guard_path)
+    guard_status = _evaluate_optuna_guard(runtime, labels_bundle, guard)
+    if not guard_status["allowed"]:
+        detail = "; ".join(str(message) for message in guard_status["errors"] if str(message).strip())
+        raise RuntimeError(f"Optuna guard blocked this run. {detail}")
+
     base_override = copy.deepcopy(search_space["fixed_override"])
     if cli_fixed_override:
         base_override = _deep_merge_dict(base_override, cli_fixed_override)
@@ -480,6 +694,7 @@ def run_optuna_search(
         "report_file": str(report_path),
         "labels_file": str(labels_path),
         "search_space_file": str(search_space_path.resolve()),
+        "guard": guard_status,
         "objective_metric_path": metric_path,
         "baseline": {
             "objective_value": baseline_value,

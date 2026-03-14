@@ -1,5 +1,9 @@
 {
   "schema_version": "qa_benchmark_labels_v1",
+  "dataset_role": "candidate_review",
+  "optuna_ready": false,
+  "benchmark_id": "",
+  "freeze_tag": "",
   "items": {
     "example.png": {
       "expected_status": "WARN",

@@ -19,13 +19,26 @@ from .qa_utils import dedupe_keep_order, get_face_size_bucket, get_quality_toler
 
 VALID_STATUSES = ("PASS", "WARN", "FAIL")
 BENCHMARK_LABEL_SCHEMA = "qa_benchmark_labels_v1"
+DEFAULT_BENCHMARK_LABEL_ROLE = "candidate_review"
+DEFAULT_BENCHMARK_FROZEN_ROLE = "benchmark_frozen"
+
+
+def _read_json_object(path: Path) -> Dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON file must decode to an object: {path}")
+    return payload
 
 
 def export_benchmark_template(report_path: Path, output_path: Path) -> Dict[str, Any]:
-    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload = _read_json_object(report_path)
     items = payload.get("items", [])
     template = {
         "schema_version": BENCHMARK_LABEL_SCHEMA,
+        "dataset_role": DEFAULT_BENCHMARK_LABEL_ROLE,
+        "optuna_ready": False,
+        "benchmark_id": "",
+        "freeze_tag": "",
         "report_file": str(report_path),
         "items": {},
     }
@@ -56,6 +69,20 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+    if value is None:
+        return default
+    return bool(value)
 
 
 def _normalize_string_list(value: Any, field_name: str, image_name: str) -> List[str]:
@@ -98,8 +125,8 @@ def _normalize_label_node(image_name: str, node: Any) -> Dict[str, Any]:
     }
 
 
-def load_benchmark_labels(labels_path: Path) -> Dict[str, Dict[str, Any]]:
-    payload = json.loads(labels_path.read_text(encoding="utf-8"))
+def load_benchmark_label_bundle(labels_path: Path) -> Dict[str, Any]:
+    payload = _read_json_object(labels_path)
     schema_version = str(payload.get("schema_version", "")).strip()
     if schema_version != BENCHMARK_LABEL_SCHEMA:
         raise ValueError(
@@ -119,7 +146,18 @@ def load_benchmark_labels(labels_path: Path) -> Dict[str, Dict[str, Any]]:
         labels[image_name] = _normalize_label_node(image_name, node)
     if len(labels) == 0:
         raise ValueError("benchmark labels file contains no valid expected_status entries")
-    return labels
+    return {
+        "schema_version": BENCHMARK_LABEL_SCHEMA,
+        "dataset_role": str(payload.get("dataset_role", DEFAULT_BENCHMARK_LABEL_ROLE)).strip() or DEFAULT_BENCHMARK_LABEL_ROLE,
+        "optuna_ready": _safe_bool(payload.get("optuna_ready", False), default=False),
+        "benchmark_id": str(payload.get("benchmark_id", "")).strip(),
+        "freeze_tag": str(payload.get("freeze_tag", "")).strip(),
+        "items": labels,
+    }
+
+
+def load_benchmark_labels(labels_path: Path) -> Dict[str, Dict[str, Any]]:
+    return load_benchmark_label_bundle(labels_path)["items"]
 
 
 def _recompute_quality_flags(runtime: RuntimeContext, item: Dict[str, Any], face_conf: float) -> Tuple[List[str], Dict[str, Any]]:
@@ -632,9 +670,10 @@ def benchmark_report(
 ) -> Dict[str, Any]:
     from .qa_pipeline import _apply_threshold_override
 
-    report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    report_payload = _read_json_object(report_path)
     report_items = report_payload.get("items", [])
-    labels = load_benchmark_labels(labels_path)
+    label_bundle = load_benchmark_label_bundle(labels_path)
+    labels = label_bundle["items"]
     items_by_name = {str(item.get("image", "")): item for item in report_items if str(item.get("image", "")).strip()}
 
     confusion: Dict[Tuple[str, str], float] = {}
@@ -786,6 +825,12 @@ def benchmark_report(
         "schema_version": "qa_benchmark_result_v1",
         "report_file": str(report_path),
         "labels_file": str(labels_path),
+        "label_bundle": {
+            "dataset_role": str(label_bundle.get("dataset_role", DEFAULT_BENCHMARK_LABEL_ROLE)),
+            "optuna_ready": bool(label_bundle.get("optuna_ready", False)),
+            "benchmark_id": str(label_bundle.get("benchmark_id", "")),
+            "freeze_tag": str(label_bundle.get("freeze_tag", "")),
+        },
         "num_report_items": len(report_items),
         "num_labeled_items": len(labels),
         "num_benchmarked_items": len(per_item),

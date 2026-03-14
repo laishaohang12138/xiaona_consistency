@@ -31,6 +31,10 @@
 ```json
 {
   "schema_version": "qa_benchmark_labels_v1",
+  "dataset_role": "candidate_review",
+  "optuna_ready": false,
+  "benchmark_id": "",
+  "freeze_tag": "",
   "items": {
     "example.png": {
       "expected_status": "WARN",
@@ -44,6 +48,16 @@
   }
 }
 ```
+
+## Dataset Roles
+- `candidate_review`
+  - Default template role
+  - Safe for daily 100-image candidate sweeps and manual shortlist review
+  - Can run `--mode benchmark`, but should not be used as an Optuna source
+- `benchmark_frozen`
+  - Human-sealed benchmark only
+  - Intended for Optuna once the anchor set and review policy are frozen
+  - Should be paired with a concrete `benchmark_id` / `freeze_tag`
 
 ## Output Metrics
 - `exact_accuracy`
@@ -61,6 +75,8 @@
 ## Usage Rule
 - Benchmark labels should come from frozen human arbitration, not temporary mood judgments
 - `schema_version` is mandatory and must stay at `qa_benchmark_labels_v1`
+- Exported templates default to `dataset_role=candidate_review` and `optuna_ready=false`
+- Candidate-review labels are expected during anchor-fill and shot-selection stages; keep them separate from frozen benchmark labels
 - `must_have_reasons` / `must_not_have_reasons` are optional, but useful for regression protection on soft-gate behavior
 - Prefer a benchmark set that covers:
   - front core

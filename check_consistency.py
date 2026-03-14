@@ -154,6 +154,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         help="Optional trial-count override for Optuna tuning mode.",
     )
+    parser.add_argument(
+        "--optuna-guard-path",
+        type=Path,
+        help="Optional Optuna guard JSON. Defaults to configs/optuna_guard.json and is enforced by default.",
+    )
     return parser
 
 
@@ -189,6 +194,7 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             study_name_override=args.optuna_study_name,
             storage_path=_resolve_cli_path(args.optuna_storage_path, base_dir) if args.optuna_storage_path else None,
             trials_override=args.optuna_trials,
+            guard_path=_resolve_cli_path(args.optuna_guard_path, base_dir) if args.optuna_guard_path else None,
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
@@ -226,7 +232,6 @@ __all__ = [
     "run_pipeline",
     "save_thresholds_to_file",
 ]
-
 
 if __name__ == "__main__":
     raise SystemExit(cli())

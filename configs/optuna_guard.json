@@ -1,0 +1,36 @@
+{
+  "schema_version": "qa_optuna_guard_v1",
+  "optuna_locked": true,
+  "lock_reason": "Anchor set is not frozen yet. Candidate-review runs must not feed Optuna.",
+  "required_label_role": "benchmark_frozen",
+  "require_optuna_ready": true,
+  "anchor_requirements": [
+    {
+      "role": "FACE_MASTER",
+      "view_buckets": [
+        "front",
+        "three_quarter",
+        "profile_like"
+      ],
+      "min_count": 1
+    },
+    {
+      "role": "UPPER_SUPPORT",
+      "view_buckets": [
+        "front",
+        "three_quarter",
+        "side_90"
+      ],
+      "min_count": 1
+    },
+    {
+      "role": "FULL_BODY_MASTER",
+      "view_buckets": [
+        "front",
+        "side_90",
+        "back_180"
+      ],
+      "min_count": 1
+    }
+  ]
+}

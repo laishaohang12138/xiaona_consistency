@@ -20,6 +20,7 @@ XiaoNa LoRA training engineering repository.
 - `outputs/qa_report.json` now writes `report_meta` plus `items`, including provider policy, anchor snapshot, layer quota snapshot, and threshold hash
 - Benchmark replay can re-score a saved `qa_report.json` under threshold overrides without rerunning vision models
 - Optuna search can optimize replay metrics from `configs/optuna_search_space.template.json` without touching the main QA path
+- `configs/optuna_guard.json` keeps Optuna locked until frozen benchmark labels and anchor coverage are ready
 
 ## Confirmed Route
 1. Engineering decoupling first
