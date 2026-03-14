@@ -7,6 +7,7 @@
       "description": "Candidate-review mode for daily shot selection. No parameter fitting is allowed.",
       "fit_enabled": false,
       "guard_path": "configs/optuna_guard.json",
+      "recommended_runtime_profile": "body_gold_fullbody",
       "recommended_dataset_role": "candidate_review",
       "recommended_input_collection": {
         "include": [
@@ -25,6 +26,7 @@
       "fit_enabled": true,
       "search_space_path": "configs/optuna_search_space.front_core.json",
       "guard_path": "configs/optuna_guard.front_core_fit.json",
+      "recommended_runtime_profile": "body_gold_front_cal",
       "recommended_dataset_role": "benchmark_frozen",
       "recommended_input_collection": {
         "include": [
@@ -45,6 +47,7 @@
       "fit_enabled": true,
       "search_space_path": "configs/optuna_search_space.three_quarter_review.json",
       "guard_path": "configs/optuna_guard.three_quarter_fit.json",
+      "recommended_runtime_profile": "body_gold_threequarter_review",
       "recommended_dataset_role": "benchmark_frozen",
       "recommended_input_collection": {
         "include": [
@@ -65,6 +68,7 @@
       "fit_enabled": true,
       "search_space_path": "configs/optuna_search_space.side90_shadow.json",
       "guard_path": "configs/optuna_guard.side90_shadow_fit.json",
+      "recommended_runtime_profile": "body_gold_side90_shadow",
       "recommended_dataset_role": "benchmark_frozen",
       "recommended_input_collection": {
         "include": [
@@ -85,6 +89,7 @@
       "fit_enabled": true,
       "search_space_path": "configs/optuna_search_space.back180_shadow.json",
       "guard_path": "configs/optuna_guard.back180_shadow_fit.json",
+      "recommended_runtime_profile": "body_gold_back180_shadow",
       "recommended_dataset_role": "benchmark_frozen",
       "recommended_input_collection": {
         "include": [
@@ -105,6 +110,7 @@
       "fit_enabled": true,
       "search_space_path": "configs/optuna_search_space.template.json",
       "guard_path": "configs/optuna_guard.full_release_fit.json",
+      "recommended_runtime_profile": "body_gold_fullbody",
       "recommended_dataset_role": "benchmark_frozen",
       "recommended_input_collection": {
         "include": [

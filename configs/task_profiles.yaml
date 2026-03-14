@@ -109,6 +109,24 @@ task_profiles:
       full_warn: 0.58
       overall_pass: 0.74
       overall_warn: 0.59
+  body_gold_threequarter_review:
+    weights:
+      face: 0.45
+      upper: 0.15
+      full: 0.40
+    require:
+      face: true
+      upper: false
+      full: true
+    thresholds:
+      face_pass: 0.76
+      face_warn: 0.60
+      upper_pass: 0.68
+      upper_warn: 0.53
+      full_pass: 0.74
+      full_warn: 0.58
+      overall_pass: 0.74
+      overall_warn: 0.59
   body_gold_side90_shadow:
     weights:
       face: 0.20
@@ -253,6 +271,22 @@ profile_policy:
     soft_review_buckets: []
     pass_cap_mode: none
     quota_bucket: BODY_GOLD.front_core
+    hard_quality_flags:
+      - FACE_UNDEREXPOSED_DARK
+      - FACE_NO_RELIABLE_SIGNAL
+      - HIP_POP_DETECTED_POSSIBLE_MODEL_POSE
+  body_gold_threequarter_review:
+    identity_anchor_pool: face
+    quality_anchor_pool: upper_or_full
+    tone_anchor_pool: upper_or_full
+    soft_quality_hits_to_warn: 2
+    skin_lighting_high_caps_pass: true
+    skin_sample_high_caps_pass: true
+    allowed_view_buckets:
+      - three_quarter
+    soft_review_buckets: []
+    pass_cap_mode: always_warn
+    quota_bucket: BODY_GOLD.three_quarter_review
     hard_quality_flags:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL

@@ -12,6 +12,8 @@
 ## CLI
 - List available presets:
   - `python check_consistency.py --optuna-list-presets`
+- Generate the replay report with the preset's recommended runtime profile first:
+  - `python check_consistency.py --profile body_gold_threequarter_review`
 - Basic run:
   - `python check_consistency.py --mode optuna --benchmark-labels configs/benchmark_labels.local.json --optuna-search-space configs/optuna_search_space.template.json`
 - Run with a preset:
@@ -67,6 +69,7 @@
   - Include frozen front-only full-body benchmark images, front false-warn / false-pass regressions, and production-like front compositions
   - Exclude `three_quarter`, `side_90`, `back_180`, cropped headshots, and daily candidate-review batches
 - `three_quarter_fit`
+  - First generate the source report with `--profile body_gold_threequarter_review`
   - Include frozen `three_quarter` benchmark images with stable upper/full-body evidence and manually sealed soft-review regressions
   - Exclude front-only release images, side shadow candidates, and unfrozen exploratory samples
 - `side90_shadow_fit`
@@ -87,8 +90,8 @@
 - `front_core_fit`
   - This is closest to the main release lane, so its fitted thresholds are the most likely to influence final release behavior
 - `three_quarter_fit`
-  - This is the riskiest preset to merge globally, because `three_quarter` review still lives under the main BODY GOLD profile
-  - Treat it as review-lane optimization first, not as an automatic global promotion
+  - It is now isolated through `body_gold_threequarter_review`, so it no longer has to mutate the front mainline directly
+  - Even so, treat it as review-lane optimization first, not as an automatic global promotion, because it still tunes shared consistency/fusion surfaces
 - `side90_shadow_fit` / `back180_shadow_fit`
   - These are safer to keep isolated because they correspond to dedicated shadow profiles
   - Their fitted threshold overrides should remain scoped to `body_gold_side90_shadow` / `body_gold_back180_shadow` first
@@ -112,7 +115,7 @@
 - `Optuna` itself does not read `input/`; it replays a saved `outputs/qa_report.json`
 - The practical workflow is:
   1. Put the candidate image set for one lane into `input/`
-  2. Run QA once to produce `outputs/qa_report.json`
+  2. Run QA once with the preset's recommended runtime profile to produce `outputs/qa_report.json`
   3. Export or maintain the matching benchmark label file
   4. Run `benchmark` or `optuna` on that saved report
 - Because of that, the real fitting source is `qa_report.json + benchmark_labels.frozen.json`, not the live `input/` directory
@@ -170,7 +173,7 @@
   - `metrics.pass_precision`
   - `agreement_metrics.view_lane_accuracy`
   - `group_metrics.view_lane.front.metrics.release_safety_score`
-  - `group_metrics.view_lane.three_quarter.metrics.release_safety_score`
+  - `group_metrics.task_profile.body_gold_threequarter_review.metrics.release_safety_score`
   - `group_metrics.task_profile.body_gold_side90_shadow.metrics.release_safety_score`
   - `group_metrics.task_profile.body_gold_back180_shadow.metrics.release_safety_score`
 

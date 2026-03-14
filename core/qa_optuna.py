@@ -249,6 +249,7 @@ def _normalize_preset_spec(name: str, node: Any) -> Dict[str, Any]:
         "fit_enabled": fit_enabled,
         "search_space_path": search_space_path,
         "guard_path": guard_path,
+        "recommended_runtime_profile": str(node.get("recommended_runtime_profile", "")).strip(),
         "recommended_dataset_role": str(node.get("recommended_dataset_role", "")).strip(),
         "recommended_input_collection": {
             "include": _normalize_text_list(

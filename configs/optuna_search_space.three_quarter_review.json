@@ -1,7 +1,7 @@
 {
   "schema_version": "qa_optuna_search_space_v1",
   "objective": {
-    "metric_path": "group_metrics.view_lane.three_quarter.metrics.release_safety_score",
+    "metric_path": "group_metrics.task_profile.body_gold_threequarter_review.metrics.release_safety_score",
     "direction": "maximize"
   },
   "study": {
@@ -14,7 +14,7 @@
   "parameters": [
     {
       "name": "face_pass",
-      "path": "profile_thresholds.face_pass",
+      "path": "task_profiles.body_gold_threequarter_review.thresholds.face_pass",
       "type": "float",
       "low": 0.72,
       "high": 0.84,
@@ -22,7 +22,7 @@
     },
     {
       "name": "face_warn",
-      "path": "profile_thresholds.face_warn",
+      "path": "task_profiles.body_gold_threequarter_review.thresholds.face_warn",
       "type": "float",
       "low": 0.56,
       "high": 0.70,
@@ -30,7 +30,7 @@
     },
     {
       "name": "upper_pass",
-      "path": "profile_thresholds.upper_pass",
+      "path": "task_profiles.body_gold_threequarter_review.thresholds.upper_pass",
       "type": "float",
       "low": 0.64,
       "high": 0.80,
@@ -38,7 +38,7 @@
     },
     {
       "name": "upper_warn",
-      "path": "profile_thresholds.upper_warn",
+      "path": "task_profiles.body_gold_threequarter_review.thresholds.upper_warn",
       "type": "float",
       "low": 0.48,
       "high": 0.64,
@@ -46,7 +46,7 @@
     },
     {
       "name": "full_pass",
-      "path": "profile_thresholds.full_pass",
+      "path": "task_profiles.body_gold_threequarter_review.thresholds.full_pass",
       "type": "float",
       "low": 0.66,
       "high": 0.80,
@@ -54,7 +54,7 @@
     },
     {
       "name": "full_warn",
-      "path": "profile_thresholds.full_warn",
+      "path": "task_profiles.body_gold_threequarter_review.thresholds.full_warn",
       "type": "float",
       "low": 0.50,
       "high": 0.64,
@@ -112,20 +112,20 @@
   "constraints": [
     {
       "type": "order",
-      "lower_path": "profile_thresholds.face_warn",
-      "upper_path": "profile_thresholds.face_pass",
+      "lower_path": "task_profiles.body_gold_threequarter_review.thresholds.face_warn",
+      "upper_path": "task_profiles.body_gold_threequarter_review.thresholds.face_pass",
       "min_gap": 0.02
     },
     {
       "type": "order",
-      "lower_path": "profile_thresholds.upper_warn",
-      "upper_path": "profile_thresholds.upper_pass",
+      "lower_path": "task_profiles.body_gold_threequarter_review.thresholds.upper_warn",
+      "upper_path": "task_profiles.body_gold_threequarter_review.thresholds.upper_pass",
       "min_gap": 0.02
     },
     {
       "type": "order",
-      "lower_path": "profile_thresholds.full_warn",
-      "upper_path": "profile_thresholds.full_pass",
+      "lower_path": "task_profiles.body_gold_threequarter_review.thresholds.full_warn",
+      "upper_path": "task_profiles.body_gold_threequarter_review.thresholds.full_pass",
       "min_gap": 0.02
     },
     {

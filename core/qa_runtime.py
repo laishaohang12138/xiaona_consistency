@@ -612,6 +612,20 @@ def _default_task_profiles() -> Dict[str, Dict[str, Any]]:
                 "overall_warn": 0.59,
             },
         },
+        "body_gold_threequarter_review": {
+            "weights": {"face": 0.45, "upper": 0.15, "full": 0.40},
+            "require": {"face": True, "upper": False, "full": True},
+            "thresholds": {
+                "face_pass": 0.76,
+                "face_warn": 0.60,
+                "upper_pass": 0.68,
+                "upper_warn": 0.53,
+                "full_pass": 0.74,
+                "full_warn": 0.58,
+                "overall_pass": 0.74,
+                "overall_warn": 0.59,
+            },
+        },
     }
 
 
@@ -689,6 +703,23 @@ def _default_profile_policy() -> Dict[str, Dict[str, Any]]:
             "soft_review_buckets": ["three_quarter"],
             "pass_cap_mode": "body_gold_front_core",
             "quota_bucket": "BODY_GOLD.front_core",
+        },
+        "body_gold_threequarter_review": {
+            "identity_anchor_pool": "face",
+            "quality_anchor_pool": "upper_or_full",
+            "tone_anchor_pool": "upper_or_full",
+            "soft_quality_hits_to_warn": 2,
+            "hard_quality_flags": {
+                "FACE_UNDEREXPOSED_DARK",
+                "FACE_NO_RELIABLE_SIGNAL",
+                "HIP_POP_DETECTED_POSSIBLE_MODEL_POSE",
+            },
+            "skin_lighting_high_caps_pass": True,
+            "skin_sample_high_caps_pass": True,
+            "allowed_view_buckets": ["three_quarter"],
+            "soft_review_buckets": [],
+            "pass_cap_mode": "always_warn",
+            "quota_bucket": "BODY_GOLD.three_quarter_review",
         },
     }
 
