@@ -79,6 +79,26 @@
         ]
       }
     },
+    "back180_shadow_fit": {
+      "label": "Back-180 Shadow Fit",
+      "description": "Fit the back_180 shadow lane after back full-body anchors and back upper supports are frozen.",
+      "fit_enabled": true,
+      "search_space_path": "configs/optuna_search_space.back180_shadow.json",
+      "guard_path": "configs/optuna_guard.back180_shadow_fit.json",
+      "recommended_dataset_role": "benchmark_frozen",
+      "recommended_input_collection": {
+        "include": [
+          "Frozen back_180 full-body benchmark images with complete body contour and feet in frame",
+          "Back-view upper/full-body regressions validated by human arbitration",
+          "Back images that match the target production framing and posture"
+        ],
+        "exclude": [
+          "Front, three_quarter, or side_90 images mixed into the same study",
+          "Back crops that lose lower body geometry or feet evidence",
+          "Unfrozen exploratory back candidates"
+        ]
+      }
+    },
     "full_release_fit": {
       "label": "Full Release Fit",
       "description": "Full-release fit after front, three-quarter, side, and back anchor lanes are all frozen.",

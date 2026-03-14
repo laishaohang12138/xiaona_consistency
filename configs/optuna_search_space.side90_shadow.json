@@ -14,7 +14,7 @@
   "parameters": [
     {
       "name": "full_pass",
-      "path": "profile_thresholds.full_pass",
+      "path": "task_profiles.body_gold_side90_shadow.thresholds.full_pass",
       "type": "float",
       "low": 0.68,
       "high": 0.82,
@@ -22,7 +22,7 @@
     },
     {
       "name": "full_warn",
-      "path": "profile_thresholds.full_warn",
+      "path": "task_profiles.body_gold_side90_shadow.thresholds.full_warn",
       "type": "float",
       "low": 0.50,
       "high": 0.66,
@@ -30,7 +30,7 @@
     },
     {
       "name": "overall_pass",
-      "path": "profile_thresholds.overall_pass",
+      "path": "task_profiles.body_gold_side90_shadow.thresholds.overall_pass",
       "type": "float",
       "low": 0.68,
       "high": 0.80,
@@ -38,7 +38,7 @@
     },
     {
       "name": "overall_warn",
-      "path": "profile_thresholds.overall_warn",
+      "path": "task_profiles.body_gold_side90_shadow.thresholds.overall_warn",
       "type": "float",
       "low": 0.52,
       "high": 0.64,
@@ -62,7 +62,7 @@
     },
     {
       "name": "profile_face_weight",
-      "path": "profile_weights.face",
+      "path": "task_profiles.body_gold_side90_shadow.weights.face",
       "type": "float",
       "low": 0.05,
       "high": 0.25,
@@ -70,7 +70,7 @@
     },
     {
       "name": "profile_upper_weight",
-      "path": "profile_weights.upper",
+      "path": "task_profiles.body_gold_side90_shadow.weights.upper",
       "type": "float",
       "low": 0.15,
       "high": 0.35,
@@ -78,7 +78,7 @@
     },
     {
       "name": "profile_full_weight",
-      "path": "profile_weights.full",
+      "path": "task_profiles.body_gold_side90_shadow.weights.full",
       "type": "float",
       "low": 0.45,
       "high": 0.70,
@@ -112,14 +112,14 @@
   "constraints": [
     {
       "type": "order",
-      "lower_path": "profile_thresholds.full_warn",
-      "upper_path": "profile_thresholds.full_pass",
+      "lower_path": "task_profiles.body_gold_side90_shadow.thresholds.full_warn",
+      "upper_path": "task_profiles.body_gold_side90_shadow.thresholds.full_pass",
       "min_gap": 0.02
     },
     {
       "type": "order",
-      "lower_path": "profile_thresholds.overall_warn",
-      "upper_path": "profile_thresholds.overall_pass",
+      "lower_path": "task_profiles.body_gold_side90_shadow.thresholds.overall_warn",
+      "upper_path": "task_profiles.body_gold_side90_shadow.thresholds.overall_pass",
       "min_gap": 0.02
     },
     {

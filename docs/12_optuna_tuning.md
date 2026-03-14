@@ -52,6 +52,9 @@
 - `side90_shadow_fit`
   - Side-90 shadow fit
   - Uses `configs/optuna_search_space.side90_shadow.json`
+- `back180_shadow_fit`
+  - Back-180 shadow fit
+  - Uses `configs/optuna_search_space.back180_shadow.json`
 - `full_release_fit`
   - Full cross-lane release fit
   - Uses `configs/optuna_search_space.template.json`
@@ -69,9 +72,41 @@
 - `side90_shadow_fit`
   - Include frozen `side_90` full-body benchmark images with feet in frame and manually confirmed side-shadow regressions
   - Exclude side headshots, mixed front/3q release images, and unfrozen side candidates
+- `back180_shadow_fit`
+  - Include frozen `back_180` full-body benchmark images with complete back contour, full lower-body evidence, and feet in frame
+  - Exclude mixed front/3q/side samples, cropped back views, and unfrozen back candidates
 - `full_release_fit`
   - Include a balanced frozen benchmark covering `front`, `three_quarter`, `side_90`, and `back_180`
   - Exclude candidate-review data and any lane that is not yet anchor-frozen
+
+## Single-Lane Vs Global Fit
+- Single-lane fit can affect the whole system if you tune shared parameters and then promote them globally
+- Safe rule:
+  - Lane-specific `best_override` should stay lane-local first
+  - Only promote a lane-specific override into a broader release config after cross-lane benchmark validation
+- `front_core_fit`
+  - This is closest to the main release lane, so its fitted thresholds are the most likely to influence final release behavior
+- `three_quarter_fit`
+  - This is the riskiest preset to merge globally, because `three_quarter` review still lives under the main BODY GOLD profile
+  - Treat it as review-lane optimization first, not as an automatic global promotion
+- `side90_shadow_fit` / `back180_shadow_fit`
+  - These are safer to keep isolated because they correspond to dedicated shadow profiles
+  - Their fitted threshold overrides should remain scoped to `body_gold_side90_shadow` / `body_gold_back180_shadow` first
+- `full_release_fit`
+  - This is the only preset intended to optimize a final cross-lane merged release surface
+
+## Back-180 Handling
+- `back_180` should not be treated as a face-driven lane
+- Preferred fitting target:
+  - `body_gold_back180_shadow`
+- Preferred features to tune:
+  - upper/full thresholds
+  - overall thresholds
+  - depth-lite thresholds
+  - `profile_like` upper/full geometric fusion weights
+- Do not overfit back_180 on face similarity:
+  - the profile already sets `face=0.00`
+  - back fitting should focus on body contour, posture, framing, leg geometry, and back-view consistency evidence
 
 ## What Goes Into `input/`
 - `Optuna` itself does not read `input/`; it replays a saved `outputs/qa_report.json`
@@ -137,6 +172,7 @@
   - `group_metrics.view_lane.front.metrics.release_safety_score`
   - `group_metrics.view_lane.three_quarter.metrics.release_safety_score`
   - `group_metrics.task_profile.body_gold_side90_shadow.metrics.release_safety_score`
+  - `group_metrics.task_profile.body_gold_back180_shadow.metrics.release_safety_score`
 
 ## Notes
 - Preset mode is safer than manually mixing `--optuna-search-space` and `--optuna-guard-path`
