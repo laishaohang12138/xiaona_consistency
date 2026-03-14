@@ -12,6 +12,7 @@ XiaoNa LoRA training engineering repository.
 - Anchor assets in `anchors/`
 - Offline benchmark replay support for threshold tuning
 - Offline Optuna tuning support on top of benchmark replay
+- Preset-driven Optuna modes in `configs/optuna_mode_presets.json`
 
 ## Runtime Status
 - The QA pipeline is modularized into `core/qa_runtime.py`, `core/qa_pipeline.py`, `core/qa_scoring.py`, `core/qa_consistency.py`, `core/qa_features.py`, and `core/providers.py`
@@ -21,6 +22,7 @@ XiaoNa LoRA training engineering repository.
 - Benchmark replay can re-score a saved `qa_report.json` under threshold overrides without rerunning vision models
 - Optuna search can optimize replay metrics from `configs/optuna_search_space.template.json` without touching the main QA path
 - `configs/optuna_guard.json` keeps Optuna locked until frozen benchmark labels and anchor coverage are ready
+- `configs/optuna_mode_presets.json` provides user-facing review / front / 3q / side / full-release fit presets
 
 ## Confirmed Route
 1. Engineering decoupling first

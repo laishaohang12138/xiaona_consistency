@@ -18,6 +18,7 @@ from .qa_runtime import EngineState, RuntimeContext, anchor_registry_snapshot, c
 
 OPTUNA_SEARCH_SPACE_SCHEMA = "qa_optuna_search_space_v1"
 OPTUNA_GUARD_SCHEMA = "qa_optuna_guard_v1"
+OPTUNA_PRESETS_SCHEMA = "qa_optuna_mode_presets_v1"
 SUPPORTED_PARAM_TYPES = {"float", "int", "categorical"}
 SUPPORTED_SAMPLERS = {"tpe", "random"}
 SUPPORTED_DIRECTIONS = {"maximize", "minimize"}
@@ -76,6 +77,19 @@ def _read_json_object(path: Path) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"JSON file must decode to an object: {path}")
     return payload
+
+
+def _normalize_text_list(value: Any, field_name: str) -> List[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list")
+    out: List[str] = []
+    for raw in value:
+        text = str(raw).strip()
+        if text:
+            out.append(text)
+    return out
 
 
 def _normalize_objective_path(raw_value: Any) -> str:
@@ -204,6 +218,130 @@ def _normalize_guard_requirement(index: int, node: Any) -> Dict[str, Any]:
         "role": role,
         "view_buckets": view_buckets,
         "min_count": min_count,
+    }
+
+
+def _resolve_project_path(base_dir: Path, raw_path: str) -> Path:
+    path = Path(str(raw_path).strip())
+    if not path.is_absolute():
+        path = (base_dir / path).resolve()
+    return path
+
+
+def _normalize_preset_spec(name: str, node: Any) -> Dict[str, Any]:
+    if not isinstance(node, dict):
+        raise ValueError(f"optuna preset {name!r} must be an object")
+    fit_enabled = _coerce_bool(node, "fit_enabled", default=False)
+    guard_path = str(node.get("guard_path", "")).strip()
+    if not guard_path:
+        raise ValueError(f"optuna preset {name!r} must define guard_path")
+    search_space_path = str(node.get("search_space_path", "")).strip()
+    if fit_enabled and not search_space_path:
+        raise ValueError(f"optuna preset {name!r} must define search_space_path when fit_enabled=true")
+    input_collection = node.get("recommended_input_collection", {})
+    if input_collection is None:
+        input_collection = {}
+    if not isinstance(input_collection, dict):
+        raise ValueError(f"optuna preset {name!r} recommended_input_collection must be an object")
+    return {
+        "label": str(node.get("label", name)).strip() or name,
+        "description": str(node.get("description", "")).strip(),
+        "fit_enabled": fit_enabled,
+        "search_space_path": search_space_path,
+        "guard_path": guard_path,
+        "recommended_dataset_role": str(node.get("recommended_dataset_role", "")).strip(),
+        "recommended_input_collection": {
+            "include": _normalize_text_list(
+                input_collection.get("include", []),
+                f"optuna preset {name!r} recommended_input_collection.include",
+            ),
+            "exclude": _normalize_text_list(
+                input_collection.get("exclude", []),
+                f"optuna preset {name!r} recommended_input_collection.exclude",
+            ),
+        },
+    }
+
+
+def load_optuna_mode_presets(path: Path) -> Dict[str, Any]:
+    path = path.resolve()
+    payload = _read_json_object(path)
+    schema_version = str(payload.get("schema_version", "")).strip()
+    if schema_version != OPTUNA_PRESETS_SCHEMA:
+        raise ValueError(
+            f"Optuna presets schema_version must be {OPTUNA_PRESETS_SCHEMA!r}, got {schema_version!r}"
+        )
+    presets_node = payload.get("presets", {})
+    if not isinstance(presets_node, dict) or len(presets_node) == 0:
+        raise ValueError("optuna presets file must define a non-empty presets object")
+    presets: Dict[str, Dict[str, Any]] = {}
+    for raw_name, node in presets_node.items():
+        name = str(raw_name).strip()
+        if not name:
+            raise ValueError("optuna presets file contains an empty preset key")
+        presets[name] = _normalize_preset_spec(name, node)
+    default_preset = str(payload.get("default_preset", "")).strip()
+    if default_preset and default_preset not in presets:
+        raise ValueError(f"optuna presets default_preset {default_preset!r} is not defined")
+    return {
+        "schema_version": OPTUNA_PRESETS_SCHEMA,
+        "path": str(path),
+        "default_preset": default_preset,
+        "presets": presets,
+    }
+
+
+def resolve_optuna_mode_preset(
+    *,
+    base_dir: Path,
+    preset_name: str,
+    presets_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    resolved_presets_path = (
+        presets_path.resolve()
+        if presets_path is not None
+        else (base_dir / "configs" / "optuna_mode_presets.json").resolve()
+    )
+    bundle = load_optuna_mode_presets(resolved_presets_path)
+    name = str(preset_name).strip() or str(bundle.get("default_preset", "")).strip()
+    presets = bundle["presets"]
+    if name not in presets:
+        available = ", ".join(sorted(presets.keys()))
+        raise ValueError(f"Unknown optuna preset {name!r}. Available presets: {available}")
+    preset = copy.deepcopy(presets[name])
+    preset["name"] = name
+    preset["presets_file"] = str(resolved_presets_path)
+    preset["guard_path"] = str(_resolve_project_path(base_dir, preset["guard_path"]))
+    if preset.get("search_space_path", ""):
+        preset["search_space_path"] = str(_resolve_project_path(base_dir, preset["search_space_path"]))
+    return preset
+
+
+def list_optuna_mode_presets(
+    *,
+    base_dir: Path,
+    presets_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    resolved_presets_path = (
+        presets_path.resolve()
+        if presets_path is not None
+        else (base_dir / "configs" / "optuna_mode_presets.json").resolve()
+    )
+    bundle = load_optuna_mode_presets(resolved_presets_path)
+    preset_list: List[Dict[str, Any]] = []
+    for name in sorted(bundle["presets"].keys()):
+        preset_list.append(
+            resolve_optuna_mode_preset(
+                base_dir=base_dir,
+                preset_name=name,
+                presets_path=resolved_presets_path,
+            )
+        )
+    return {
+        "schema_version": OPTUNA_PRESETS_SCHEMA,
+        "presets_file": str(resolved_presets_path),
+        "default_preset": str(bundle.get("default_preset", "")),
+        "presets": preset_list,
     }
 
 
@@ -529,6 +667,7 @@ def run_optuna_search(
     storage_path: Optional[Path] = None,
     trials_override: Optional[int] = None,
     guard_path: Optional[Path] = None,
+    preset: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     try:
         import optuna
@@ -695,6 +834,7 @@ def run_optuna_search(
         "labels_file": str(labels_path),
         "search_space_file": str(search_space_path.resolve()),
         "guard": guard_status,
+        "preset": copy.deepcopy(preset) if isinstance(preset, dict) else None,
         "objective_metric_path": metric_path,
         "baseline": {
             "objective_value": baseline_value,

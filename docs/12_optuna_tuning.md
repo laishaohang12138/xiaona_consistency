@@ -10,8 +10,12 @@
   - `.\.venv\Scripts\pip.exe install optuna`
 
 ## CLI
+- List available presets:
+  - `python check_consistency.py --optuna-list-presets`
 - Basic run:
   - `python check_consistency.py --mode optuna --benchmark-labels configs/benchmark_labels.local.json --optuna-search-space configs/optuna_search_space.template.json`
+- Run with a preset:
+  - `python check_consistency.py --mode optuna --optuna-preset front_core_fit --benchmark-labels configs/benchmark_labels.frozen.json --optuna-output outputs/optuna_front_result.json --optuna-best-override-out outputs/optuna_front_best.json`
 - Save study summary and best override:
   - `python check_consistency.py --mode optuna --benchmark-labels configs/benchmark_labels.local.json --optuna-search-space configs/optuna_search_space.template.json --optuna-output outputs/optuna_study_result.json --optuna-best-override-out outputs/optuna_best_override.json`
 - Persist study to sqlite:
@@ -21,6 +25,7 @@
 
 ## Guard
 - `Optuna` is now guarded by `configs/optuna_guard.json`
+- User-facing presets are defined in `configs/optuna_mode_presets.json`
 - Default state is locked: candidate-review benchmark files must not feed parameter fitting
 - Even after unlocking, the run is still blocked unless all of these are true:
   - label file sets `dataset_role=benchmark_frozen`
@@ -36,12 +41,46 @@
 5. Run lane-specific Optuna presets instead of mixing front / 3q / side shadow into one study
 
 ## Recommended Presets
-- Front mainline:
-  - `configs/optuna_search_space.front_core.json`
-- Three-quarter review lane:
-  - `configs/optuna_search_space.three_quarter_review.json`
-- Side-90 shadow lane:
-  - `configs/optuna_search_space.side90_shadow.json`
+- `review_only`
+  - Candidate-review only, blocks fitting
+- `front_core_fit`
+  - Front mainline fit
+  - Uses `configs/optuna_search_space.front_core.json`
+- `three_quarter_fit`
+  - Three-quarter review fit
+  - Uses `configs/optuna_search_space.three_quarter_review.json`
+- `side90_shadow_fit`
+  - Side-90 shadow fit
+  - Uses `configs/optuna_search_space.side90_shadow.json`
+- `full_release_fit`
+  - Full cross-lane release fit
+  - Uses `configs/optuna_search_space.template.json`
+
+## Input Collection Rules
+- `review_only`
+  - Include daily candidate-review batches, mixed candidate lanes, and temporary shortlist observations
+  - Exclude parameter fitting entirely
+- `front_core_fit`
+  - Include frozen front-only full-body benchmark images, front false-warn / false-pass regressions, and production-like front compositions
+  - Exclude `three_quarter`, `side_90`, `back_180`, cropped headshots, and daily candidate-review batches
+- `three_quarter_fit`
+  - Include frozen `three_quarter` benchmark images with stable upper/full-body evidence and manually sealed soft-review regressions
+  - Exclude front-only release images, side shadow candidates, and unfrozen exploratory samples
+- `side90_shadow_fit`
+  - Include frozen `side_90` full-body benchmark images with feet in frame and manually confirmed side-shadow regressions
+  - Exclude side headshots, mixed front/3q release images, and unfrozen side candidates
+- `full_release_fit`
+  - Include a balanced frozen benchmark covering `front`, `three_quarter`, `side_90`, and `back_180`
+  - Exclude candidate-review data and any lane that is not yet anchor-frozen
+
+## What Goes Into `input/`
+- `Optuna` itself does not read `input/`; it replays a saved `outputs/qa_report.json`
+- The practical workflow is:
+  1. Put the candidate image set for one lane into `input/`
+  2. Run QA once to produce `outputs/qa_report.json`
+  3. Export or maintain the matching benchmark label file
+  4. Run `benchmark` or `optuna` on that saved report
+- Because of that, the real fitting source is `qa_report.json + benchmark_labels.frozen.json`, not the live `input/` directory
 
 ## Search Space Shape
 ```json
@@ -100,6 +139,7 @@
   - `group_metrics.task_profile.body_gold_side90_shadow.metrics.release_safety_score`
 
 ## Notes
+- Preset mode is safer than manually mixing `--optuna-search-space` and `--optuna-guard-path`
 - `fixed_override` is merged before trial values
 - CLI `--threshold-override-file/json` is merged after `fixed_override`, so it can pin part of the search
 - `--optuna-storage-path` uses `load_if_exists=True`, so trial counts in the result are cumulative for that sqlite study

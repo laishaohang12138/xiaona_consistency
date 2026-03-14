@@ -1,0 +1,32 @@
+{
+  "schema_version": "qa_optuna_guard_v1",
+  "optuna_locked": false,
+  "lock_reason": "",
+  "required_label_role": "benchmark_frozen",
+  "require_optuna_ready": true,
+  "anchor_requirements": [
+    {
+      "role": "FACE_MASTER",
+      "view_buckets": [
+        "front",
+        "three_quarter"
+      ],
+      "min_count": 1
+    },
+    {
+      "role": "UPPER_SUPPORT",
+      "view_buckets": [
+        "front",
+        "three_quarter"
+      ],
+      "min_count": 1
+    },
+    {
+      "role": "FULL_BODY_MASTER",
+      "view_buckets": [
+        "front"
+      ],
+      "min_count": 1
+    }
+  ]
+}

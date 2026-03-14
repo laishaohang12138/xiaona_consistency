@@ -1,0 +1,103 @@
+{
+  "schema_version": "qa_optuna_mode_presets_v1",
+  "default_preset": "review_only",
+  "presets": {
+    "review_only": {
+      "label": "Review Only",
+      "description": "Candidate-review mode for daily shot selection. No parameter fitting is allowed.",
+      "fit_enabled": false,
+      "guard_path": "configs/optuna_guard.json",
+      "recommended_dataset_role": "candidate_review",
+      "recommended_input_collection": {
+        "include": [
+          "Daily candidate-review batches from current 100-image shortlist runs",
+          "Mixed front / three_quarter / side candidate observations used for human review only"
+        ],
+        "exclude": [
+          "Do not use this preset for parameter fitting",
+          "Do not relabel candidate-review sets as benchmark_frozen"
+        ]
+      }
+    },
+    "front_core_fit": {
+      "label": "Front Core Fit",
+      "description": "Fit only the front mainline once front anchors and front benchmark labels are frozen.",
+      "fit_enabled": true,
+      "search_space_path": "configs/optuna_search_space.front_core.json",
+      "guard_path": "configs/optuna_guard.front_core_fit.json",
+      "recommended_dataset_role": "benchmark_frozen",
+      "recommended_input_collection": {
+        "include": [
+          "Frozen front-only benchmark images with full-body framing",
+          "Known front false-warn and false-pass regressions",
+          "Front images that match the target production composition"
+        ],
+        "exclude": [
+          "Daily candidate-review batches",
+          "Three-quarter, side_90, back_180 images",
+          "Cropped headshots or partial-body images that cannot represent front full-body release decisions"
+        ]
+      }
+    },
+    "three_quarter_fit": {
+      "label": "Three-Quarter Fit",
+      "description": "Fit the three-quarter review lane after three-quarter anchors are frozen.",
+      "fit_enabled": true,
+      "search_space_path": "configs/optuna_search_space.three_quarter_review.json",
+      "guard_path": "configs/optuna_guard.three_quarter_fit.json",
+      "recommended_dataset_role": "benchmark_frozen",
+      "recommended_input_collection": {
+        "include": [
+          "Frozen three-quarter benchmark images with stable upper/full-body evidence",
+          "Three-quarter images that frequently trigger soft-review reasons",
+          "Three-quarter regression cases validated by human arbitration"
+        ],
+        "exclude": [
+          "Pure front images mixed into the same fit study",
+          "Side profile shadow candidates",
+          "Loose candidate-review images without final human sealing"
+        ]
+      }
+    },
+    "side90_shadow_fit": {
+      "label": "Side-90 Shadow Fit",
+      "description": "Fit the side_90 shadow lane after profile-like face anchors and side full-body anchors are frozen.",
+      "fit_enabled": true,
+      "search_space_path": "configs/optuna_search_space.side90_shadow.json",
+      "guard_path": "configs/optuna_guard.side90_shadow_fit.json",
+      "recommended_dataset_role": "benchmark_frozen",
+      "recommended_input_collection": {
+        "include": [
+          "Frozen side_90 full-body benchmark images with feet in frame",
+          "Profile-like identity checks paired with side body geometry checks",
+          "Side shadow regressions that were manually confirmed"
+        ],
+        "exclude": [
+          "Head-and-shoulder side crops without usable upper/full-body evidence",
+          "Front and three-quarter release images mixed into the same study",
+          "Unfrozen exploratory side candidates"
+        ]
+      }
+    },
+    "full_release_fit": {
+      "label": "Full Release Fit",
+      "description": "Full-release fit after front, three-quarter, side, and back anchor lanes are all frozen.",
+      "fit_enabled": true,
+      "search_space_path": "configs/optuna_search_space.template.json",
+      "guard_path": "configs/optuna_guard.full_release_fit.json",
+      "recommended_dataset_role": "benchmark_frozen",
+      "recommended_input_collection": {
+        "include": [
+          "Frozen cross-lane benchmark set covering front, three_quarter, side_90, and back_180",
+          "Release-critical regressions across all lanes",
+          "Balanced examples per lane and per task profile"
+        ],
+        "exclude": [
+          "Any candidate-review-only data",
+          "Overrepresentation of one lane such as front-only batches",
+          "Images with unresolved anchor-role ambiguity"
+        ]
+      }
+    }
+  }
+}

@@ -131,6 +131,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optuna search-space JSON used by offline benchmark tuning mode.",
     )
     parser.add_argument(
+        "--optuna-preset",
+        help="Named Optuna preset from configs/optuna_mode_presets.json, for example front_core_fit.",
+    )
+    parser.add_argument(
+        "--optuna-presets-file",
+        type=Path,
+        help="Optional Optuna preset registry JSON. Defaults to configs/optuna_mode_presets.json.",
+    )
+    parser.add_argument(
+        "--optuna-list-presets",
+        action="store_true",
+        help="Print available Optuna presets and exit.",
+    )
+    parser.add_argument(
         "--optuna-output",
         type=Path,
         help="Optional output JSON path for the Optuna study summary.",
@@ -171,13 +185,53 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
+    if args.optuna_list_presets:
+        from core.qa_optuna import list_optuna_mode_presets
+
+        result = list_optuna_mode_presets(
+            base_dir=base_dir,
+            presets_path=_resolve_cli_path(args.optuna_presets_file, base_dir) if args.optuna_presets_file else None,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+
     if args.mode == "optuna":
-        if args.optuna_search_space is None:
-            parser.error("optuna mode requires --optuna-search-space")
         if args.benchmark_labels is None:
             parser.error("optuna mode requires --benchmark-labels")
 
-        from core.qa_optuna import run_optuna_search
+        preset_info: Optional[Dict[str, Any]] = None
+        search_space_path: Optional[Path] = None
+        guard_path: Optional[Path] = None
+        if args.optuna_preset:
+            if args.optuna_search_space is not None or args.optuna_guard_path is not None:
+                parser.error(
+                    "optuna mode does not allow mixing --optuna-preset with --optuna-search-space or --optuna-guard-path"
+                )
+            from core.qa_optuna import resolve_optuna_mode_preset, run_optuna_search
+
+            try:
+                preset_info = resolve_optuna_mode_preset(
+                    base_dir=base_dir,
+                    preset_name=args.optuna_preset,
+                    presets_path=_resolve_cli_path(args.optuna_presets_file, base_dir)
+                    if args.optuna_presets_file
+                    else None,
+                )
+            except ValueError as exc:
+                parser.error(str(exc))
+            if not bool(preset_info.get("fit_enabled", False)):
+                parser.error(
+                    f"optuna preset {preset_info.get('name', args.optuna_preset)!r} is review-only and does not enable fitting"
+                )
+            search_space_path = Path(str(preset_info["search_space_path"]))
+            guard_path = Path(str(preset_info["guard_path"]))
+        else:
+            if args.optuna_search_space is None:
+                parser.error("optuna mode requires --optuna-search-space or --optuna-preset")
+            from core.qa_optuna import run_optuna_search
+
+            search_space_path = _resolve_cli_path(args.optuna_search_space, base_dir)
+            guard_path = _resolve_cli_path(args.optuna_guard_path, base_dir) if args.optuna_guard_path else None
 
         result = run_optuna_search(
             base_dir=base_dir,
@@ -185,7 +239,7 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             if args.benchmark_report
             else (base_dir / "outputs" / "qa_report.json").resolve(),
             labels_path=_resolve_cli_path(args.benchmark_labels, base_dir),
-            search_space_path=_resolve_cli_path(args.optuna_search_space, base_dir),
+            search_space_path=search_space_path,
             cli_fixed_override=threshold_override,
             output_path=_resolve_cli_path(args.optuna_output, base_dir) if args.optuna_output else None,
             best_override_out=_resolve_cli_path(args.optuna_best_override_out, base_dir)
@@ -194,7 +248,8 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             study_name_override=args.optuna_study_name,
             storage_path=_resolve_cli_path(args.optuna_storage_path, base_dir) if args.optuna_storage_path else None,
             trials_override=args.optuna_trials,
-            guard_path=_resolve_cli_path(args.optuna_guard_path, base_dir) if args.optuna_guard_path else None,
+            guard_path=guard_path,
+            preset=preset_info,
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
