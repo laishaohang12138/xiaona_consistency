@@ -22,8 +22,14 @@
 ## CLI
 - Export label template:
   - `python check_consistency.py --mode benchmark --benchmark-template-out configs/benchmark_labels.local.json`
+- Export a preset-aligned label template without hand-editing top-level metadata:
+  - `python check_consistency.py --mode benchmark --benchmark-preset front_core_fit --benchmark-template-out configs/benchmark_labels.front_core.json`
+- Select the preset interactively at runtime:
+  - `python check_consistency.py --mode benchmark --interactive --benchmark-template-out configs/benchmark_labels.front_core.json`
 - Run benchmark:
   - `python check_consistency.py --mode benchmark --benchmark-labels configs/benchmark_labels.local.json`
+- Seal an existing label file for a fit preset without hand-editing `dataset_role` / `optuna_ready`:
+  - `python check_consistency.py --mode benchmark --benchmark-preset front_core_fit --benchmark-seal-labels --benchmark-labels configs/benchmark_labels.front_core.json`
 - Run benchmark on a specific report with an in-memory override:
   - `python check_consistency.py --mode benchmark --benchmark-report outputs/qa_report.json --benchmark-labels configs/benchmark_labels.local.json --threshold-override-file configs/threshold_override.local.json`
 
@@ -76,6 +82,7 @@
 - Benchmark labels should come from frozen human arbitration, not temporary mood judgments
 - `schema_version` is mandatory and must stay at `qa_benchmark_labels_v1`
 - Exported templates default to `dataset_role=candidate_review` and `optuna_ready=false`
+- Preset-driven template export and `--benchmark-seal-labels` let you set top-level metadata at runtime instead of editing the JSON file by hand
 - Candidate-review labels are expected during anchor-fill and shot-selection stages; keep them separate from frozen benchmark labels
 - `must_have_reasons` / `must_not_have_reasons` are optional, but useful for regression protection on soft-gate behavior
 - Prefer a benchmark set that covers:

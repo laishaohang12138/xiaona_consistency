@@ -30,15 +30,29 @@ def _read_json_object(path: Path) -> Dict[str, Any]:
     return payload
 
 
-def export_benchmark_template(report_path: Path, output_path: Path) -> Dict[str, Any]:
+def _write_json_object(path: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return payload
+
+
+def export_benchmark_template(
+    report_path: Path,
+    output_path: Path,
+    *,
+    dataset_role: str = DEFAULT_BENCHMARK_LABEL_ROLE,
+    optuna_ready: bool = False,
+    benchmark_id: str = "",
+    freeze_tag: str = "",
+) -> Dict[str, Any]:
     payload = _read_json_object(report_path)
     items = payload.get("items", [])
     template = {
         "schema_version": BENCHMARK_LABEL_SCHEMA,
-        "dataset_role": DEFAULT_BENCHMARK_LABEL_ROLE,
-        "optuna_ready": False,
-        "benchmark_id": "",
-        "freeze_tag": "",
+        "dataset_role": str(dataset_role).strip() or DEFAULT_BENCHMARK_LABEL_ROLE,
+        "optuna_ready": bool(optuna_ready),
+        "benchmark_id": str(benchmark_id).strip(),
+        "freeze_tag": str(freeze_tag).strip(),
         "report_file": str(report_path),
         "items": {},
     }
@@ -59,9 +73,7 @@ def export_benchmark_template(report_path: Path, output_path: Path) -> Dict[str,
             "weight": 1.0,
             "notes": "",
         }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(template, indent=2, ensure_ascii=False), encoding="utf-8")
-    return template
+    return _write_json_object(output_path, template)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -158,6 +170,44 @@ def load_benchmark_label_bundle(labels_path: Path) -> Dict[str, Any]:
 
 def load_benchmark_labels(labels_path: Path) -> Dict[str, Dict[str, Any]]:
     return load_benchmark_label_bundle(labels_path)["items"]
+
+
+def update_benchmark_label_metadata(
+    labels_path: Path,
+    *,
+    dataset_role: Optional[str] = None,
+    optuna_ready: Optional[bool] = None,
+    benchmark_id: Optional[str] = None,
+    freeze_tag: Optional[str] = None,
+) -> Dict[str, Any]:
+    payload = _read_json_object(labels_path)
+    schema_version = str(payload.get("schema_version", "")).strip()
+    if schema_version != BENCHMARK_LABEL_SCHEMA:
+        raise ValueError(
+            f"benchmark labels schema_version must be {BENCHMARK_LABEL_SCHEMA!r}, got {schema_version!r}"
+        )
+
+    if dataset_role is not None:
+        payload["dataset_role"] = str(dataset_role).strip() or DEFAULT_BENCHMARK_LABEL_ROLE
+    elif "dataset_role" not in payload:
+        payload["dataset_role"] = DEFAULT_BENCHMARK_LABEL_ROLE
+
+    if optuna_ready is not None:
+        payload["optuna_ready"] = bool(optuna_ready)
+    elif "optuna_ready" not in payload:
+        payload["optuna_ready"] = False
+
+    if benchmark_id is not None:
+        payload["benchmark_id"] = str(benchmark_id).strip()
+    elif "benchmark_id" not in payload:
+        payload["benchmark_id"] = ""
+
+    if freeze_tag is not None:
+        payload["freeze_tag"] = str(freeze_tag).strip()
+    elif "freeze_tag" not in payload:
+        payload["freeze_tag"] = ""
+
+    return _write_json_object(labels_path, payload)
 
 
 def _recompute_quality_flags(runtime: RuntimeContext, item: Dict[str, Any], face_conf: float) -> Tuple[List[str], Dict[str, Any]]:

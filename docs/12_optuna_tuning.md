@@ -12,6 +12,12 @@
 ## CLI
 - List available presets:
   - `python check_consistency.py --optuna-list-presets`
+- Choose a fit preset interactively at runtime:
+  - `python check_consistency.py --mode optuna --interactive --benchmark-labels configs/benchmark_labels.frozen.json`
+- Generate a preset-aligned label template without manual JSON metadata edits:
+  - `python check_consistency.py --mode benchmark --interactive --benchmark-template-out configs/benchmark_labels.front_core.json`
+- Seal an existing label file for the chosen preset without editing JSON by hand:
+  - `python check_consistency.py --mode benchmark --interactive --benchmark-seal-labels --benchmark-labels configs/benchmark_labels.front_core.json`
 - Generate the replay report with the preset's recommended runtime profile first:
   - `python check_consistency.py --profile body_gold_threequarter_review`
 - Basic run:
@@ -28,6 +34,7 @@
 ## Guard
 - `Optuna` is now guarded by `configs/optuna_guard.json`
 - User-facing presets are defined in `configs/optuna_mode_presets.json`
+- Interactive CLI can choose the preset for you at runtime; you do not have to hand-edit search-space or guard JSON files
 - Default state is locked: candidate-review benchmark files must not feed parameter fitting
 - Even after unlocking, the run is still blocked unless all of these are true:
   - label file sets `dataset_role=benchmark_frozen`
@@ -39,8 +46,8 @@
 1. Finish the missing anchor lanes and verify `configs/anchor_registry.yaml`
 2. Create a separate frozen label set, not the daily candidate-review file
 3. Set frozen labels to `dataset_role=benchmark_frozen` and `optuna_ready=true`
-4. Flip `optuna_locked` to `false` in `configs/optuna_guard.json`
-5. Run lane-specific Optuna presets instead of mixing front / 3q / side shadow into one study
+4. Choose a lane-specific preset at runtime instead of mixing front / 3q / side shadow into one study
+5. Only use `configs/optuna_guard.json` directly when you are on the legacy manual flow with `--optuna-search-space`; preset-driven runs already resolve their scoped guard files for you
 
 ## Recommended Presets
 - `review_only`
@@ -116,6 +123,7 @@
 - The practical workflow is:
   1. Put the candidate image set for one lane into `input/`
   2. Run QA once with the preset's recommended runtime profile to produce `outputs/qa_report.json`
+     You can also use interactive selection in QA mode and let the CLI choose the preset's runtime profile for you
   3. Export or maintain the matching benchmark label file
   4. Run `benchmark` or `optuna` on that saved report
 - Because of that, the real fitting source is `qa_report.json + benchmark_labels.frozen.json`, not the live `input/` directory
@@ -179,6 +187,7 @@
 
 ## Notes
 - Preset mode is safer than manually mixing `--optuna-search-space` and `--optuna-guard-path`
+- Runtime mode selection does not remove the need for human labels; it only removes the need to hand-edit search-space, guard, or top-level benchmark metadata JSON to switch fit lanes
 - `fixed_override` is merged before trial values
 - CLI `--threshold-override-file/json` is merged after `fixed_override`, so it can pin part of the search
 - `--optuna-storage-path` uses `load_if_exists=True`, so trial counts in the result are cumulative for that sqlite study

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
@@ -72,6 +73,95 @@ def _load_threshold_override(args: argparse.Namespace, base_dir: Path) -> Option
     return override or None
 
 
+def _prompt_text(prompt: str, default: str = "") -> str:
+    suffix = f" [{default}]" if default else ""
+    try:
+        raw = input(f"{prompt}{suffix}: ")
+    except EOFError as exc:
+        raise ValueError("interactive mode requires a readable stdin") from exc
+    raw = raw.replace("\ufeff", "").strip()
+    return raw or default
+
+
+def _select_preset_interactively(
+    *,
+    base_dir: Path,
+    presets_path: Optional[Path],
+    fit_only: bool,
+) -> Dict[str, Any]:
+    from core.qa_optuna import list_optuna_mode_presets, resolve_optuna_mode_preset
+
+    bundle = list_optuna_mode_presets(base_dir=base_dir, presets_path=presets_path)
+    preset_rows = [
+        row
+        for row in bundle.get("presets", [])
+        if (not fit_only) or bool(row.get("fit_enabled", False))
+    ]
+    if len(preset_rows) == 0:
+        raise ValueError("no optuna presets are available for interactive selection")
+
+    print("[INTERACTIVE] Available presets:")
+    for index, row in enumerate(preset_rows, start=1):
+        profile = str(row.get("recommended_runtime_profile", "")).strip() or "-"
+        fit_tag = "fit" if bool(row.get("fit_enabled", False)) else "review"
+        print(f"  {index}. {row['name']} | {row.get('label', row['name'])} | {fit_tag} | profile={profile}")
+        description = str(row.get("description", "")).strip()
+        if description:
+            print(f"     {description}")
+
+    default_name = str(bundle.get("default_preset", "")).strip()
+    if fit_only and default_name:
+        fit_names = {row["name"] for row in preset_rows}
+        if default_name not in fit_names:
+            default_name = preset_rows[0]["name"]
+    elif not default_name:
+        default_name = preset_rows[0]["name"]
+
+    while True:
+        choice = _prompt_text("Select preset by number or name", default_name)
+        if choice.isdigit():
+            index = int(choice)
+            if 1 <= index <= len(preset_rows):
+                return resolve_optuna_mode_preset(
+                    base_dir=base_dir,
+                    preset_name=preset_rows[index - 1]["name"],
+                    presets_path=presets_path,
+                )
+        matched = [row for row in preset_rows if row["name"] == choice]
+        if matched:
+            return resolve_optuna_mode_preset(
+                base_dir=base_dir,
+                preset_name=matched[0]["name"],
+                presets_path=presets_path,
+            )
+        print(f"[INTERACTIVE] Unknown preset choice: {choice}")
+
+
+def _resolve_optuna_preset_info(
+    *,
+    base_dir: Path,
+    preset_name: Optional[str],
+    presets_path: Optional[Path],
+    interactive: bool,
+    fit_only: bool,
+) -> Optional[Dict[str, Any]]:
+    from core.qa_optuna import resolve_optuna_mode_preset
+
+    if preset_name:
+        return resolve_optuna_mode_preset(
+            base_dir=base_dir,
+            preset_name=preset_name,
+            presets_path=presets_path,
+        )
+    if interactive:
+        return _select_preset_interactively(
+            base_dir=base_dir,
+            presets_path=presets_path,
+            fit_only=fit_only,
+        )
+    return None
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run Xiaona consistency QA or calibration from the command line.",
@@ -106,6 +196,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Inline JSON object whose values override runtime thresholds in memory for this run only.",
     )
     parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Enable interactive preset selection and benchmark metadata prompts.",
+    )
+    parser.add_argument(
         "--benchmark-report",
         type=Path,
         help="Report JSON used by benchmark replay mode. Defaults to outputs/qa_report.json.",
@@ -124,6 +219,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--benchmark-template-out",
         type=Path,
         help="Export a benchmark label template from the chosen report file and exit.",
+    )
+    parser.add_argument(
+        "--benchmark-preset",
+        help="Named preset used to drive runtime profile and benchmark label metadata for QA/benchmark flows.",
+    )
+    parser.add_argument(
+        "--benchmark-seal-labels",
+        action="store_true",
+        help="Update a benchmark label file to the chosen preset metadata without manual JSON editing.",
+    )
+    parser.add_argument(
+        "--benchmark-id",
+        help="Optional benchmark identifier written into the label file/template.",
+    )
+    parser.add_argument(
+        "--benchmark-freeze-tag",
+        help="Optional freeze tag written into the label file/template.",
     )
     parser.add_argument(
         "--optuna-search-space",
@@ -180,6 +292,8 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     base_dir = _resolve_cli_path(args.base_dir, BASE_DIR)
+    effective_mode = str(args.mode or "qa")
+    presets_path = _resolve_cli_path(args.optuna_presets_file, base_dir) if args.optuna_presets_file else None
     try:
         threshold_override = _load_threshold_override(args, base_dir)
     except ValueError as exc:
@@ -190,10 +304,34 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
 
         result = list_optuna_mode_presets(
             base_dir=base_dir,
-            presets_path=_resolve_cli_path(args.optuna_presets_file, base_dir) if args.optuna_presets_file else None,
+            presets_path=presets_path,
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
+
+    benchmark_preset_info: Optional[Dict[str, Any]] = None
+    if effective_mode in {"qa", "benchmark"} and (
+        args.benchmark_preset
+        or (
+            args.interactive
+            and (effective_mode == "qa" or args.benchmark_template_out is not None or args.benchmark_seal_labels)
+        )
+    ):
+        try:
+            benchmark_preset_info = _resolve_optuna_preset_info(
+                base_dir=base_dir,
+                preset_name=args.benchmark_preset,
+                presets_path=presets_path,
+                interactive=args.interactive and not bool(args.benchmark_preset),
+                fit_only=False,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        if benchmark_preset_info is not None:
+            print(
+                f"[INTERACTIVE] benchmark preset={benchmark_preset_info['name']} "
+                f"profile={benchmark_preset_info.get('recommended_runtime_profile', '-')}"
+            )
 
     if args.mode == "optuna":
         if args.benchmark_labels is None:
@@ -202,20 +340,20 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
         preset_info: Optional[Dict[str, Any]] = None
         search_space_path: Optional[Path] = None
         guard_path: Optional[Path] = None
-        if args.optuna_preset:
+        if args.optuna_preset or (args.interactive and args.optuna_search_space is None and args.optuna_guard_path is None):
             if args.optuna_search_space is not None or args.optuna_guard_path is not None:
                 parser.error(
                     "optuna mode does not allow mixing --optuna-preset with --optuna-search-space or --optuna-guard-path"
                 )
-            from core.qa_optuna import resolve_optuna_mode_preset, run_optuna_search
+            from core.qa_optuna import run_optuna_search
 
             try:
-                preset_info = resolve_optuna_mode_preset(
+                preset_info = _resolve_optuna_preset_info(
                     base_dir=base_dir,
                     preset_name=args.optuna_preset,
-                    presets_path=_resolve_cli_path(args.optuna_presets_file, base_dir)
-                    if args.optuna_presets_file
-                    else None,
+                    presets_path=presets_path,
+                    interactive=args.interactive and not bool(args.optuna_preset),
+                    fit_only=True,
                 )
             except ValueError as exc:
                 parser.error(str(exc))
@@ -223,6 +361,10 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
                 parser.error(
                     f"optuna preset {preset_info.get('name', args.optuna_preset)!r} is review-only and does not enable fitting"
                 )
+            print(
+                f"[INTERACTIVE] optuna preset={preset_info['name']} "
+                f"profile={preset_info.get('recommended_runtime_profile', '-')}"
+            )
             search_space_path = Path(str(preset_info["search_space_path"]))
             guard_path = Path(str(preset_info["guard_path"]))
         else:
@@ -254,9 +396,35 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
 
+    selected_profile = args.profile
+    if selected_profile is None and benchmark_preset_info is not None:
+        recommended_profile = str(benchmark_preset_info.get("recommended_runtime_profile", "")).strip()
+        if recommended_profile:
+            selected_profile = recommended_profile
+
+    benchmark_dataset_role: Optional[str] = None
+    benchmark_optuna_ready: Optional[bool] = None
+    benchmark_id = args.benchmark_id
+    benchmark_freeze_tag = args.benchmark_freeze_tag
+    if benchmark_preset_info is not None:
+        benchmark_dataset_role = str(benchmark_preset_info.get("recommended_dataset_role", "")).strip() or None
+        if args.benchmark_template_out is not None:
+            benchmark_optuna_ready = False
+        if args.benchmark_seal_labels:
+            benchmark_optuna_ready = bool(benchmark_preset_info.get("fit_enabled", False))
+        if benchmark_id is None:
+            benchmark_id = str(benchmark_preset_info.get("name", "")).strip() or None
+    elif args.benchmark_seal_labels:
+        benchmark_optuna_ready = True
+
+    if args.interactive and (args.benchmark_template_out is not None or args.benchmark_seal_labels):
+        benchmark_id = _prompt_text("Benchmark ID", benchmark_id or "")
+        default_freeze_tag = benchmark_freeze_tag or date.today().isoformat()
+        benchmark_freeze_tag = _prompt_text("Freeze tag", default_freeze_tag)
+
     pipeline_main(
         base_dir=base_dir,
-        profile_name=args.profile,
+        profile_name=selected_profile,
         run_mode=args.mode,
         auto_load_thresholds=True if args.auto_load_thresholds else None,
         threshold_override=threshold_override,
@@ -264,6 +432,11 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
         benchmark_labels_path=_resolve_cli_path(args.benchmark_labels, base_dir) if args.benchmark_labels else None,
         benchmark_output_path=_resolve_cli_path(args.benchmark_output, base_dir) if args.benchmark_output else None,
         benchmark_template_out=_resolve_cli_path(args.benchmark_template_out, base_dir) if args.benchmark_template_out else None,
+        benchmark_dataset_role=benchmark_dataset_role,
+        benchmark_optuna_ready=benchmark_optuna_ready,
+        benchmark_id=benchmark_id,
+        benchmark_freeze_tag=benchmark_freeze_tag,
+        benchmark_update_labels=bool(args.benchmark_seal_labels),
     )
     return 0
 

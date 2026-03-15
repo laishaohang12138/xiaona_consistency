@@ -1241,6 +1241,11 @@ def main(
     benchmark_labels_path: Optional[Path] = None,
     benchmark_output_path: Optional[Path] = None,
     benchmark_template_out: Optional[Path] = None,
+    benchmark_dataset_role: Optional[str] = None,
+    benchmark_optuna_ready: Optional[bool] = None,
+    benchmark_id: Optional[str] = None,
+    benchmark_freeze_tag: Optional[str] = None,
+    benchmark_update_labels: bool = False,
 ) -> None:
     effective_run_mode = str(run_mode) if run_mode is not None else "qa"
     if effective_run_mode == "benchmark":
@@ -1274,13 +1279,33 @@ def main(
         return
 
     if runtime.config.run_mode == "benchmark":
-        from .qa_benchmark import benchmark_report, export_benchmark_template
+        from .qa_benchmark import benchmark_report, export_benchmark_template, update_benchmark_label_metadata
 
         report_path = (benchmark_report_path or runtime.config.paths.report_file).resolve()
         if benchmark_template_out is not None:
-            template = export_benchmark_template(report_path, benchmark_template_out.resolve())
+            template = export_benchmark_template(
+                report_path,
+                benchmark_template_out.resolve(),
+                dataset_role=benchmark_dataset_role or "candidate_review",
+                optuna_ready=bool(benchmark_optuna_ready) if benchmark_optuna_ready is not None else False,
+                benchmark_id=benchmark_id or "",
+                freeze_tag=benchmark_freeze_tag or "",
+            )
             print(f"[Benchmark 模板] {benchmark_template_out.resolve()}")
             print(json.dumps(template, indent=2, ensure_ascii=False))
+            return
+        if benchmark_update_labels:
+            if benchmark_labels_path is None:
+                raise ValueError("benchmark 标签更新需要 --benchmark-labels")
+            payload = update_benchmark_label_metadata(
+                benchmark_labels_path.resolve(),
+                dataset_role=benchmark_dataset_role,
+                optuna_ready=benchmark_optuna_ready,
+                benchmark_id=benchmark_id,
+                freeze_tag=benchmark_freeze_tag,
+            )
+            print(f"[Benchmark 标签已更新] {benchmark_labels_path.resolve()}")
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
             return
         if benchmark_labels_path is None:
             raise ValueError("benchmark 模式需要 --benchmark-labels，或使用 --benchmark-template-out 导出模板")
