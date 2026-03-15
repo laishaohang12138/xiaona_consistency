@@ -79,7 +79,7 @@ def _prompt_text(prompt: str, default: str = "") -> str:
     try:
         raw = input(f"{prompt}{suffix}: ")
     except EOFError as exc:
-        raise ValueError("interactive mode requires a readable stdin") from exc
+        raise ValueError("交互模式需要可读取的标准输入") from exc
     raw = raw.replace("\ufeff", "").strip()
     return raw or default
 
@@ -95,7 +95,7 @@ def _prompt_yes_no(prompt: str, default: bool = True) -> bool:
             return True
         if normalized in {"n", "no", "0", "false", "off"}:
             return False
-        print(f"[INTERACTIVE] Unknown yes/no choice: {choice}")
+        print(f"[交互引导] 无法识别的是/否输入：{choice}")
 
 
 def _select_choice(
@@ -104,7 +104,7 @@ def _select_choice(
     *,
     default: str,
 ) -> str:
-    print("[INTERACTIVE] Available options:")
+    print("[交互引导] 可选项：")
     for index, (value, description) in enumerate(options, start=1):
         print(f"  {index}. {value} | {description}")
     valid_names = {value for value, _ in options}
@@ -118,7 +118,7 @@ def _select_choice(
         matched = [value for value, _ in options if value == choice]
         if matched:
             return matched[0]
-        print(f"[INTERACTIVE] Unknown option: {choice}")
+        print(f"[交互引导] 无法识别的选项：{choice}")
 
 
 def _prompt_path(
@@ -131,11 +131,11 @@ def _prompt_path(
     while True:
         raw = _prompt_text(prompt, default)
         if not raw:
-            print("[INTERACTIVE] Path must not be empty")
+            print("[交互引导] 路径不能为空")
             continue
         candidate = _resolve_cli_path(Path(raw), base_dir)
         if must_exist and not candidate.exists():
-            print(f"[INTERACTIVE] Path does not exist: {candidate}")
+            print(f"[交互引导] 路径不存在：{candidate}")
             continue
         return candidate
 
@@ -144,19 +144,19 @@ def _maybe_enable_interactive_wizard(args: argparse.Namespace, raw_argv: Sequenc
     if args.interactive or len(raw_argv) > 0:
         return
     try:
-        args.interactive = _prompt_yes_no("Enter interactive wizard", default=True)
+        args.interactive = _prompt_yes_no("是否进入交互式引导", default=True)
     except ValueError:
         args.interactive = False
 
 
 def _select_run_mode_interactively(default: str = "qa") -> str:
     return _select_choice(
-        "Select run mode",
+        "请选择运行模式",
         [
-            ("qa", "Run current-image QA"),
-            ("benchmark", "Replay an existing QA report against benchmark labels"),
-            ("optuna", "Fit parameters on a frozen benchmark"),
-            ("calibrate", "Recompute quality thresholds from calibration images"),
+            ("qa", "运行当前 input 图集质检，适合日常候选筛选与人工初筛"),
+            ("benchmark", "回放已有 qa_report 与标签集，适合看规则效果、分组指标与回归表现"),
+            ("optuna", "在冻结 benchmark 上做离线参数拟合，不会重跑视觉模型"),
+            ("calibrate", "使用校准图集重算质量阈值，仅用于阈值标定场景"),
         ],
         default=default,
     )
@@ -164,11 +164,11 @@ def _select_run_mode_interactively(default: str = "qa") -> str:
 
 def _select_benchmark_action_interactively(default: str = "replay") -> str:
     return _select_choice(
-        "Select benchmark action",
+        "请选择 benchmark 子动作",
         [
-            ("replay", "Replay benchmark labels against a saved QA report"),
-            ("template", "Export a benchmark label template"),
-            ("seal", "Seal benchmark label metadata for fitting"),
+            ("replay", "用标签文件回放已保存的 qa_report，输出评测指标"),
+            ("template", "根据当前 qa_report 导出标签模板，便于后续人工补标"),
+            ("seal", "给已有标签文件补齐冻结元数据，供 Optuna 拟合前使用"),
         ],
         default=default,
     )
@@ -189,7 +189,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
             action = _select_benchmark_action_interactively(default="replay")
             if action == "template":
                 args.benchmark_template_out = _prompt_path(
-                    "Benchmark template output path",
+                    "请输入 benchmark 模板输出路径",
                     base_dir=base_dir,
                     default="outputs/benchmark_labels.interactive.json",
                     must_exist=False,
@@ -197,14 +197,14 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
             elif action == "seal":
                 args.benchmark_seal_labels = True
                 args.benchmark_labels = _prompt_path(
-                    "Benchmark labels path to seal",
+                    "请输入需要封板的 benchmark 标签文件路径",
                     base_dir=base_dir,
                     default="outputs/benchmark_labels.interactive.json",
                     must_exist=True,
                 )
             else:
                 args.benchmark_labels = _prompt_path(
-                    "Benchmark labels path",
+                    "请输入 benchmark 标签文件路径",
                     base_dir=base_dir,
                     default="outputs/benchmark_labels_verify.json",
                     must_exist=True,
@@ -212,7 +212,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
 
         if args.benchmark_template_out is not None and args.benchmark_report is None:
             args.benchmark_report = _prompt_path(
-                "QA report path for template export",
+                "请输入用于导出模板的 QA 报告路径",
                 base_dir=base_dir,
                 default="outputs/qa_report.json",
                 must_exist=True,
@@ -223,7 +223,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
             and args.benchmark_labels is None
         ):
             args.benchmark_labels = _prompt_path(
-                "Benchmark labels path",
+                "请输入 benchmark 标签文件路径",
                 base_dir=base_dir,
                 default="outputs/benchmark_labels_verify.json",
                 must_exist=True,
@@ -234,7 +234,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
             and args.benchmark_report is None
         ):
             args.benchmark_report = _prompt_path(
-                "QA report path",
+                "请输入 QA 报告路径",
                 base_dir=base_dir,
                 default="outputs/qa_report.json",
                 must_exist=True,
@@ -242,7 +242,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
 
     if effective_mode == "optuna" and args.benchmark_labels is None:
         args.benchmark_labels = _prompt_path(
-            "Frozen benchmark labels path",
+            "请输入冻结 benchmark 标签文件路径",
             base_dir=base_dir,
             default="outputs/benchmark_labels.interactive.json",
             must_exist=True,
@@ -264,12 +264,12 @@ def _select_preset_interactively(
         if (not fit_only) or bool(row.get("fit_enabled", False))
     ]
     if len(preset_rows) == 0:
-        raise ValueError("no optuna presets are available for interactive selection")
+        raise ValueError("当前没有可供交互选择的 Optuna 预设")
 
-    print("[INTERACTIVE] Available presets:")
+    print("[交互引导] 可选预设：")
     for index, row in enumerate(preset_rows, start=1):
         profile = str(row.get("recommended_runtime_profile", "")).strip() or "-"
-        fit_tag = "fit" if bool(row.get("fit_enabled", False)) else "review"
+        fit_tag = "可拟合" if bool(row.get("fit_enabled", False)) else "仅评估"
         print(f"  {index}. {row['name']} | {row.get('label', row['name'])} | {fit_tag} | profile={profile}")
         description = str(row.get("description", "")).strip()
         if description:
@@ -287,7 +287,7 @@ def _select_preset_interactively(
         default_name = preset_rows[0]["name"]
 
     while True:
-        choice = _prompt_text("Select preset by number or name", default_name)
+        choice = _prompt_text("请选择预设（输入编号或名称）", default_name)
         if choice.isdigit():
             index = int(choice)
             if 1 <= index <= len(preset_rows):
@@ -303,7 +303,7 @@ def _select_preset_interactively(
                 preset_name=matched[0]["name"],
                 presets_path=presets_path,
             )
-        print(f"[INTERACTIVE] Unknown preset choice: {choice}")
+        print(f"[交互引导] 无法识别的预设：{choice}")
 
 
 def _resolve_optuna_preset_info(
@@ -495,8 +495,8 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             parser.error(str(exc))
         if benchmark_preset_info is not None:
             print(
-                f"[INTERACTIVE] benchmark preset={benchmark_preset_info['name']} "
-                f"profile={benchmark_preset_info.get('recommended_runtime_profile', '-')}"
+                f"[交互引导] 已选择评测预设：{benchmark_preset_info['name']} "
+                f"| 建议运行 profile={benchmark_preset_info.get('recommended_runtime_profile', '-')}"
             )
 
     if args.mode == "optuna":
@@ -528,8 +528,8 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
                     f"optuna preset {preset_info.get('name', args.optuna_preset)!r} is review-only and does not enable fitting"
                 )
             print(
-                f"[INTERACTIVE] optuna preset={preset_info['name']} "
-                f"profile={preset_info.get('recommended_runtime_profile', '-')}"
+                f"[交互引导] 已选择拟合预设：{preset_info['name']} "
+                f"| 建议运行 profile={preset_info.get('recommended_runtime_profile', '-')}"
             )
             search_space_path = Path(str(preset_info["search_space_path"]))
             guard_path = Path(str(preset_info["guard_path"]))
@@ -584,9 +584,15 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
         benchmark_optuna_ready = True
 
     if args.interactive and (args.benchmark_template_out is not None or args.benchmark_seal_labels):
-        benchmark_id = _prompt_text("Benchmark ID", benchmark_id or "")
+        benchmark_id = _prompt_text(
+            "请输入 Benchmark ID（建议使用 lane/版本号，便于后续回溯）",
+            benchmark_id or "",
+        )
         default_freeze_tag = benchmark_freeze_tag or date.today().isoformat()
-        benchmark_freeze_tag = _prompt_text("Freeze tag", default_freeze_tag)
+        benchmark_freeze_tag = _prompt_text(
+            "请输入 Freeze Tag（建议使用日期或里程碑标记）",
+            default_freeze_tag,
+        )
 
     pipeline_main(
         base_dir=base_dir,
