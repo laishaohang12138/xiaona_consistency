@@ -20,6 +20,7 @@
 - Any missing debug field that was not written into the source report
 
 ## CLI
+- Plain startup without arguments now asks whether to enter the interactive wizard first
 - Export label template:
   - `python check_consistency.py --mode benchmark --benchmark-template-out configs/benchmark_labels.local.json`
 - Export a preset-aligned label template without hand-editing top-level metadata:

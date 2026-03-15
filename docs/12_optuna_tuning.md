@@ -10,6 +10,7 @@
   - `.\.venv\Scripts\pip.exe install optuna`
 
 ## CLI
+- Plain startup without arguments now asks whether to enter the interactive wizard, then lets you choose `qa / benchmark / optuna / calibrate`
 - List available presets:
   - `python check_consistency.py --optuna-list-presets`
 - Choose a fit preset interactively at runtime:

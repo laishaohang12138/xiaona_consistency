@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 from core.qa_pipeline import (
     calibrate_quality_thresholds,
@@ -83,6 +84,171 @@ def _prompt_text(prompt: str, default: str = "") -> str:
     return raw or default
 
 
+def _prompt_yes_no(prompt: str, default: bool = True) -> bool:
+    default_text = "Y/n" if default else "y/N"
+    while True:
+        choice = _prompt_text(f"{prompt} ({default_text})", "")
+        if not choice:
+            return default
+        normalized = choice.strip().lower()
+        if normalized in {"y", "yes", "1", "true", "on"}:
+            return True
+        if normalized in {"n", "no", "0", "false", "off"}:
+            return False
+        print(f"[INTERACTIVE] Unknown yes/no choice: {choice}")
+
+
+def _select_choice(
+    prompt: str,
+    options: Sequence[Tuple[str, str]],
+    *,
+    default: str,
+) -> str:
+    print("[INTERACTIVE] Available options:")
+    for index, (value, description) in enumerate(options, start=1):
+        print(f"  {index}. {value} | {description}")
+    valid_names = {value for value, _ in options}
+    default_value = default if default in valid_names else options[0][0]
+    while True:
+        choice = _prompt_text(prompt, default_value)
+        if choice.isdigit():
+            index = int(choice)
+            if 1 <= index <= len(options):
+                return options[index - 1][0]
+        matched = [value for value, _ in options if value == choice]
+        if matched:
+            return matched[0]
+        print(f"[INTERACTIVE] Unknown option: {choice}")
+
+
+def _prompt_path(
+    prompt: str,
+    *,
+    base_dir: Path,
+    default: str = "",
+    must_exist: bool = False,
+) -> Path:
+    while True:
+        raw = _prompt_text(prompt, default)
+        if not raw:
+            print("[INTERACTIVE] Path must not be empty")
+            continue
+        candidate = _resolve_cli_path(Path(raw), base_dir)
+        if must_exist and not candidate.exists():
+            print(f"[INTERACTIVE] Path does not exist: {candidate}")
+            continue
+        return candidate
+
+
+def _maybe_enable_interactive_wizard(args: argparse.Namespace, raw_argv: Sequence[str]) -> None:
+    if args.interactive or len(raw_argv) > 0:
+        return
+    try:
+        args.interactive = _prompt_yes_no("Enter interactive wizard", default=True)
+    except ValueError:
+        args.interactive = False
+
+
+def _select_run_mode_interactively(default: str = "qa") -> str:
+    return _select_choice(
+        "Select run mode",
+        [
+            ("qa", "Run current-image QA"),
+            ("benchmark", "Replay an existing QA report against benchmark labels"),
+            ("optuna", "Fit parameters on a frozen benchmark"),
+            ("calibrate", "Recompute quality thresholds from calibration images"),
+        ],
+        default=default,
+    )
+
+
+def _select_benchmark_action_interactively(default: str = "replay") -> str:
+    return _select_choice(
+        "Select benchmark action",
+        [
+            ("replay", "Replay benchmark labels against a saved QA report"),
+            ("template", "Export a benchmark label template"),
+            ("seal", "Seal benchmark label metadata for fitting"),
+        ],
+        default=default,
+    )
+
+
+def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
+    effective_mode = str(args.mode or "qa")
+    if not args.interactive:
+        return
+
+    if args.mode is None:
+        args.mode = _select_run_mode_interactively(default=effective_mode)
+        effective_mode = str(args.mode)
+
+    if effective_mode == "benchmark":
+        has_action = args.benchmark_template_out is not None or args.benchmark_seal_labels or args.benchmark_labels is not None
+        if not has_action:
+            action = _select_benchmark_action_interactively(default="replay")
+            if action == "template":
+                args.benchmark_template_out = _prompt_path(
+                    "Benchmark template output path",
+                    base_dir=base_dir,
+                    default="outputs/benchmark_labels.interactive.json",
+                    must_exist=False,
+                )
+            elif action == "seal":
+                args.benchmark_seal_labels = True
+                args.benchmark_labels = _prompt_path(
+                    "Benchmark labels path to seal",
+                    base_dir=base_dir,
+                    default="outputs/benchmark_labels.interactive.json",
+                    must_exist=True,
+                )
+            else:
+                args.benchmark_labels = _prompt_path(
+                    "Benchmark labels path",
+                    base_dir=base_dir,
+                    default="outputs/benchmark_labels_verify.json",
+                    must_exist=True,
+                )
+
+        if args.benchmark_template_out is not None and args.benchmark_report is None:
+            args.benchmark_report = _prompt_path(
+                "QA report path for template export",
+                base_dir=base_dir,
+                default="outputs/qa_report.json",
+                must_exist=True,
+            )
+        if (
+            args.benchmark_template_out is None
+            and not args.benchmark_seal_labels
+            and args.benchmark_labels is None
+        ):
+            args.benchmark_labels = _prompt_path(
+                "Benchmark labels path",
+                base_dir=base_dir,
+                default="outputs/benchmark_labels_verify.json",
+                must_exist=True,
+            )
+        if (
+            args.benchmark_template_out is None
+            and not args.benchmark_seal_labels
+            and args.benchmark_report is None
+        ):
+            args.benchmark_report = _prompt_path(
+                "QA report path",
+                base_dir=base_dir,
+                default="outputs/qa_report.json",
+                must_exist=True,
+            )
+
+    if effective_mode == "optuna" and args.benchmark_labels is None:
+        args.benchmark_labels = _prompt_path(
+            "Frozen benchmark labels path",
+            base_dir=base_dir,
+            default="outputs/benchmark_labels.interactive.json",
+            must_exist=True,
+        )
+
+
 def _select_preset_interactively(
     *,
     base_dir: Path,
@@ -113,7 +279,10 @@ def _select_preset_interactively(
     if fit_only and default_name:
         fit_names = {row["name"] for row in preset_rows}
         if default_name not in fit_names:
-            default_name = preset_rows[0]["name"]
+            default_name = "front_core_fit" if "front_core_fit" in fit_names else preset_rows[0]["name"]
+    elif fit_only:
+        fit_names = {row["name"] for row in preset_rows}
+        default_name = "front_core_fit" if "front_core_fit" in fit_names else preset_rows[0]["name"]
     elif not default_name:
         default_name = preset_rows[0]["name"]
 
@@ -290,8 +459,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def cli(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_arg_parser()
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
     args = parser.parse_args(argv)
+    _maybe_enable_interactive_wizard(args, raw_argv)
     base_dir = _resolve_cli_path(args.base_dir, BASE_DIR)
+    _prepare_interactive_args(args, base_dir)
     effective_mode = str(args.mode or "qa")
     presets_path = _resolve_cli_path(args.optuna_presets_file, base_dir) if args.optuna_presets_file else None
     try:
@@ -310,13 +482,7 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     benchmark_preset_info: Optional[Dict[str, Any]] = None
-    if effective_mode in {"qa", "benchmark"} and (
-        args.benchmark_preset
-        or (
-            args.interactive
-            and (effective_mode == "qa" or args.benchmark_template_out is not None or args.benchmark_seal_labels)
-        )
-    ):
+    if effective_mode in {"qa", "benchmark"} and (args.benchmark_preset or args.interactive):
         try:
             benchmark_preset_info = _resolve_optuna_preset_info(
                 base_dir=base_dir,
