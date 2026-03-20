@@ -50,6 +50,7 @@ from .qa_scoring import (
     score_full_against_anchor_set,
     score_upper_against_anchor_set,
 )
+from .qa_view_router import route_view_lane
 from .qa_utils import (
     SKIMAGE_SSIM_AVAILABLE,
     canonicalize_view_lane,
@@ -247,6 +248,14 @@ def _build_report_meta(
             "raw_buckets": ["front", "three_quarter", "profile_like"],
             "canonical_lanes": ["front", "three_quarter", "side_90"],
             "back_180_native_detection": False,
+            "active_source": "legacy_face_router",
+            "shadow_router_v2": {
+                "enabled": True,
+                "mode": "shadow_only",
+                "lanes": ["front", "three_quarter", "side_90", "back_180"],
+                "native_back_180_detection": True,
+                "source_priority": ["face", "pose", "subject_mask", "skin_region"],
+            },
         },
         "input_count": int(input_count),
     }
@@ -809,6 +818,7 @@ def _run_pipeline_impl(
             cand_pose = extract_pose_feat(runtime, img)
             view_bucket, view_side, yaw_proxy = estimate_view_bucket_and_side(cand_face)
             view_lane = canonicalize_view_lane(cand_face, view_bucket)
+            shadow_view_route = route_view_lane(runtime, img, cand_face, cand_pose)
             face_size_bucket = get_face_size_bucket(cand_face.bbox_area_ratio if cand_face.ok else 0.0)
             tone_bucket_stats = get_stats_for_bucket(tone_ref_stats, face_size_bucket)
             tone_reference_lab = None
@@ -852,7 +862,11 @@ def _run_pipeline_impl(
             skin_score = skin_metrics.get("skin_uniformity_score", None)
             depth_3d_score = depth_3d_metrics.get("depth_3d_score", None)
 
-            face_identity_anchors_view = filter_face_anchors_by_view(face_identity_anchors, view_lane)
+            face_identity_anchors_view = filter_face_anchors_by_view(
+                face_identity_anchors,
+                view_lane,
+                view_side=view_side,
+            )
             face_score_o, face_conf_o, face_reasons_o, face_debug_o = score_face_against_anchor_set(
                 runtime,
                 cand_face,
@@ -1145,8 +1159,11 @@ def _run_pipeline_impl(
                     "quality_ref_stats": quality_debug,
                     "view_bucket": view_bucket,
                     "view_lane": view_lane,
+                    "view_lane_source": "legacy_face_router",
                     "view_side": view_side,
                     "yaw_proxy": yaw_proxy,
+                    "view_router_v2": shadow_view_route.to_json_dict(),
+                    "view_router_v2_disagrees": shadow_view_route.lane != view_lane,
                     "identity_anchor_count_view": len(face_identity_anchors_view),
                     "input_shape": list(img.shape[:2]),
                 },

@@ -63,6 +63,34 @@ anchors:
       - shoulder_drift
       - neck_drift
       - clavicle_drift
+  ref_4_face_profile_side90_left:
+    role: FACE_SUPPORT
+    priority: 4
+    required_default: false
+    path: ${PROJECT_ROOT}/anchors/face/profile_like/strict_side_90_left_support_v2.png
+    view_bucket: profile_like
+    view_side: left
+    body_plane: sagittal
+    owns:
+      - profile_identity
+      - profile_geometry
+    supports:
+      - side90_shadow_face
+      - profile_like_identity
+  ref_5_face_profile_side90_right:
+    role: FACE_SUPPORT
+    priority: 4
+    required_default: false
+    path: ${PROJECT_ROOT}/anchors/face/profile_like/strict_side_90_right_support_v2.png
+    view_bucket: profile_like
+    view_side: right
+    body_plane: sagittal
+    owns:
+      - profile_identity
+      - profile_geometry
+    supports:
+      - strict_side90_right_shadow_face
+      - profile_like_identity
 
 rules:
   face_conflict_winner: ref_1_face_master

@@ -365,3 +365,15 @@ def infer_anchor_view_from_path(path_str: Optional[str]) -> str:
     if "/back_180/" in s or "/back/" in s:
         return "back_180"
     return "front"
+
+
+def infer_anchor_side_from_path(path_str: Optional[str]) -> str:
+    if not path_str:
+        return "unknown"
+    s = str(path_str).replace("\\", "/").lower()
+    tokens = ["/left/", "_left", "-left", "/l/", "_l.", "/right/", "_right", "-right", "/r/", "_r."]
+    if any(token in s for token in tokens[:5]):
+        return "left"
+    if any(token in s for token in tokens[5:]):
+        return "right"
+    return "unknown"

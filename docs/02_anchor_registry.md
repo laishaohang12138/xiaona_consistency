@@ -53,10 +53,24 @@
   - Ref #3 never overrides Ref #1 on face
   - Ref #3 never overrides Ref #2 on full-body proportion
 
+## Side Supports
+- ID: `ref_4_face_profile_side90_left`
+- Role: FACE SUPPORT
+- File: `anchors/face/profile_like/strict_side_90_left_support_v2.png`
+- Purpose:
+  - Support left-side `side_90` / `profile_like` face comparison
+  - Do not override Ref #1 front identity lock
+
+- ID: `ref_5_face_profile_side90_right`
+- Role: FACE SUPPORT
+- File: `anchors/face/profile_like/strict_side_90_right_support_v2.png`
+- Purpose:
+  - Support right-side strict `side_90` face comparison
+  - Do not override Ref #1 front identity lock
+
 ## Perfect XiaoNa Reference
 - Canonical full-body benchmark:
   - `Task-63987060-116-1`
 - Use this anchor whenever the review question is:
   - "Is this still XiaoNa?"
   - "Is this the current body constitution of XiaoNa?"
-

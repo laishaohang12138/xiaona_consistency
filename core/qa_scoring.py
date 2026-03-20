@@ -11,6 +11,7 @@ from .qa_utils import (
     cosine_sim,
     get_face_size_bucket,
     hist_intersection,
+    infer_anchor_side_from_path,
     infer_anchor_view_from_path,
     linear_map_to_01,
     phash_similarity,
@@ -901,7 +902,11 @@ def get_identity_anchor_pool(
     return valid_face_feats(anchors.face_feats)
 
 
-def filter_face_anchors_by_view(anchors: List[FaceFeat], view_bucket: str) -> List[FaceFeat]:
+def filter_face_anchors_by_view(
+    anchors: List[FaceFeat],
+    view_bucket: str,
+    view_side: str = "unknown",
+) -> List[FaceFeat]:
     valid = [anchor for anchor in anchors if anchor.ok]
     normalized_view = "profile_like" if view_bucket == "side_90" else view_bucket
     if view_bucket == "front":
@@ -912,6 +917,10 @@ def filter_face_anchors_by_view(anchors: List[FaceFeat], view_bucket: str) -> Li
         return pool if len(pool) > 0 else valid
     if normalized_view == "profile_like":
         pool = [anchor for anchor in valid if infer_anchor_view_from_path(anchor.source_path) == "profile_like"]
+        if view_side in {"left", "right"}:
+            sided = [anchor for anchor in pool if infer_anchor_side_from_path(anchor.source_path) == view_side]
+            if len(sided) > 0:
+                return sided
         if len(pool) > 0:
             return pool
         pool = [anchor for anchor in valid if infer_anchor_view_from_path(anchor.source_path) == "three_quarter"]
