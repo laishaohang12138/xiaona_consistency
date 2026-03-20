@@ -1,0 +1,41 @@
+prompt_asset:
+  id: bridge_runtime_v0_3_1_nb2
+  scope: BRIDGE
+  status: active
+  version: v0.3.1-nb2
+  source_import: bridge_prompt_pack_v0_3_1_nb2 (external draft landed into repo on 2026-03-20)
+  refs_required:
+    - ref_1_face_master
+    - ref_2_full_body_master
+  refs_optional:
+    - ref_3_upper_support_94
+    - ref_3_upper_support_97
+  runtime_presets:
+    bridge_first_pass:
+      base: bridge_runtime_base_v0_3_1_nb2.txt
+      plugin_family: BR-01~BR-08
+      negatives:
+        - negative_core_bridge_v0_3_1_nb2.txt
+    bridge_shortlist_reroll:
+      base: bridge_runtime_base_v0_3_1_nb2.txt
+      plugin_family: BR-01~BR-08
+      negatives:
+        - negative_core_bridge_v0_3_1_nb2.txt
+        - negative_finish_bridge_v0_3_1_nb2.txt
+  plugin_registry:
+    main:
+      - shot_plugin_br01_front_open_edge_v0_3_1_nb2.txt
+      - shot_plugin_br02_front_standard_v0_3_1_nb2.txt
+      - shot_plugin_br03_front_sleeve_stability_v0_3_1_nb2.txt
+      - shot_plugin_br04_front_coverage_comp_v0_3_1_nb2.txt
+      - shot_plugin_br05_three_quarter_left_tracking_v0_3_1_nb2.txt
+      - shot_plugin_br06_three_quarter_right_tracking_v0_3_1_nb2.txt
+      - shot_plugin_br07_three_quarter_left_sleeve_comp_v0_3_1_nb2.txt
+      - shot_plugin_br08_three_quarter_right_coverage_comp_v0_3_1_nb2.txt
+  notes:
+    - BRIDGE only
+    - transition from calibration outfit to plain fitted basics
+    - one shallow crew-round neckline family across the batch
+    - BR-01~BR-04 stay front and BR-05~BR-08 stay mild three-quarter
+    - BRIDGE does not own side_90 or back_180 shadow lanes
+    - negative_finish_bridge_v0_3_1_nb2.txt is shortlist reroll only

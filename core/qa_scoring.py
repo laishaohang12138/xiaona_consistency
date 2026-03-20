@@ -953,6 +953,21 @@ def get_tone_anchor_pool(
 
     if mode == "face":
         return valid_face_feats(anchors.face_feats)
+    if mode == "full_first":
+        pool = valid_face_feats(anchors.full_face_feats)
+        if len(pool) > 0:
+            return pool
+        return valid_face_feats(anchors.face_feats)
+    if mode == "tone_only":
+        return valid_face_feats(anchors.tone_face_feats)
+    if mode == "tone_only_or_full":
+        pool = valid_face_feats(anchors.tone_face_feats)
+        if len(pool) > 0:
+            return pool
+        pool = valid_face_feats(anchors.full_face_feats)
+        if len(pool) > 0:
+            return pool
+        return valid_face_feats(anchors.face_feats)
     if mode == "upper_first":
         pool = valid_face_feats(anchors.upper_face_feats)
         return pool if len(pool) > 0 else valid_face_feats(anchors.face_feats)

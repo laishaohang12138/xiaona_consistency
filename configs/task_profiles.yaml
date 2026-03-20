@@ -262,10 +262,10 @@ profile_policy:
   body_gold_front_cal:
     identity_anchor_pool: face
     quality_anchor_pool: upper_or_full
-    tone_anchor_pool: upper_or_full
+    tone_anchor_pool: tone_only_or_full
     soft_quality_hits_to_warn: 2
-    skin_lighting_high_caps_pass: true
-    skin_sample_high_caps_pass: true
+    skin_lighting_high_caps_pass: false
+    skin_sample_high_caps_pass: false
     allowed_view_buckets:
       - front
     soft_review_buckets: []

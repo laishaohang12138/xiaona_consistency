@@ -538,7 +538,9 @@ def extract_body_constitution_metrics(
         "head_body_ratio_proxy": None,
         "leg_ratio": None,
         "waist_height_ratio": None,
+        "waist_height_ratio_topdown": None,
         "shoulder_width_px": None,
+        "shoulder_width_domain": "pose_landmark_span",
         "chest_width_px": None,
         "waist_width_px": None,
         "hip_width_px": None,
@@ -638,15 +640,23 @@ def extract_body_constitution_metrics(
 
     out["leg_ratio"] = safe_float(pose_feat.full_geom.get("leg_ratio", 0.0), 0.0) or None
     if waist_y is not None:
-        out["waist_height_ratio"] = float((waist_y - subject_top) / max(1, body_h))
+        out["waist_height_ratio_topdown"] = float((waist_y - subject_top) / max(1, body_h))
+        torso_span = max(1, hip_mid_y - shoulder_mid_y)
+        # The frozen spec treats waist height as a torso-local placement cue, not a
+        # full-image top-down framing ratio. Using shoulder->hip span avoids
+        # headroom / hairstyle drift from collapsing the score.
+        out["waist_height_ratio"] = float(clamp((waist_y - shoulder_mid_y) / torso_span, 0.0, 1.0))
     if waist_w is not None and shoulder_width_px > 1e-6:
-        out["waist_to_shoulder_ratio"] = float(waist_w / shoulder_width_px)
+        # Waist / hip widths are extracted from full silhouette mask widths, while the
+        # shoulder denominator is a landmark bone span. Convert silhouette widths to a
+        # half-width proxy before comparing them to the shoulder span.
+        out["waist_to_shoulder_ratio"] = float((0.5 * waist_w) / shoulder_width_px)
     if chest_w is not None and waist_w is not None and waist_w > 1e-6:
         out["chest_to_waist_ratio"] = float(chest_w / waist_w)
     if hip_w is not None and waist_w is not None and waist_w > 1e-6:
         out["hip_to_waist_ratio"] = float(hip_w / waist_w)
     if hip_w is not None and shoulder_width_px > 1e-6:
-        out["hip_to_shoulder_ratio"] = float(hip_w / shoulder_width_px)
+        out["hip_to_shoulder_ratio"] = float((0.5 * hip_w) / shoulder_width_px)
     if thigh_w is not None and calf_w is not None and calf_w > 1e-6:
         out["thigh_to_calf_ratio"] = float(thigh_w / calf_w)
 
@@ -723,7 +733,10 @@ def extract_skin_consistency_metrics(
         "tone_baseline_thigh_deltaAB": None,
         "tone_baseline_calf_deltaL": None,
         "tone_baseline_calf_deltaAB": None,
+        "tone_baseline_chroma_score": None,
+        "tone_baseline_luminance_score": None,
         "tone_baseline_consistency_score": None,
+        "tone_family_score": None,
         "sample_risk_score": None,
         "lighting_risk_score": None,
         "skin_score_mode": "strict",
@@ -1016,14 +1029,27 @@ def extract_skin_consistency_metrics(
             ),
         ]
     )
-    out["tone_baseline_consistency_score"] = weighted_mean_valid(
+    out["tone_baseline_chroma_score"] = weighted_mean_valid(
         [
             (_exp_decay_score(out["tone_baseline_face_deltaAB"], split.delta_ab_decay_thigh), 0.24),
-            (_exp_decay_score(out["tone_baseline_face_deltaL"], split.delta_l_decay_thigh), 0.16),
             (_exp_decay_score(out["tone_baseline_thigh_deltaAB"], split.delta_ab_decay_thigh), 0.24),
             (_exp_decay_score(out["tone_baseline_calf_deltaAB"], split.delta_ab_decay_calf), 0.18),
+        ]
+    )
+    out["tone_baseline_luminance_score"] = weighted_mean_valid(
+        [
+            (_exp_decay_score(out["tone_baseline_face_deltaL"], split.delta_l_decay_thigh), 0.16),
             (_exp_decay_score(out["tone_baseline_thigh_deltaL"], split.delta_l_decay_thigh), 0.10),
             (_exp_decay_score(out["tone_baseline_calf_deltaL"], split.delta_l_decay_calf), 0.08),
+        ]
+    )
+    # Keep the existing field name as the lighting-invariant tone-baseline score so
+    # downstream code can read the same key while decoupling it from luminance drift.
+    out["tone_baseline_consistency_score"] = out["tone_baseline_chroma_score"]
+    out["tone_family_score"] = weighted_mean_valid(
+        [
+            (out["chroma_consistency_score"], 0.60),
+            (out["tone_baseline_chroma_score"], 0.40),
         ]
     )
 
@@ -1149,12 +1175,12 @@ def extract_skin_consistency_metrics(
         out["skin_score_mode"] = "strict"
         weight_preset = consistency.skin_score_weights.strict
 
+    tone_weight = float(weight_preset.chroma) + float(weight_preset.baseline)
     out["skin_uniformity_score"] = weighted_mean_valid(
         [
-            (out["chroma_consistency_score"], weight_preset.chroma),
+            (out["tone_family_score"], tone_weight),
             (out["luminance_consistency_score"], weight_preset.luminance),
             (out["knee_dark_patch_score"], weight_preset.knee),
-            (out["tone_baseline_consistency_score"], weight_preset.baseline),
         ]
     )
 
@@ -1278,6 +1304,8 @@ def apply_consistency_soft_gate(
     chroma_score = skin_metrics.get("chroma_consistency_score", None)
     luminance_score = skin_metrics.get("luminance_consistency_score", None)
     tone_baseline_score = skin_metrics.get("tone_baseline_consistency_score", None)
+    tone_family_score = skin_metrics.get("tone_family_score", None)
+    tone_baseline_luminance_score = skin_metrics.get("tone_baseline_luminance_score", None)
     gate_debug["skin"] = {
         "score": s_score,
         "confidence": s_conf,
@@ -1287,7 +1315,9 @@ def apply_consistency_soft_gate(
         "score_mode": skin_mode,
         "chroma_score": chroma_score,
         "luminance_score": luminance_score,
+        "tone_family_score": tone_family_score,
         "tone_baseline_score": tone_baseline_score,
+        "tone_baseline_luminance_score": tone_baseline_luminance_score,
     }
     reasons_all.extend(
         [reason for reason in skin_metrics.get("reasons", []) if reason != "SKIN_UNIFORMITY_EMPTY"]
@@ -1334,14 +1364,12 @@ def apply_consistency_soft_gate(
             ):
                 severe_luminance = True
         severe_tone_baseline = (
-            lighting_stable
-            and tone_baseline_score is not None
-            and float(tone_baseline_score) < consistency.skin_strong_warn_th
+            tone_family_score is not None
+            and float(tone_family_score) < consistency.skin_strong_warn_th
         )
         warn_tone_baseline = (
-            lighting_stable
-            and tone_baseline_score is not None
-            and float(tone_baseline_score) < consistency.skin_soft_warn_th
+            tone_family_score is not None
+            and float(tone_family_score) < consistency.skin_soft_warn_th
         )
 
         if risk_skip_skin_gate:

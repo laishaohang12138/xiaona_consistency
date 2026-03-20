@@ -1,0 +1,81 @@
+[REFERENCE PRIORITY RULE]
+Use the attached reference images as explicit anchors.
+Ref #1 = FACE MASTER. Face geometry only.
+Ref #2 = FULL BODY MASTER. Body proportion, waistline, full-body framing, and whole-body brightness/color family.
+Ref #3 = UPPER SUPPORT only when neckline, clavicle, shoulder line, or upper-body edge drifts.
+If references disagree: Ref #1 wins for face geometry. Ref #2 wins for body proportion and framing. Ref #3 never overrides Ref #1 or Ref #2.
+Single person only. Preserve the same XiaoNa. No redesign. No beautification.
+
+[SUBJECT / TASK]
+Create a neutral full-body studio reference photo of XiaoNa during the BRIDGE transition:
+the same woman as the anchors, now wearing plain fitted basic clothing.
+This is a technical training image, not a fashion shoot, not an ad, not sensual, not editorial.
+
+[IDENTITY]
+Match Ref #1 facial geometry closely:
+soft oval face, rounded chin, natural jaw width, natural eye size and spacing, blunt rounded nose tip, relaxed closed mouth, neutral expression.
+Keep the face adult, natural, and ordinary-looking.
+Do not make her younger, cuter, more glamorous, more influencer-like, or more generic.
+Hair: black middle-part low ponytail, clean parting, natural hairline, no bangs over eyebrows.
+Accessory: small silver hoop earrings only.
+
+[BODY CONSTITUTION]
+Same body constitution as Ref #2:
+170 cm visual height, 50 kg visual weight, slender professional-model build,
+long legs, 1:7.5 to 1:8 head-to-body ratio,
+38 cm shoulders, high natural waist around 0.62 body height,
+distinct clavicles, 30 cm neck, straight relaxed shoulders,
+flat abdomen, narrow compact pelvis, natural joint contours.
+Healthy lean body, not starved, not paper-thin, not exaggerated hourglass.
+Keep waist width, hip width, shoulder-pelvis relationship, and full-body scale consistent with Ref #2.
+
+[LIGHTING / COLOR]
+Neutral technical studio photograph.
+Soft broad frontal studio light is dominant.
+Add soft frontal fill so the image stays evenly readable from face to feet.
+Keep a subtle separation from the grey background, but do not create visible cinematic side-lighting.
+Low-contrast, calm, even exposure.
+Strict neutral-cool white balance.
+Skin should stay realistic, low-saturation, neutral-cool, and consistent from face, neck, clavicles, upper chest, arms, ankles, to feet.
+Do not let the clothing darken the face, neck, clavicles, upper chest, wrists, ankles, or feet.
+Avoid visible under-chin darkness, swallowed clavicles, chest hotspot glare, or heavy side shadow.
+Skin texture should look real and healthy: natural pores, fine vellus hair, subtle micro-contrast, no beauty filter, no plastic skin.
+
+[BACKGROUND / CAMERA]
+Solid neutral grey to cool grey seamless studio background.
+Clean floor shadow grounding the feet.
+No props, furniture, text, or story elements.
+Eye-level camera, neutral perspective, about 60 mm equivalent lens.
+Vertical full-body framing, head to toe fully visible, straight horizon, no tilt, no wide-angle distortion.
+Keep a small floor margin below the feet.
+
+[WARDROBE DISCIPLINE]
+Basic fitted clothing only.
+The image should look like the same XiaoNa immediately after changing from calibration wear into plain fitted basics.
+Use only one neckline family across the batch: shallow crew-round.
+Top must be matte, solid, fitted but not tight, non-transparent, non-glossy, non-lingerie, and non-editorial.
+Top must keep neckline edge, clavicle line, shoulder edge, and sleeve opening clean and readable.
+Top color stays in one neutral-cool mid-value family: cool mid-grey / slate-grey / graphite-grey.
+Top must clearly differ from both the skin and the trousers.
+Avoid pure black and pure white tops.
+Top fully covers the abdomen and is flat-tucked into high-waisted dark-charcoal slim straight ankle trousers.
+Trousers are matte with a clean waistband, no belt, no logo, no cargo volume, no skirt, no leggings sheen.
+
+[LOWER BODY SAFETY]
+Leg silhouette stays long and slender through the trouser line.
+Knee line stays stable and readable through the trousers, without swollen shape or dirty shadow.
+Ankles stay clear above the ankle break.
+Barefoot only. No shoes. No socks.
+Both ankles, heels, and all toes must remain visible and anatomically normal.
+
+[POSE GLOBAL RULES]
+Static low-entropy standing reference only.
+Neutral, calm, technical body language.
+No contrapposto, no visible hip pop, no dramatic twist, no walking feel, no runway feel.
+Hands relaxed near the outer thighs with a small clear air gap; hands must not cover the waist, neckline, knees, or ankles.
+Shoulders calm and nearly level. Pelvis stable. Natural anatomy and gravity.
+
+[QUALITY TARGET]
+Photorealistic technical studio reference photo.
+Identity first, body architecture second, clothing transition third.
+The image should immediately read as the same XiaoNa in plain fitted clothing.

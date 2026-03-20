@@ -8,6 +8,7 @@ XiaoNa LoRA training engineering repository.
 - Frozen project rules in `docs/`
 - Machine-readable project config in `configs/`
 - Versioned prompt assets in `prompts/`
+  `body_gold/` is active and `bridge/` is now landed as a scoped prompt asset pack
 - Custom GPT knowledge export in `kb_export/`
 - Anchor assets in `anchors/`
 - Offline benchmark replay support for threshold tuning
@@ -18,6 +19,7 @@ XiaoNa LoRA training engineering repository.
 - The QA pipeline is modularized into `core/qa_runtime.py`, `core/qa_pipeline.py`, `core/qa_scoring.py`, `core/qa_consistency.py`, `core/qa_features.py`, and `core/providers.py`
 - Human Parsing is the default upstream provider for `subject_mask` and `skin_region`, with legacy fallback retained
 - BODY GOLD currently runs as a conservative front-core lane, while side/back work is staged through shadow profile lanes
+- BRIDGE `v0.3.1-nb2` prompt assets are landed in `prompts/bridge/`, but QA/runtime governance is still BODY GOLD centric
 - `outputs/qa_report.json` now writes `report_meta` plus `items`, including provider policy, anchor snapshot, layer quota snapshot, and threshold hash
 - Benchmark replay can re-score a saved `qa_report.json` under threshold overrides without rerunning vision models
 - Optuna search can optimize replay metrics from `configs/optuna_search_space.template.json` without touching the main QA path

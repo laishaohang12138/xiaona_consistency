@@ -98,12 +98,14 @@ def load_anchor_set(runtime: RuntimeContext) -> AnchorSet:
     anchors.meta["face_paths"] = list(resolved_anchor_paths.get("face_paths", []))
     anchors.meta["upper_paths"] = list(resolved_anchor_paths.get("upper_paths", []))
     anchors.meta["full_paths"] = list(resolved_anchor_paths.get("full_paths", []))
+    anchors.meta["tone_paths"] = list(resolved_anchor_paths.get("tone_paths", []))
 
     print("\n[初始化] 加载 Anchor Set...")
     print(f"  Anchor Source Mode: {anchors.meta['anchor_source_mode']}")
     print(f"  Face Anchors : {len(anchors.meta['face_paths'])}")
     print(f"  Upper Anchors: {len(anchors.meta['upper_paths'])}")
     print(f"  Full Anchors : {len(anchors.meta['full_paths'])}")
+    print(f"  Tone Anchors : {len(anchors.meta['tone_paths'])}")
 
     for path_str in anchors.meta["face_paths"]:
         path = Path(path_str)
@@ -135,8 +137,19 @@ def load_anchor_set(runtime: RuntimeContext) -> AnchorSet:
         anchors.full_pose_feats.append(extract_pose_feat(runtime, img))
         anchors.full_face_feats.append(extract_face_feat(runtime, img, path))
 
+    for path_str in anchors.meta["tone_paths"]:
+        path = Path(path_str)
+        img = image_read_bgr(path, runtime.config.standardization)
+        face_feat = extract_face_feat(runtime, img, path) if img is not None else FaceFeat(
+            ok=False,
+            reasons=["IMAGE_READ_ERROR"],
+            source_path=str(path),
+        )
+        anchors.tone_face_feats.append(face_feat)
+
     print(f"  Upper Face-like Quality Refs: {len(valid_face_feats(anchors.upper_face_feats))}")
     print(f"  Full  Face-like Quality Refs: {len(valid_face_feats(anchors.full_face_feats))}")
+    print(f"  Tone Face-like Refs       : {len(valid_face_feats(anchors.tone_face_feats))}")
 
     face_front = sum(1 for feat in anchors.face_feats if feat.ok and "/front/" in str(feat.source_path).replace("\\", "/").lower())
     face_3q = sum(1 for feat in anchors.face_feats if feat.ok and "/three_quarter/" in str(feat.source_path).replace("\\", "/").lower())

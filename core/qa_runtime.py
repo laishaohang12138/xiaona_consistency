@@ -335,6 +335,7 @@ class ProjectPaths:
     dir_anchor_face: Path
     dir_anchor_upper: Path
     dir_anchor_full: Path
+    dir_anchor_tone: Path
 
 
 @dataclass
@@ -511,6 +512,7 @@ class AnchorSet:
     face_feats: List[FaceFeat] = field(default_factory=list)
     upper_face_feats: List[FaceFeat] = field(default_factory=list)
     full_face_feats: List[FaceFeat] = field(default_factory=list)
+    tone_face_feats: List[FaceFeat] = field(default_factory=list)
     upper_pose_feats: List[PoseFeat] = field(default_factory=list)
     full_pose_feats: List[PoseFeat] = field(default_factory=list)
     meta: Dict[str, Any] = field(default_factory=dict)
@@ -774,6 +776,7 @@ def create_project_paths(base_dir: Optional[Path] = None) -> ProjectPaths:
         dir_anchor_face=dir_anchors / "face",
         dir_anchor_upper=dir_anchors / "upper",
         dir_anchor_full=dir_anchors / "full",
+        dir_anchor_tone=dir_anchors / "tone",
     )
 
 
@@ -1301,6 +1304,7 @@ def _anchor_paths_from_registry(config: RuntimeConfig) -> Dict[str, List[str]]:
         "face_paths": [],
         "upper_paths": [],
         "full_paths": [],
+        "tone_paths": [],
     }
 
     anchors_node = config.anchor_registry.get("anchors", {})
@@ -1325,6 +1329,8 @@ def _anchor_paths_from_registry(config: RuntimeConfig) -> Dict[str, List[str]]:
             target_key = "upper_paths"
         elif role == "FULL_BODY_MASTER":
             target_key = "full_paths"
+        elif role in {"TONE_BASELINE", "TONE_MASTER"}:
+            target_key = "tone_paths"
         else:
             normalized = str(path).replace("\\", "/").lower()
             if "/anchors/face/" in normalized:
@@ -1333,6 +1339,8 @@ def _anchor_paths_from_registry(config: RuntimeConfig) -> Dict[str, List[str]]:
                 target_key = "upper_paths"
             elif "/anchors/full/" in normalized:
                 target_key = "full_paths"
+            elif "/anchors/tone/" in normalized:
+                target_key = "tone_paths"
 
         if target_key is None:
             continue
@@ -1364,6 +1372,7 @@ def _default_anchor_paths_from_dirs(config: RuntimeConfig) -> Dict[str, List[str
         "face_paths": [str(path) for path in _list_image_files_recursive(config.paths.dir_anchor_face)],
         "upper_paths": [str(path) for path in _list_image_files_in_dir(config.paths.dir_anchor_upper)],
         "full_paths": [str(path) for path in _list_image_files_in_dir(config.paths.dir_anchor_full)],
+        "tone_paths": [str(path) for path in _list_image_files_recursive(config.paths.dir_anchor_tone)],
     }
 
 
@@ -1380,7 +1389,7 @@ def resolve_anchor_paths(config: RuntimeConfig) -> Dict[str, List[str]]:
         raise ValueError(f"Unsupported anchor_source mode: {source_mode}")
 
     out: Dict[str, List[str]] = {}
-    for key in ["face_paths", "upper_paths", "full_paths"]:
+    for key in ["face_paths", "upper_paths", "full_paths", "tone_paths"]:
         vals = registry_paths.get(key, [])
         out[key] = vals if len(vals) > 0 else default_paths.get(key, [])
     return out
@@ -1393,6 +1402,7 @@ def anchor_registry_summary(config: RuntimeConfig) -> Dict[str, int]:
         "face_paths": len(resolved.get("face_paths", [])),
         "upper_paths": len(resolved.get("upper_paths", [])),
         "full_paths": len(resolved.get("full_paths", [])),
+        "tone_paths": len(resolved.get("tone_paths", [])),
     }
 
 
