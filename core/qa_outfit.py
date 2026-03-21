@@ -805,16 +805,63 @@ def apply_collection_diagnostics(
                 (depth_pairwise_median, 0.35),
             ]
         )
+        world3d_rows: List[Dict[str, Any]] = []
+        for item in items:
+            record_key = str(((item.get("collection") or {}).get("input_relative_path") or item.get("image") or "")).strip()
+            signal = identity_by_key.get(record_key, {})
+            world3d_signature = _normalize_embedding(signal.get("world3d_signature"))
+            world3d_weight = float(signal.get("world3d_weight", 0.0) or 0.0)
+            if world3d_signature is None or world3d_weight <= 0.0:
+                continue
+            world3d_rows.append(
+                {
+                    "record_key": record_key,
+                    "embedding": world3d_signature,
+                    "weight": world3d_weight,
+                    "ready_features": int(signal.get("world3d_ready_features", 0) or 0),
+                }
+            )
+
+        world3d_centroid = _weighted_sum(
+            [(row["embedding"], row["weight"]) for row in world3d_rows]
+        )
+        world3d_centroid = _normalize_embedding(world3d_centroid)
+        world3d_centroid_sims: List[float] = []
+        world3d_pairwise_sims: List[float] = []
+        if world3d_centroid is not None:
+            for row in world3d_rows:
+                sim = _cosine(row["embedding"], world3d_centroid)
+                if sim is not None:
+                    row["centroid_sim"] = sim
+                    world3d_centroid_sims.append(float(sim))
+        for idx, row_i in enumerate(world3d_rows):
+            for row_j in world3d_rows[idx + 1:]:
+                sim = _cosine(row_i["embedding"], row_j["embedding"])
+                if sim is not None:
+                    world3d_pairwise_sims.append(float(sim))
+
+        world3d_centroid_median = _median(world3d_centroid_sims)
+        world3d_centroid_scale = _mad(world3d_centroid_sims, center=world3d_centroid_median)
+        if world3d_centroid_scale is not None:
+            world3d_centroid_scale = max(0.01, 1.4826 * float(world3d_centroid_scale))
+        world3d_pairwise_median = _median(world3d_pairwise_sims)
+        batch_world3d_cohesion = _weighted_mean(
+            [
+                (_weighted_mean([(row.get("centroid_sim"), row["weight"]) for row in world3d_rows]), 0.65),
+                (world3d_pairwise_median, 0.35),
+            ]
+        )
         batch_clothfree_identity_cohesion = _weighted_geometric_mean(
             [
-                (batch_body_identity_cohesion, 0.68),
-                (batch_3d_cohesion, 0.32),
+                (batch_body_identity_cohesion, 0.48),
+                (batch_3d_cohesion, 0.24),
+                (batch_world3d_cohesion, 0.28),
             ]
         )
         batch_hybrid_identity_cohesion = _weighted_geometric_mean(
             [
-                (batch_identity_cohesion, 0.58),
-                (batch_clothfree_identity_cohesion, 0.42),
+                (batch_identity_cohesion, 0.56),
+                (batch_clothfree_identity_cohesion, 0.44),
             ]
         )
 
@@ -894,19 +941,22 @@ def apply_collection_diagnostics(
             identity_row = next((row for row in identity_rows if row.get("record_key") == record_key), None)
             body_row = next((row for row in body_rows if row.get("record_key") == record_key), None)
             depth_row = next((row for row in depth_rows if row.get("record_key") == record_key), None)
+            world3d_row = next((row for row in world3d_rows if row.get("record_key") == record_key), None)
             identity_z = None
             body_identity_z = None
             depth_identity_z = None
+            world3d_identity_z = None
             clothfree_identity_alignment = _weighted_geometric_mean(
                 [
-                    (body_row.get("centroid_sim") if body_row else None, 0.70),
-                    (depth_row.get("centroid_sim") if depth_row else None, 0.30),
+                    (body_row.get("centroid_sim") if body_row else None, 0.50),
+                    (depth_row.get("centroid_sim") if depth_row else None, 0.20),
+                    (world3d_row.get("centroid_sim") if world3d_row else None, 0.30),
                 ]
             )
             hybrid_identity_alignment = _weighted_geometric_mean(
                 [
-                    (identity_row.get("centroid_sim") if identity_row else None, 0.50),
-                    (clothfree_identity_alignment, 0.35),
+                    (identity_row.get("centroid_sim") if identity_row else None, 0.48),
+                    (clothfree_identity_alignment, 0.37),
                     (scores.get("face"), 0.15),
                 ]
             )
@@ -931,6 +981,16 @@ def apply_collection_diagnostics(
                     if depth_identity_z >= 2.8 or float(centroid_sim) < 0.74:
                         metric_zscores["identity_3d_batch"] = round(float(depth_identity_z), 4)
                         reasons.append("IDENTITY_3D_OUTLIER_IN_BATCH")
+            if world3d_row is not None and world3d_centroid_median is not None and world3d_centroid_scale is not None:
+                centroid_sim = world3d_row.get("centroid_sim")
+                if centroid_sim is not None:
+                    world3d_identity_z = max(
+                        0.0,
+                        (float(world3d_centroid_median) - float(centroid_sim)) / float(world3d_centroid_scale),
+                    )
+                    if world3d_identity_z >= 2.8 or float(centroid_sim) < 0.76:
+                        metric_zscores["identity_world3d_batch"] = round(float(world3d_identity_z), 4)
+                        reasons.append("IDENTITY_WORLD3D_OUTLIER_IN_BATCH")
 
             diagnostics = {
                 "group_key": group_key,
@@ -944,6 +1004,8 @@ def apply_collection_diagnostics(
                 "body_identity_centroid_z": _round_or_none(body_identity_z),
                 "depth_identity_centroid_similarity": _round_or_none(depth_row.get("centroid_sim") if depth_row else None),
                 "depth_identity_centroid_z": _round_or_none(depth_identity_z),
+                "world3d_identity_centroid_similarity": _round_or_none(world3d_row.get("centroid_sim") if world3d_row else None),
+                "world3d_identity_centroid_z": _round_or_none(world3d_identity_z),
                 "clothfree_identity_alignment": _round_or_none(clothfree_identity_alignment),
                 "hybrid_identity_alignment": _round_or_none(hybrid_identity_alignment),
                 "metric_reference": {
@@ -987,6 +1049,10 @@ def apply_collection_diagnostics(
                 "batch_3d_cohesion": _round_or_none(batch_3d_cohesion),
                 "depth_identity_centroid_similarity_median": _round_or_none(depth_centroid_median),
                 "depth_identity_pairwise_similarity_median": _round_or_none(depth_pairwise_median),
+                "world3d_identity_support_count": len(world3d_rows),
+                "batch_world3d_cohesion": _round_or_none(batch_world3d_cohesion),
+                "world3d_identity_centroid_similarity_median": _round_or_none(world3d_centroid_median),
+                "world3d_identity_pairwise_similarity_median": _round_or_none(world3d_pairwise_median),
                 "outlier_item_count": group_outlier_items,
                 "outlier_item_ratio": _round_or_none(group_outlier_items / max(1, len(items))),
                 "metric_reference": {
@@ -1043,6 +1109,7 @@ def evaluate_active_batch_gate(
         "batch_hybrid_identity_cohesion_min": policy.get("batch_hybrid_identity_cohesion_min", None),
         "batch_body_under_clothes_continuity_min": policy.get("batch_body_under_clothes_continuity_min", None),
         "batch_3d_cohesion_min": policy.get("batch_3d_cohesion_min", None),
+        "batch_world3d_cohesion_min": policy.get("batch_world3d_cohesion_min", None),
         "batch_garment_boundary_stability_min": policy.get("batch_garment_boundary_stability_min", None),
         "batch_routing_consistency_min": policy.get("batch_routing_consistency_min", None),
         "batch_garment_confidence_min": policy.get("batch_garment_confidence_min", None),
@@ -1056,6 +1123,7 @@ def evaluate_active_batch_gate(
         "batch_clothfree_identity_cohesion": group_diag.get("batch_clothfree_identity_cohesion"),
         "batch_hybrid_identity_cohesion": group_diag.get("batch_hybrid_identity_cohesion"),
         "batch_3d_cohesion": group_diag.get("batch_3d_cohesion"),
+        "batch_world3d_cohesion": group_diag.get("batch_world3d_cohesion"),
         "body_under_clothes_continuity": look.get("body_under_clothes_continuity"),
         "garment_boundary_stability": look.get("garment_boundary_stability"),
         "routing_consistency": look.get("routing_consistency"),
@@ -1093,6 +1161,7 @@ def evaluate_active_batch_gate(
         "BATCH_BODY_UNDER_CLOTHES_CONTINUITY_LOW",
     )
     _lt("batch_3d_cohesion", "batch_3d_cohesion_min", "BATCH_3D_COHESION_LOW")
+    _lt("batch_world3d_cohesion", "batch_world3d_cohesion_min", "BATCH_WORLD3D_COHESION_LOW")
     _lt(
         "garment_boundary_stability",
         "batch_garment_boundary_stability_min",
@@ -1133,6 +1202,7 @@ def _selection_penalty(status: Optional[str], reasons: Sequence[str]) -> tuple[f
         ("IDENTITY_FACE_OUTLIER_IN_BATCH", 0.10, "脸部身份偏离当前批次中心"),
         ("IDENTITY_BODY_OUTLIER_IN_BATCH", 0.08, "衣下人体结构偏离当前批次中心"),
         ("IDENTITY_3D_OUTLIER_IN_BATCH", 0.10, "3D 几何偏离当前批次中心"),
+        ("IDENTITY_WORLD3D_OUTLIER_IN_BATCH", 0.09, "世界坐标 3D 结构偏离当前批次中心"),
         ("DEPTH_3D_LITE_STRONG_WARN", 0.10, "3D 一致性存在强警告"),
         ("DEPTH_3D_LITE_WARN", 0.06, "3D 一致性存在警告"),
         ("BODY_CONSTITUTION_STRONG_WARN", 0.08, "身材量纲存在强警告"),
@@ -1174,6 +1244,8 @@ def _selection_highlights(components: Dict[str, Optional[float]], caution_notes:
         notes.append("衣物无关的人体结构稳定")
     if isinstance(components.get("depth_alignment"), (int, float)) and float(components["depth_alignment"]) >= 0.86:
         notes.append("3D 几何与当前批次高度一致")
+    if isinstance(components.get("world3d_alignment"), (int, float)) and float(components["world3d_alignment"]) >= 0.86:
+        notes.append("世界坐标 3D 结构与当前批次高度一致")
     if isinstance(components.get("structure_stability"), (int, float)) and float(components["structure_stability"]) >= 0.84:
         notes.append("全身构图与体态较稳")
     if len(notes) == 0 and len(caution_notes) == 0:
@@ -1242,8 +1314,16 @@ def build_shot_selection_report(
                 ),
                 "depth_alignment": _weighted_mean(
                     [
-                        (diagnostics.get("depth_identity_centroid_similarity"), 0.60),
-                        (scores.get("depth_3d"), 0.40),
+                        (diagnostics.get("depth_identity_centroid_similarity"), 0.52),
+                        (scores.get("depth_3d"), 0.34),
+                        (diagnostics.get("world3d_identity_centroid_similarity"), 0.14),
+                    ]
+                ),
+                "world3d_alignment": _weighted_mean(
+                    [
+                        (diagnostics.get("world3d_identity_centroid_similarity"), 0.72),
+                        (diagnostics.get("depth_identity_centroid_similarity"), 0.18),
+                        (scores.get("depth_3d"), 0.10),
                     ]
                 ),
                 "structure_stability": _weighted_mean(
@@ -1257,11 +1337,12 @@ def build_shot_selection_report(
 
             base_score = _weighted_mean(
                 [
-                    (components["absolute_face_identity"], 0.24),
-                    (components["hybrid_identity_alignment"], 0.28),
-                    (components["clothfree_identity_alignment"], 0.16),
-                    (components["depth_alignment"], 0.18),
-                    (components["structure_stability"], 0.14),
+                    (components["absolute_face_identity"], 0.22),
+                    (components["hybrid_identity_alignment"], 0.26),
+                    (components["clothfree_identity_alignment"], 0.14),
+                    (components["depth_alignment"], 0.14),
+                    (components["world3d_alignment"], 0.12),
+                    (components["structure_stability"], 0.12),
                 ]
             )
             penalty_value, penalty_notes = _selection_penalty(item.get("status"), reasons)
@@ -1280,6 +1361,8 @@ def build_shot_selection_report(
                 caution_notes.append("衣物无关的人体结构仍偏松")
             if isinstance(components.get("depth_alignment"), (int, float)) and float(components["depth_alignment"]) < 0.80:
                 caution_notes.append("3D 几何一致性仍偏弱")
+            if isinstance(components.get("world3d_alignment"), (int, float)) and float(components["world3d_alignment"]) < 0.82:
+                caution_notes.append("世界坐标 3D 结构仍偏松")
 
             ranked_candidates.append(
                 {
@@ -1341,6 +1424,8 @@ def build_shot_selection_report(
             review_guidance.append("衣物无关结构总体稳定，复核时可优先看脸部和局部神态，而不是衣服边界。")
         if group_diag.get("batch_3d_cohesion") is not None and float(group_diag.get("batch_3d_cohesion")) >= 0.98:
             review_guidance.append("当前批次 3D 一致性整体稳定，3D 只需重点排查尾部候选。")
+        if group_diag.get("batch_world3d_cohesion") is not None and float(group_diag.get("batch_world3d_cohesion")) < 0.88:
+            review_guidance.append("世界坐标 3D 结构凝聚度仍偏弱，复核时应注意肩胯中轴和下肢长度感是否漂移。")
 
         for row in shortlist:
             row["delta_vs_top"] = {
@@ -1374,6 +1459,7 @@ def build_shot_selection_report(
                         "batch_clothfree_identity_cohesion": group_diag.get("batch_clothfree_identity_cohesion"),
                         "batch_hybrid_identity_cohesion": group_diag.get("batch_hybrid_identity_cohesion"),
                         "batch_3d_cohesion": group_diag.get("batch_3d_cohesion"),
+                        "batch_world3d_cohesion": group_diag.get("batch_world3d_cohesion"),
                         "outlier_item_ratio": group_diag.get("outlier_item_ratio"),
                     },
                 "shortlist": shortlist,

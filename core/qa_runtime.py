@@ -8,6 +8,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+try:
+    import yaml as pyyaml
+except Exception:  # pragma: no cover - optional dependency fallback
+    pyyaml = None
+
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -497,6 +502,7 @@ class PoseFeat:
     mode: str = "opencv"
     lm_xy: Optional[np.ndarray] = None
     lm_vis: Optional[np.ndarray] = None
+    lm_world: Optional[np.ndarray] = None
     person_bbox_xywh: Optional[Tuple[int, int, int, int]] = None
     person_bbox_area_ratio: float = 0.0
     framing: Dict[str, float] = field(default_factory=dict)
@@ -887,6 +893,26 @@ def _load_simple_yaml(path: Path) -> Optional[Any]:
     return root
 
 
+def _load_yaml_config(path: Path) -> Optional[Any]:
+    if not path.exists():
+        return None
+
+    if pyyaml is not None:
+        try:
+            raw_text = path.read_text(encoding="utf-8")
+        except Exception as exc:
+            print(f"[警告] 配置文件读取失败: {path} | {exc}")
+            return None
+        try:
+            return pyyaml.safe_load(raw_text)
+        except Exception as exc:
+            print(f"[警告] PyYAML 解析失败，回退到简单 YAML 解析器: {path} | {exc}")
+            return _load_simple_yaml(path)
+
+    print(f"[警告] PyYAML 不可用，回退到简单 YAML 解析器: {path}")
+    return _load_simple_yaml(path)
+
+
 def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
     out = copy.deepcopy(base)
     for key, value in override.items():
@@ -1030,7 +1056,7 @@ def _list_image_files_recursive(directory: Path) -> List[Path]:
 
 def apply_external_project_configs(config: RuntimeConfig) -> None:
     task_profiles_path = config.paths.config_dir / "task_profiles.yaml"
-    task_data = _load_simple_yaml(task_profiles_path)
+    task_data = _load_yaml_config(task_profiles_path)
     if isinstance(task_data, dict):
         task_profiles = task_data.get("task_profiles", None)
         if isinstance(task_profiles, dict):
@@ -1061,19 +1087,19 @@ def apply_external_project_configs(config: RuntimeConfig) -> None:
         config.external_config_status["task_profiles"] = True
 
     anchor_registry_path = config.paths.config_dir / "anchor_registry.yaml"
-    anchor_data = _load_simple_yaml(anchor_registry_path)
+    anchor_data = _load_yaml_config(anchor_registry_path)
     if anchor_data is not None:
         config.anchor_registry = _normalize_anchor_registry(anchor_data)
         config.external_config_status["anchor_registry"] = True
 
     layer_quota_path = config.paths.config_dir / "layer_quotas.yaml"
-    quota_data = _load_simple_yaml(layer_quota_path)
+    quota_data = _load_yaml_config(layer_quota_path)
     if quota_data is not None:
         config.layer_quotas = _normalize_layer_quotas(quota_data)
         config.external_config_status["layer_quotas"] = True
 
     consistency_path = config.paths.config_dir / "consistency_thresholds.yaml"
-    consistency_data = _load_simple_yaml(consistency_path)
+    consistency_data = _load_yaml_config(consistency_path)
     if isinstance(consistency_data, dict):
         consistency_node = consistency_data.get("consistency", None)
         if isinstance(consistency_node, dict):

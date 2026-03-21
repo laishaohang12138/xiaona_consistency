@@ -991,6 +991,8 @@ def make_recommendations(
         recs.append("该图衣下人体结构相对当前批次偏离明显：即使服装相近，也会把角色体态教偏")
     if "IDENTITY_3D_OUTLIER_IN_BATCH" in reasons:
         recs.append("该图的 3D 几何相对当前批次偏离明显：优先复查转体厚度、躯干体积和腿脚空间关系")
+    if "IDENTITY_WORLD3D_OUTLIER_IN_BATCH" in reasons:
+        recs.append("该图的世界坐标 3D 结构相对当前批次偏离明显：优先复查肩胯中轴、下肢长度感和整体体积比例")
     if "BATCH_IDENTITY_CONTINUITY_LOW" in reasons:
         recs.append("这整批图的身份连续性不足：不要直接进入 LoRA 训练，先回看是否混入身份漂移样本")
     if "BATCH_IDENTITY_COHESION_LOW" in reasons:
@@ -1003,6 +1005,8 @@ def make_recommendations(
         recs.append("这整批图衣下人体连续性不足：服装稳定但身体结构在漂，不适合作为身份强化批次")
     if "BATCH_3D_COHESION_LOW" in reasons:
         recs.append("这整批图的 3D 几何凝聚度不足：即使衣服相近，也会在空间厚度和体积感上教偏")
+    if "BATCH_WORLD3D_COHESION_LOW" in reasons:
+        recs.append("这整批图的世界坐标 3D 凝聚度不足：说明整体骨架体积和空间结构还没有稳定收敛")
     if "BATCH_GARMENT_BOUNDARY_STABILITY_LOW" in reasons:
         recs.append("这整批图衣物边界稳定性不足：边界漂移会把穿搭层和身份层一起教歪")
     if "BATCH_ROUTING_CONSISTENCY_LOW" in reasons:

@@ -311,10 +311,17 @@ def extract_pose_feat(runtime: RuntimeContext, img_bgr: np.ndarray) -> PoseFeat:
         lms = results.pose_landmarks.landmark
         xy = np.array([[lm.x, lm.y] for lm in lms], dtype=np.float32)
         vis = np.array([getattr(lm, "visibility", 1.0) for lm in lms], dtype=np.float32)
+        world_xyz = None
+        if getattr(results, "pose_world_landmarks", None):
+            world_xyz = np.array(
+                [[lm.x, lm.y, lm.z] for lm in results.pose_world_landmarks.landmark],
+                dtype=np.float32,
+            )
 
         feat.ok = True
         feat.lm_xy = xy
         feat.lm_vis = vis
+        feat.lm_world = world_xyz
 
         reasons: List[str] = []
         NOSE = 0

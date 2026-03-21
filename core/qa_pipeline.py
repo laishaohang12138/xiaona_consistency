@@ -21,6 +21,7 @@ from .qa_consistency import (
 )
 from .qa_features import extract_face_feat, extract_pose_feat, init_engines
 from .qa_garment import extract_garment_metrics
+from .qa_heavy_review import apply_shortlist_heavy_review
 from .qa_outfit import (
     apply_collection_diagnostics,
     build_collection_aggregates,
@@ -60,6 +61,10 @@ from .qa_scoring import (
     score_upper_against_anchor_set,
 )
 from .qa_view_router import route_view_lane
+from .qa_winner_bank import (
+    build_winner_bank_governance,
+    enrich_shot_selection_pairwise_cards,
+)
 from .qa_utils import (
     SKIMAGE_SSIM_AVAILABLE,
     canonicalize_view_lane,
@@ -231,8 +236,16 @@ def _build_report_meta(
     input_count: int,
 ) -> Dict[str, Any]:
     profile_policy = get_profile_policy(runtime, target_profile)
+    back180_readiness = {
+        "legacy_router_supports_back_180": False,
+        "shadow_router_supports_back_180": True,
+        "shadow_router_mode": "shadow_only",
+        "shadow_fallback_enabled": True,
+        "primary_release_ready": False,
+        "source_of_truth": "view_detector.back_180_readiness",
+    }
     return {
-        "schema_version": "qa_report_v2_3",
+        "schema_version": "qa_report_v2_6",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "active_profile": target_profile,
         "review_policy": {
@@ -280,13 +293,14 @@ def _build_report_meta(
                 "back_like",
                 "profile_like",
             ],
-            "back_180_native_detection": False,
+            "back_180_readiness": back180_readiness,
             "active_source": "legacy_face_router",
             "shadow_router_v2": {
                 "enabled": True,
                 "mode": "shadow_only",
                 "lanes": ["front", "three_quarter", "side_90", "back_180"],
-                "native_back_180_detection": True,
+                "supports_back_180": bool(back180_readiness["shadow_router_supports_back_180"]),
+                "primary_release_ready": bool(back180_readiness["primary_release_ready"]),
                 "source_priority": ["face", "pose", "subject_mask", "skin_region"],
             },
         },
@@ -317,22 +331,57 @@ def _build_report_meta(
                 "batch_clothfree_identity_cohesion",
                 "batch_hybrid_identity_cohesion",
                 "batch_3d_cohesion",
+                "batch_world3d_cohesion",
             ],
             "batch_gate_supported": True,
+        },
+        "shortlist_heavy_review": {
+            "enabled": True,
+            "mode": "shortlist_only_advisory",
+            "advisory_only": True,
+            "goal": "add stronger parser-based evidence for GPT-plus-human review without changing main QA gates",
+            "algorithms": [
+                "segformer_b2_clothes_parser",
+            ],
+            "outputs": [
+                "parser_boundary_alignment",
+                "parser_visible_body_alignment",
+                "parser_consensus_score",
+                "enhanced_selection_score",
+            ],
         },
         "shot_batch_selection": {
             "enabled": True,
             "mode": "advisory_rank_only",
             "final_decision_owner": "custom_gpt_plus_human",
             "goal": "provide ranking and explanations for batch review, not final auto-selection",
-            "outputs": ["selection_score", "top_ranked_image", "shortlist", "component_scores", "penalties"],
+            "outputs": [
+                "selection_score",
+                "top_ranked_image",
+                "shortlist",
+                "component_scores",
+                "penalties",
+                "pairwise_compare_cards",
+            ],
             "components": [
                 "absolute_face_identity",
                 "batch_face_alignment",
                 "clothfree_body_alignment",
                 "depth_alignment",
+                "world3d_alignment",
                 "structure_stability",
             ],
+        },
+        "winner_bank_governance": {
+            "enabled": True,
+            "mode": "manual_promotion_required",
+            "goal": "track cross-batch drift for final human-approved winners without auto-promoting machine top1",
+            "outputs": [
+                "winner_bank_candidate.json",
+                "winner_bank_report.json",
+            ],
+            "auto_promote_machine_top1": False,
+            "final_decision_owner": "custom_gpt_plus_human",
         },
         "input_count": int(input_count),
     }
@@ -494,6 +543,124 @@ def _depth_identity_signature(
         0.45 * depth_conf
         + 0.35 * pose_weight
         + 0.20 * depth_score
+    )
+    return {
+        "signature": signature,
+        "ready_features": ready,
+        "feature_count": len(feature_specs),
+        "weight": weight if signature is not None else 0.0,
+    }
+
+
+def _world3d_identity_signature(cand_pose: PoseFeat) -> Dict[str, Any]:
+    xyz = getattr(cand_pose, "lm_world", None)
+    vis = getattr(cand_pose, "lm_vis", None)
+    if xyz is None or vis is None:
+        return {"signature": None, "ready_features": 0, "feature_count": 0, "weight": 0.0}
+
+    def _dist(i: int, j: int) -> Optional[float]:
+        if vis[i] <= 0.35 or vis[j] <= 0.35:
+            return None
+        return float(np.linalg.norm(xyz[i] - xyz[j]))
+
+    def _balance(left_value: Optional[float], right_value: Optional[float]) -> Optional[float]:
+        if left_value is None or right_value is None:
+            return None
+        hi = max(abs(float(left_value)), abs(float(right_value)))
+        if hi <= 1e-6:
+            return None
+        return float(min(abs(float(left_value)), abs(float(right_value))) / hi)
+
+    NOSE = 0
+    L_SHOULDER, R_SHOULDER = 11, 12
+    L_HIP, R_HIP = 23, 24
+    L_KNEE, R_KNEE = 25, 26
+    L_ANKLE, R_ANKLE = 27, 28
+    L_HEEL, R_HEEL = 29, 30
+    L_FOOT, R_FOOT = 31, 32
+
+    shoulder_span = _dist(L_SHOULDER, R_SHOULDER)
+    hip_span = _dist(L_HIP, R_HIP)
+    torso_len = None
+    if all(vis[idx] > 0.35 for idx in [L_SHOULDER, R_SHOULDER, L_HIP, R_HIP]):
+        shoulder_mid = (xyz[L_SHOULDER] + xyz[R_SHOULDER]) / 2.0
+        hip_mid = (xyz[L_HIP] + xyz[R_HIP]) / 2.0
+        torso_len = float(np.linalg.norm(shoulder_mid - hip_mid))
+    leg_len = None
+    if all(vis[idx] > 0.35 for idx in [L_HIP, R_HIP, L_ANKLE, R_ANKLE]):
+        hip_mid = (xyz[L_HIP] + xyz[R_HIP]) / 2.0
+        ankle_mid = (xyz[L_ANKLE] + xyz[R_ANKLE]) / 2.0
+        leg_len = float(np.linalg.norm(hip_mid - ankle_mid))
+
+    left_thigh = _dist(L_HIP, L_KNEE)
+    right_thigh = _dist(R_HIP, R_KNEE)
+    left_calf = _dist(L_KNEE, L_ANKLE)
+    right_calf = _dist(R_KNEE, R_ANKLE)
+    left_foot = _dist(L_HEEL, L_FOOT)
+    right_foot = _dist(R_HEEL, R_FOOT)
+
+    thigh_balance = _balance(left_thigh, right_thigh)
+    calf_balance = _balance(left_calf, right_calf)
+    foot_balance = _balance(left_foot, right_foot)
+    shoulder_level = None
+    shoulder_depth = None
+    hip_level = None
+    hip_depth = None
+    torso_twist = None
+    head_torso_ratio = None
+    leg_ratio = None
+    if shoulder_span is not None and shoulder_span > 1e-6 and all(vis[idx] > 0.35 for idx in [L_SHOULDER, R_SHOULDER]):
+        shoulder_level = abs(float(xyz[L_SHOULDER][1] - xyz[R_SHOULDER][1])) / shoulder_span
+        shoulder_depth = abs(float(xyz[L_SHOULDER][2] - xyz[R_SHOULDER][2])) / shoulder_span
+    if hip_span is not None and hip_span > 1e-6 and all(vis[idx] > 0.35 for idx in [L_HIP, R_HIP]):
+        hip_level = abs(float(xyz[L_HIP][1] - xyz[R_HIP][1])) / hip_span
+        hip_depth = abs(float(xyz[L_HIP][2] - xyz[R_HIP][2])) / hip_span
+    if shoulder_span is not None and shoulder_span > 1e-6 and all(vis[idx] > 0.35 for idx in [L_SHOULDER, R_SHOULDER, L_HIP, R_HIP]):
+        torso_twist = abs(
+            (float(xyz[L_SHOULDER][2] - xyz[R_SHOULDER][2]))
+            - (float(xyz[L_HIP][2] - xyz[R_HIP][2]))
+        ) / shoulder_span
+    if torso_len is not None and torso_len > 1e-6 and vis[NOSE] > 0.35 and all(vis[idx] > 0.35 for idx in [L_SHOULDER, R_SHOULDER]):
+        shoulder_mid = (xyz[L_SHOULDER] + xyz[R_SHOULDER]) / 2.0
+        head_torso_ratio = float(np.linalg.norm(xyz[NOSE] - shoulder_mid)) / torso_len
+    if torso_len is not None and torso_len > 1e-6 and leg_len is not None:
+        leg_ratio = leg_len / torso_len
+
+    feature_specs = [
+        ("shoulder_span_world", shoulder_span, 0.32, 0.10),
+        ("hip_span_world", hip_span, 0.24, 0.08),
+        ("torso_len_world", torso_len, 0.42, 0.10),
+        ("leg_ratio_world", leg_ratio, 2.25, 0.45),
+        ("head_torso_ratio_world", head_torso_ratio, 0.45, 0.16),
+        ("thigh_balance_world", thigh_balance, 0.95, 0.08),
+        ("calf_balance_world", calf_balance, 0.95, 0.08),
+        ("foot_balance_world", foot_balance, 0.94, 0.10),
+        ("shoulder_level_world", shoulder_level, 0.02, 0.06),
+        ("hip_level_world", hip_level, 0.02, 0.06),
+        ("shoulder_depth_world", shoulder_depth, 0.08, 0.08),
+        ("hip_depth_world", hip_depth, 0.08, 0.08),
+        ("torso_twist_world", torso_twist, 0.10, 0.10),
+    ]
+
+    values: List[float] = []
+    ready = 0
+    for _, raw_value, center, scale in feature_specs:
+        if raw_value is None:
+            values.append(0.0)
+            continue
+        values.append((float(raw_value) - float(center)) / max(1e-6, float(scale)))
+        ready += 1
+
+    signature = None
+    if ready >= 6:
+        vector = np.asarray(values, dtype=np.float32)
+        norm = float(np.linalg.norm(vector))
+        if norm > 1e-8:
+            signature = (vector / norm).astype(np.float32)
+
+    weight = float(
+        0.65 * float(getattr(cand_pose, "confidence_full", 0.0) or 0.0)
+        + 0.35 * min(1.0, ready / max(1, len(feature_specs)))
     )
     return {
         "signature": signature,
@@ -1101,6 +1268,7 @@ def _run_pipeline_impl(
                 cand_pose,
                 depth_3d_metrics,
             )
+            world3d_identity = _world3d_identity_signature(cand_pose)
 
             constitution_score = constitution_metrics.get("body_constitution_score", None)
             skin_score = skin_metrics.get("skin_uniformity_score", None)
@@ -1163,6 +1331,9 @@ def _run_pipeline_impl(
                     "depth_signature": depth_identity.get("signature"),
                     "depth_weight": float(depth_identity.get("weight", 0.0) or 0.0),
                     "depth_ready_features": int(depth_identity.get("ready_features", 0) or 0),
+                    "world3d_signature": world3d_identity.get("signature"),
+                    "world3d_weight": float(world3d_identity.get("weight", 0.0) or 0.0),
+                    "world3d_ready_features": int(world3d_identity.get("ready_features", 0) or 0),
                     "face_conf": float(face_conf),
                     "face_score": float(face_score),
                     "bbox_area_ratio": float(cand_face.bbox_area_ratio if cand_face.ok else 0.0),
@@ -1424,6 +1595,11 @@ def _run_pipeline_impl(
                         "feature_count": depth_identity.get("feature_count"),
                         "weight": depth_identity.get("weight"),
                     },
+                    "world3d_identity_signature": {
+                        "ready_features": world3d_identity.get("ready_features"),
+                        "feature_count": world3d_identity.get("feature_count"),
+                        "weight": world3d_identity.get("weight"),
+                    },
                     "depth_3d_metrics": depth_3d_metrics,
                     "consistency_gate": consistency_gate_debug,
                     "collection_metadata": collection_meta,
@@ -1572,12 +1748,27 @@ def _run_pipeline_impl(
     else:
         for item in report_items:
             item.setdefault("debug", {})["batch_gate"] = batch_gate
+    shot_selection = apply_shortlist_heavy_review(
+        runtime,
+        report_items,
+        shot_selection,
+        target_profile=target_profile,
+    )
+    shot_selection = enrich_shot_selection_pairwise_cards(shot_selection)
+    winner_bank_governance = build_winner_bank_governance(
+        report_items,
+        shot_selection,
+        batch_identity_samples,
+        config.paths.dir_output,
+        target_profile=target_profile,
+    )
     for item in report_items:
         item["recommendations"] = make_recommendations(runtime, item, target_profile)
     report_payload = {
         "report_meta": report_meta,
         "collection_aggregates": collection_aggregates,
         "shot_selection": shot_selection,
+        "winner_bank_governance": winner_bank_governance,
         "items": report_items,
     }
     with open(config.paths.report_file, "w", encoding="utf-8") as file:
