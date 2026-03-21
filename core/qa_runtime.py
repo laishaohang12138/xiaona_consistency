@@ -943,6 +943,7 @@ def _normalize_anchor_registry(data: Any) -> Dict[str, Any]:
             supports = node.get("supports", [])
             out_anchors[str(anchor_id)] = {
                 "role": str(node.get("role", "")),
+                "anchor_tier": str(node.get("anchor_tier", "")).strip().lower(),
                 "priority": _coerce_float(node.get("priority", 0), 0.0),
                 "required_default": bool(node.get("required_default", False)),
                 "path": str(node.get("path", "")),
@@ -1422,6 +1423,7 @@ def anchor_registry_snapshot(config: RuntimeConfig) -> Dict[str, Any]:
         resolved_path = _resolve_registry_path(config, raw_path) if raw_path else None
         snapshot["entries"][str(anchor_id)] = {
             "role": str(node.get("role", "")),
+            "anchor_tier": str(node.get("anchor_tier", "")).strip().lower(),
             "required_default": bool(node.get("required_default", False)),
             "view_bucket": str(node.get("view_bucket", "")),
             "view_side": str(node.get("view_side", "unknown")),

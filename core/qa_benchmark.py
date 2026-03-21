@@ -61,6 +61,7 @@ def export_benchmark_template(
         if not image_name:
             continue
         debug = item.get("debug", {}) if isinstance(item.get("debug", {}), dict) else {}
+        shadow = debug.get("view_router_v2", {}) if isinstance(debug.get("view_router_v2", {}), dict) else {}
         template["items"][image_name] = {
             "expected_status": "",
             "current_status": str(item.get("status", "")),
@@ -68,6 +69,18 @@ def export_benchmark_template(
             "current_task_profile": str(item.get("task_profile", "")),
             "expected_view_lane": "",
             "current_view_lane": str(debug.get("view_lane", "")),
+            "expected_view_lane_detail": "",
+            "current_view_lane_detail": str(
+                debug.get("view_lane_detail", shadow.get("lane_detail", ""))
+            ),
+            "current_view_lane_detail_confidence": _safe_float(
+                debug.get("view_lane_detail_confidence", shadow.get("lane_detail_confidence", 0.0)),
+                0.0,
+            ),
+            "current_view_lane_strictness_score": _safe_float(
+                debug.get("view_lane_strictness_score", shadow.get("lane_strictness_score", 0.0)),
+                0.0,
+            ),
             "must_have_reasons": [],
             "must_not_have_reasons": [],
             "weight": 1.0,
@@ -129,6 +142,7 @@ def _normalize_label_node(image_name: str, node: Any) -> Dict[str, Any]:
         "weight": weight,
         "expected_task_profile": str(node.get("expected_task_profile", "")).strip(),
         "expected_view_lane": str(node.get("expected_view_lane", "")).strip(),
+        "expected_view_lane_detail": str(node.get("expected_view_lane_detail", "")).strip(),
         "must_have_reasons": _normalize_string_list(node.get("must_have_reasons", []), "must_have_reasons", image_name),
         "must_not_have_reasons": _normalize_string_list(
             node.get("must_not_have_reasons", []), "must_not_have_reasons", image_name
@@ -268,6 +282,7 @@ def _recompute_body_constitution_metrics(
     runtime: RuntimeContext,
     raw_metrics: Dict[str, Any],
     view_bucket: str,
+    view_lane_detail: str = "",
 ) -> Dict[str, Any]:
     metrics = copy.deepcopy(raw_metrics) if isinstance(raw_metrics, dict) else {}
     metrics.update(
@@ -275,6 +290,7 @@ def _recompute_body_constitution_metrics(
             metrics,
             runtime.config.consistency.body_constitution_scoring,
             view_bucket=view_bucket,
+            view_lane_detail=view_lane_detail,
         )
     )
 
@@ -296,6 +312,7 @@ def _recompute_body_constitution_metrics(
             width_ready=int(width_ready),
             pose_visibility=_safe_float(pose_visibility, 0.0),
             torso_fill=None if torso_fill is None else _safe_float(torso_fill, 0.0),
+            view_lane_detail=view_lane_detail,
         )
 
     min_width_metrics = int(
@@ -313,7 +330,12 @@ def _recompute_body_constitution_metrics(
     return metrics
 
 
-def _recompute_depth_metrics(runtime: RuntimeContext, item: Dict[str, Any], view_lane: str) -> Dict[str, Any]:
+def _recompute_depth_metrics(
+    runtime: RuntimeContext,
+    item: Dict[str, Any],
+    view_lane: str,
+    view_lane_detail: str = "",
+) -> Dict[str, Any]:
     debug = item.get("debug", {}) if isinstance(item.get("debug", {}), dict) else {}
     raw_metrics = debug.get("depth_3d_metrics", {}) if isinstance(debug.get("depth_3d_metrics", {}), dict) else {}
     upper_geom = debug.get("candidate_upper_geom", {}) if isinstance(debug.get("candidate_upper_geom", {}), dict) else {}
@@ -328,6 +350,7 @@ def _recompute_depth_metrics(runtime: RuntimeContext, item: Dict[str, Any], view
             view_bucket=view_lane,
             yaw_proxy=yaw_proxy,
             scoring=runtime.config.consistency.depth3d_scoring,
+            view_lane_detail=view_lane_detail,
         )
     )
     metrics["is_valid"] = metrics.get("depth_3d_score", None) is not None
@@ -403,6 +426,9 @@ def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[st
     full_conf = _safe_float(confs.get("full", 0.0), 0.0)
     view_bucket = str(debug.get("view_bucket", "front"))
     view_lane = str(debug.get("view_lane", view_bucket))
+    view_lane_detail = str(debug.get("view_lane_detail", ""))
+    view_lane_detail_confidence = _safe_float(debug.get("view_lane_detail_confidence", 0.0), 0.0)
+    view_lane_strictness_score = _safe_float(debug.get("view_lane_strictness_score", 0.0), 0.0)
 
     face_state, face_state_reasons = classify_module(
         runtime, face_score, face_conf, th["face_pass"], th["face_warn"], "face"
@@ -473,9 +499,15 @@ def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[st
         runtime,
         debug.get("constitution_metrics", {}),
         view_bucket=view_bucket,
+        view_lane_detail=view_lane_detail,
     )
     skin_metrics = copy.deepcopy(debug.get("skin_metrics", {})) if isinstance(debug.get("skin_metrics", {}), dict) else {}
-    depth_metrics = _recompute_depth_metrics(runtime, item, view_lane=view_lane)
+    depth_metrics = _recompute_depth_metrics(
+        runtime,
+        item,
+        view_lane=view_lane,
+        view_lane_detail=view_lane_detail,
+    )
 
     reasons_all, final_status, overall_state, consistency_gate_debug = apply_consistency_soft_gate(
         runtime=runtime,
@@ -563,6 +595,9 @@ def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[st
         "debug": {
             "view_bucket": view_bucket,
             "view_lane": view_lane,
+            "view_lane_detail": view_lane_detail,
+            "view_lane_detail_confidence": round(view_lane_detail_confidence, 6),
+            "view_lane_strictness_score": round(view_lane_strictness_score, 6),
             "quality_flags": quality_flags,
             "quality_debug": quality_debug,
             "constitution_metrics": constitution_metrics,
@@ -610,6 +645,8 @@ def _new_aggregate_state() -> Dict[str, Any]:
         "task_profile_matched_weight": 0.0,
         "view_lane_checked_weight": 0.0,
         "view_lane_matched_weight": 0.0,
+        "view_lane_detail_checked_weight": 0.0,
+        "view_lane_detail_matched_weight": 0.0,
         "reason_constraint_checked_weight": 0.0,
         "reason_constraint_matched_weight": 0.0,
     }
@@ -623,6 +660,7 @@ def _update_aggregate_state(
     weight: float,
     task_profile_match: Optional[bool],
     view_lane_match: Optional[bool],
+    view_lane_detail_match: Optional[bool],
     reason_constraint_match: Optional[bool],
 ) -> None:
     confusion = state["confusion"]
@@ -645,6 +683,10 @@ def _update_aggregate_state(
         state["view_lane_checked_weight"] += weight
         if view_lane_match:
             state["view_lane_matched_weight"] += weight
+    if view_lane_detail_match is not None:
+        state["view_lane_detail_checked_weight"] += weight
+        if view_lane_detail_match:
+            state["view_lane_detail_matched_weight"] += weight
     if reason_constraint_match is not None:
         state["reason_constraint_checked_weight"] += weight
         if reason_constraint_match:
@@ -693,12 +735,17 @@ def _finalize_aggregate_state(state: Dict[str, Any]) -> Dict[str, Any]:
                 state["view_lane_matched_weight"],
                 state["view_lane_checked_weight"],
             ),
+            "view_lane_detail_accuracy": _optional_accuracy(
+                state["view_lane_detail_matched_weight"],
+                state["view_lane_detail_checked_weight"],
+            ),
             "reason_constraint_accuracy": _optional_accuracy(
                 state["reason_constraint_matched_weight"],
                 state["reason_constraint_checked_weight"],
             ),
             "task_profile_checked_weight": round(state["task_profile_checked_weight"], 6),
             "view_lane_checked_weight": round(state["view_lane_checked_weight"], 6),
+            "view_lane_detail_checked_weight": round(state["view_lane_detail_checked_weight"], 6),
             "reason_constraint_checked_weight": round(state["reason_constraint_checked_weight"], 6),
         },
         "class_metrics": {
@@ -738,9 +785,12 @@ def benchmark_report(
     task_profile_matched_weight = 0.0
     view_lane_checked_weight = 0.0
     view_lane_matched_weight = 0.0
+    view_lane_detail_checked_weight = 0.0
+    view_lane_detail_matched_weight = 0.0
     reason_constraint_checked_weight = 0.0
     reason_constraint_matched_weight = 0.0
     aggregate_by_view_lane: Dict[str, Dict[str, Any]] = {}
+    aggregate_by_view_lane_detail: Dict[str, Dict[str, Any]] = {}
     aggregate_by_task_profile: Dict[str, Dict[str, Any]] = {}
 
     for image_name, label in labels.items():
@@ -773,9 +823,11 @@ def benchmark_report(
 
         replay_debug = replayed.get("debug", {}) if isinstance(replayed.get("debug", {}), dict) else {}
         predicted_view_lane = str(replay_debug.get("view_lane", ""))
+        predicted_view_lane_detail = str(replay_debug.get("view_lane_detail", ""))
         predicted_reasons = set(str(reason) for reason in replayed.get("reasons", []))
         expected_task_profile = str(label.get("expected_task_profile", "")).strip()
         expected_view_lane = str(label.get("expected_view_lane", "")).strip()
+        expected_view_lane_detail = str(label.get("expected_view_lane_detail", "")).strip()
         must_have_reasons = [str(reason) for reason in label.get("must_have_reasons", [])]
         must_not_have_reasons = [str(reason) for reason in label.get("must_not_have_reasons", [])]
 
@@ -793,6 +845,13 @@ def benchmark_report(
             if view_lane_match:
                 view_lane_matched_weight += weight
 
+        view_lane_detail_match: Optional[bool] = None
+        if expected_view_lane_detail:
+            view_lane_detail_checked_weight += weight
+            view_lane_detail_match = predicted_view_lane_detail == expected_view_lane_detail
+            if view_lane_detail_match:
+                view_lane_detail_matched_weight += weight
+
         missing_reasons = [reason for reason in must_have_reasons if reason not in predicted_reasons]
         unexpected_reasons = [reason for reason in must_not_have_reasons if reason in predicted_reasons]
         reason_constraint_match: Optional[bool] = None
@@ -802,14 +861,20 @@ def benchmark_report(
             if reason_constraint_match:
                 reason_constraint_matched_weight += weight
 
-        constraint_values = [value for value in [task_profile_match, view_lane_match, reason_constraint_match] if value is not None]
+        constraint_values = [
+            value
+            for value in [task_profile_match, view_lane_match, view_lane_detail_match, reason_constraint_match]
+            if value is not None
+        ]
         all_constraints_match = all(constraint_values) if constraint_values else None
 
         view_lane_key = predicted_view_lane or "unknown"
+        view_lane_detail_key = predicted_view_lane_detail or "unknown"
         task_profile_key = str(replayed["task_profile"] or "unknown")
         lane_state = aggregate_by_view_lane.setdefault(view_lane_key, _new_aggregate_state())
+        lane_detail_state = aggregate_by_view_lane_detail.setdefault(view_lane_detail_key, _new_aggregate_state())
         profile_state = aggregate_by_task_profile.setdefault(task_profile_key, _new_aggregate_state())
-        for state in [lane_state, profile_state]:
+        for state in [lane_state, lane_detail_state, profile_state]:
             _update_aggregate_state(
                 state,
                 expected=expected,
@@ -817,6 +882,7 @@ def benchmark_report(
                 weight=weight,
                 task_profile_match=task_profile_match,
                 view_lane_match=view_lane_match,
+                view_lane_detail_match=view_lane_detail_match,
                 reason_constraint_match=reason_constraint_match,
             )
 
@@ -826,6 +892,7 @@ def benchmark_report(
                 "expected_status": expected,
                 "predicted_status": predicted,
                 "view_lane": view_lane_key,
+                "view_lane_detail": view_lane_detail_key,
                 "weight": weight,
                 "match": expected == predicted,
                 "scores": replayed["scores"],
@@ -834,6 +901,7 @@ def benchmark_report(
                 "agreement": {
                     "task_profile_match": task_profile_match,
                     "view_lane_match": view_lane_match,
+                    "view_lane_detail_match": view_lane_detail_match,
                     "missing_reasons": missing_reasons,
                     "unexpected_reasons": unexpected_reasons,
                     "reason_constraints_match": reason_constraint_match,
@@ -864,6 +932,10 @@ def benchmark_report(
         "view_lane": {
             key: _finalize_aggregate_state(state)
             for key, state in sorted(aggregate_by_view_lane.items())
+        },
+        "view_lane_detail": {
+            key: _finalize_aggregate_state(state)
+            for key, state in sorted(aggregate_by_view_lane_detail.items())
         },
         "task_profile": {
             key: _finalize_aggregate_state(state)
@@ -898,12 +970,17 @@ def benchmark_report(
         "agreement_metrics": {
             "task_profile_accuracy": _optional_accuracy(task_profile_matched_weight, task_profile_checked_weight),
             "view_lane_accuracy": _optional_accuracy(view_lane_matched_weight, view_lane_checked_weight),
+            "view_lane_detail_accuracy": _optional_accuracy(
+                view_lane_detail_matched_weight,
+                view_lane_detail_checked_weight,
+            ),
             "reason_constraint_accuracy": _optional_accuracy(
                 reason_constraint_matched_weight,
                 reason_constraint_checked_weight,
             ),
             "task_profile_checked_weight": round(task_profile_checked_weight, 6),
             "view_lane_checked_weight": round(view_lane_checked_weight, 6),
+            "view_lane_detail_checked_weight": round(view_lane_detail_checked_weight, 6),
             "reason_constraint_checked_weight": round(reason_constraint_checked_weight, 6),
         },
         "class_metrics": {

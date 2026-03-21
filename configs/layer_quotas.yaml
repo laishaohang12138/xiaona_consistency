@@ -23,6 +23,12 @@ training_layers:
     quota: 8
     priority: 2
     role: transition_layer
+    sub_buckets:
+      simple_outfit:
+        quota: 8
+        priority: 1
+        role: identity_stable_simple_transition
+        release_state: primary
   NECKLINE:
     quota: 28
     priority: 3

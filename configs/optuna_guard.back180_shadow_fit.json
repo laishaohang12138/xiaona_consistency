@@ -1,7 +1,7 @@
 {
   "schema_version": "qa_optuna_guard_v1",
-  "optuna_locked": false,
-  "lock_reason": "",
+  "optuna_locked": true,
+  "lock_reason": "Hyperparameter fitting is frozen. Resolve anchor governance and measurement dimensions before re-opening Optuna.",
   "required_label_role": "benchmark_frozen",
   "require_optuna_ready": true,
   "anchor_requirements": [

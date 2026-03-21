@@ -212,6 +212,17 @@ def _joint_angle_deg(
     return float(math.degrees(math.acos(cos_theta)))
 
 
+def _balance_ratio(left_value: Optional[float], right_value: Optional[float]) -> Optional[float]:
+    if left_value is None or right_value is None:
+        return None
+    left_abs = abs(float(left_value))
+    right_abs = abs(float(right_value))
+    hi = max(left_abs, right_abs)
+    if hi < 1e-6:
+        return None
+    return float(min(left_abs, right_abs) / hi)
+
+
 def extract_face_feat(
     runtime: RuntimeContext,
     img_bgr: np.ndarray,
@@ -385,6 +396,14 @@ def extract_pose_feat(runtime: RuntimeContext, img_bgr: np.ndarray) -> PoseFeat:
             head_proxy = float(np.linalg.norm(xy[NOSE] - shoulder_mid)) * 1.6
             if head_proxy > 1e-5 and subject_height > 1e-5:
                 full_geom["head_body_ratio"] = subject_height / head_proxy
+        if vis[L_SHOULDER] > 0.35 and vis[R_SHOULDER] > 0.35:
+            shoulder_w = float(np.linalg.norm(xy[L_SHOULDER] - xy[R_SHOULDER]))
+            if shoulder_w > 1e-5:
+                full_geom["shoulder_level_delta_norm"] = abs(float(xy[L_SHOULDER][1] - xy[R_SHOULDER][1])) / shoulder_w
+        if vis[L_HIP] > 0.35 and vis[R_HIP] > 0.35:
+            hip_w = float(np.linalg.norm(xy[L_HIP] - xy[R_HIP]))
+            if hip_w > 1e-5:
+                full_geom["hip_level_delta_norm"] = abs(float(xy[L_HIP][1] - xy[R_HIP][1])) / hip_w
 
         if all(vis[idx] > 0.35 for idx in [L_HIP, R_HIP, L_ANKLE, R_ANKLE]):
             hip_mid = (xy[L_HIP] + xy[R_HIP]) / 2
@@ -403,12 +422,41 @@ def extract_pose_feat(runtime: RuntimeContext, img_bgr: np.ndarray) -> PoseFeat:
             full_geom["leg_straightness_min_deg"] = float(min(knee_angles))
             full_geom["leg_straightness_mean_deg"] = float(np.mean(np.array(knee_angles, dtype=np.float32)))
 
+        left_thigh_len = None
+        right_thigh_len = None
+        left_calf_len = None
+        right_calf_len = None
+        if all(vis[idx] > 0.35 for idx in [L_HIP, L_KNEE]):
+            left_thigh_len = float(np.linalg.norm(xy[L_HIP] - xy[L_KNEE]))
+        if all(vis[idx] > 0.35 for idx in [R_HIP, R_KNEE]):
+            right_thigh_len = float(np.linalg.norm(xy[R_HIP] - xy[R_KNEE]))
+        if all(vis[idx] > 0.35 for idx in [L_KNEE, L_ANKLE]):
+            left_calf_len = float(np.linalg.norm(xy[L_KNEE] - xy[L_ANKLE]))
+        if all(vis[idx] > 0.35 for idx in [R_KNEE, R_ANKLE]):
+            right_calf_len = float(np.linalg.norm(xy[R_KNEE] - xy[R_ANKLE]))
+
+        thigh_balance = _balance_ratio(left_thigh_len, right_thigh_len)
+        calf_balance = _balance_ratio(left_calf_len, right_calf_len)
+        if thigh_balance is not None:
+            full_geom["thigh_length_balance"] = thigh_balance
+        if calf_balance is not None:
+            full_geom["calf_length_balance"] = calf_balance
+        if thigh_balance is not None or calf_balance is not None:
+            valid_balances = [value for value in [thigh_balance, calf_balance] if value is not None]
+            full_geom["lower_limb_balance"] = float(np.mean(np.array(valid_balances, dtype=np.float32)))
+
         foot_lengths = []
-        for heel_idx, foot_idx in [(L_HEEL, L_FOOT), (R_HEEL, R_FOOT)]:
+        foot_lengths_lr: Dict[str, float] = {}
+        for side_name, heel_idx, foot_idx in [("left", L_HEEL, L_FOOT), ("right", R_HEEL, R_FOOT)]:
             if vis[heel_idx] > 0.35 and vis[foot_idx] > 0.35 and subject_height > 1e-5:
-                foot_lengths.append(float(np.linalg.norm(xy[heel_idx] - xy[foot_idx])) / subject_height)
+                foot_len = float(np.linalg.norm(xy[heel_idx] - xy[foot_idx])) / subject_height
+                foot_lengths.append(foot_len)
+                foot_lengths_lr[side_name] = foot_len
         if len(foot_lengths) > 0:
             full_geom["foot_length_proxy_norm"] = float(np.mean(np.array(foot_lengths, dtype=np.float32)))
+        foot_balance = _balance_ratio(foot_lengths_lr.get("left"), foot_lengths_lr.get("right"))
+        if foot_balance is not None:
+            full_geom["foot_length_balance"] = foot_balance
 
         feat.full_geom = full_geom
 

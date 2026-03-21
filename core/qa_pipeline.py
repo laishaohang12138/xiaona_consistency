@@ -20,6 +20,15 @@ from .qa_consistency import (
     extract_skin_consistency_metrics,
 )
 from .qa_features import extract_face_feat, extract_pose_feat, init_engines
+from .qa_garment import extract_garment_metrics
+from .qa_outfit import (
+    apply_collection_diagnostics,
+    build_collection_aggregates,
+    build_shot_selection_report,
+    evaluate_active_batch_gate,
+    infer_layer_tag_from_profile,
+    parse_collection_metadata,
+)
 from .qa_runtime import (
     AnchorSet,
     EngineState,
@@ -223,7 +232,7 @@ def _build_report_meta(
 ) -> Dict[str, Any]:
     profile_policy = get_profile_policy(runtime, target_profile)
     return {
-        "schema_version": "qa_report_v2",
+        "schema_version": "qa_report_v2_3",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "active_profile": target_profile,
         "review_policy": {
@@ -236,6 +245,11 @@ def _build_report_meta(
         "providers": _json_ready(runtime.providers.describe()),
         "anchor_registry_summary": anchor_registry_summary(runtime.config),
         "anchor_registry_snapshot": anchor_registry_snapshot(runtime.config),
+        "anchor_governance": {
+            "face_identity_policy": "absolute_only",
+            "body_master_policy": "absolute_only",
+            "support_anchor_policy": "assist_only",
+        },
         "anchor_paths_resolved": _json_ready(anchors.meta),
         "layer_quotas": _json_ready(runtime.config.layer_quotas),
         "threshold_snapshot": _build_threshold_snapshot(runtime, target_profile),
@@ -247,6 +261,25 @@ def _build_report_meta(
         "view_detector": {
             "raw_buckets": ["front", "three_quarter", "profile_like"],
             "canonical_lanes": ["front", "three_quarter", "side_90"],
+            "lane_details": [
+                "front",
+                "three_quarter",
+                "strict_side_90_left",
+                "strict_side_90_right",
+                "side_like_left",
+                "side_like_right",
+                "strict_back_180",
+                "back_like",
+            ],
+            "scoring_surfaces": [
+                "front",
+                "three_quarter",
+                "strict_side_90",
+                "side_like",
+                "strict_back_180",
+                "back_like",
+                "profile_like",
+            ],
             "back_180_native_detection": False,
             "active_source": "legacy_face_router",
             "shadow_router_v2": {
@@ -256,6 +289,50 @@ def _build_report_meta(
                 "native_back_180_detection": True,
                 "source_priority": ["face", "pose", "subject_mask", "skin_region"],
             },
+        },
+        "collection_parser": {
+            "enabled": True,
+            "mode": "path_derived",
+            "layer_tags": ["BODY_GOLD", "BRIDGE", "NECKLINE", "OUTER", "FACE_LOCK"],
+            "group_keys": ["layer_tag", "look_key", "outfit_key", "slot_key", "view_expected"],
+            "fallback_grouping": "active_profile_batch",
+            "requires_explicit_look_key_for_set_qa": False,
+        },
+        "outfit_measurement": {
+            "enabled": True,
+            "mode": "lightweight_mask_pose",
+            "uses_new_models": False,
+            "single_image_outputs": [
+                "clothing_coverage_ratio",
+                "upper_cloth_coverage",
+                "lower_cloth_coverage",
+                "neckline_openness",
+                "shoulder_exposure_balance",
+            ],
+            "batch_outputs": [
+                "garment_profile_stability",
+                "garment_boundary_stability",
+                "body_under_clothes_continuity",
+                "routing_consistency",
+                "batch_clothfree_identity_cohesion",
+                "batch_hybrid_identity_cohesion",
+                "batch_3d_cohesion",
+            ],
+            "batch_gate_supported": True,
+        },
+        "shot_batch_selection": {
+            "enabled": True,
+            "mode": "advisory_rank_only",
+            "final_decision_owner": "custom_gpt_plus_human",
+            "goal": "provide ranking and explanations for batch review, not final auto-selection",
+            "outputs": ["selection_score", "top_ranked_image", "shortlist", "component_scores", "penalties"],
+            "components": [
+                "absolute_face_identity",
+                "batch_face_alignment",
+                "clothfree_body_alignment",
+                "depth_alignment",
+                "structure_stability",
+            ],
         },
         "input_count": int(input_count),
     }
@@ -301,6 +378,129 @@ def _apply_profile_view_policy(
             reasons_all.append("BODY_GOLD_VIEW_LANE_UNKNOWN")
 
     return final_status, overall_state
+
+
+def _body_identity_signature(
+    cand_pose: PoseFeat,
+    constitution_metrics: Dict[str, Any],
+    depth_3d_metrics: Dict[str, Any],
+) -> Dict[str, Any]:
+    upper = cand_pose.upper_geom or {}
+    full = cand_pose.full_geom or {}
+
+    feature_specs = [
+        ("head_body_ratio", full.get("head_body_ratio"), 5.0, 2.0),
+        ("leg_ratio", full.get("leg_ratio"), 0.47, 0.14),
+        ("torso_len_norm", upper.get("torso_len_norm"), 0.24, 0.08),
+        ("hip_shoulder_ratio", upper.get("hip_shoulder_ratio"), 0.58, 0.22),
+        ("torso_compactness", upper.get("torso_compactness"), 0.92, 0.26),
+        ("shoulder_hip_center_offset_norm", upper.get("shoulder_hip_center_offset_norm"), 0.02, 0.08),
+        ("lower_limb_balance", full.get("lower_limb_balance"), 0.96, 0.12),
+        ("foot_length_balance", full.get("foot_length_balance"), 0.93, 0.14),
+        ("waist_to_torso_ratio", constitution_metrics.get("waist_to_torso_ratio"), 0.80, 0.22),
+        ("hip_to_torso_ratio", constitution_metrics.get("hip_to_torso_ratio"), 1.00, 0.24),
+    ]
+
+    values: List[float] = []
+    ready = 0
+    for _, raw_value, center, scale in feature_specs:
+        if raw_value is None:
+            values.append(0.0)
+            continue
+        try:
+            numeric = float(raw_value)
+        except Exception:
+            values.append(0.0)
+            continue
+        values.append((numeric - float(center)) / max(1e-6, float(scale)))
+        ready += 1
+
+    signature = None
+    if ready >= 4:
+        vector = np.asarray(values, dtype=np.float32)
+        norm = float(np.linalg.norm(vector))
+        if norm > 1e-8:
+            signature = (vector / norm).astype(np.float32)
+
+    pose_weight = float(getattr(cand_pose, "confidence_full", 0.0) or 0.0)
+    constitution_conf = float(constitution_metrics.get("confidence", 0.0) or 0.0)
+    depth_conf = float(depth_3d_metrics.get("confidence", 0.0) or 0.0)
+    weight = float(
+        0.40 * pose_weight
+        + 0.35 * constitution_conf
+        + 0.25 * depth_conf
+    )
+    return {
+        "signature": signature,
+        "ready_features": ready,
+        "feature_count": len(feature_specs),
+        "weight": weight if signature is not None else 0.0,
+    }
+
+
+def _depth_identity_signature(
+    cand_pose: PoseFeat,
+    depth_3d_metrics: Dict[str, Any],
+) -> Dict[str, Any]:
+    upper = cand_pose.upper_geom or {}
+    full = cand_pose.full_geom or {}
+
+    feature_specs = [
+        ("shoulder_width_norm", upper.get("shoulder_width_norm"), 0.17, 0.05),
+        ("hip_width_norm", upper.get("hip_width_norm"), 0.10, 0.04),
+        ("hip_shoulder_ratio", upper.get("hip_shoulder_ratio"), 0.58, 0.22),
+        ("torso_len_norm", upper.get("torso_len_norm"), 0.24, 0.08),
+        ("torso_compactness", upper.get("torso_compactness"), 0.92, 0.26),
+        ("shoulder_hip_center_offset_norm", upper.get("shoulder_hip_center_offset_norm"), 0.02, 0.08),
+        ("spine_angle_deg", upper.get("spine_angle_deg"), 0.0, 8.0),
+        ("lower_limb_balance", full.get("lower_limb_balance"), 0.96, 0.12),
+        ("thigh_length_balance", full.get("thigh_length_balance"), 0.95, 0.10),
+        ("calf_length_balance", full.get("calf_length_balance"), 0.95, 0.10),
+        ("foot_length_balance", full.get("foot_length_balance"), 0.93, 0.14),
+        ("ankle_gap_norm", full.get("ankle_gap_norm"), 0.09, 0.08),
+        ("depth_3d_score", depth_3d_metrics.get("depth_3d_score"), 0.82, 0.16),
+        ("turn_signal_score", depth_3d_metrics.get("turn_signal_score"), 0.75, 0.16),
+        ("torso_volume_score", depth_3d_metrics.get("torso_volume_score"), 0.80, 0.16),
+        ("side_profile_score", depth_3d_metrics.get("side_profile_score"), 0.84, 0.14),
+        ("posterior_score", depth_3d_metrics.get("posterior_score"), 0.84, 0.14),
+        ("torso_compactness_score", depth_3d_metrics.get("torso_compactness_score"), 0.80, 0.16),
+    ]
+
+    values: List[float] = []
+    ready = 0
+    for _, raw_value, center, scale in feature_specs:
+        if raw_value is None:
+            values.append(0.0)
+            continue
+        try:
+            numeric = float(raw_value)
+        except Exception:
+            values.append(0.0)
+            continue
+        values.append((numeric - float(center)) / max(1e-6, float(scale)))
+        ready += 1
+
+    signature = None
+    if ready >= 6:
+        vector = np.asarray(values, dtype=np.float32)
+        norm = float(np.linalg.norm(vector))
+        if norm > 1e-8:
+            signature = (vector / norm).astype(np.float32)
+
+    pose_weight = float(getattr(cand_pose, "confidence_full", 0.0) or 0.0)
+    depth_conf = float(depth_3d_metrics.get("confidence", 0.0) or 0.0)
+    depth_score = float(depth_3d_metrics.get("depth_3d_score", 0.0) or 0.0)
+    weight = float(
+        0.45 * depth_conf
+        + 0.35 * pose_weight
+        + 0.20 * depth_score
+    )
+    return {
+        "signature": signature,
+        "ready_features": ready,
+        "feature_count": len(feature_specs),
+        "weight": weight if signature is not None else 0.0,
+    }
 
 
 def calibrate_quality_thresholds(
@@ -795,6 +995,7 @@ def _run_pipeline_impl(
         print("[警告] 没有全身锚点，将导致 full 模块不可用")
 
     report_items: List[Dict[str, Any]] = []
+    batch_identity_samples: List[Dict[str, Any]] = []
     print(f"[RUN] TONE_FACE_REFS={len(face_tone_anchors)}")
     report_meta = _build_report_meta(runtime, target_profile, anchors, len(images))
     print(f"\n[运行中] 任务模板: {target_profile}")
@@ -809,6 +1010,17 @@ def _run_pipeline_impl(
 
     for img_path in images:
         print(f"-> 检测: {img_path.name}")
+        collection_meta = parse_collection_metadata(img_path, config.paths.dir_input)
+        if not collection_meta.get("layer_tag"):
+            inferred_layer = infer_layer_tag_from_profile(target_profile)
+            if inferred_layer:
+                collection_meta["layer_tag"] = inferred_layer
+                if str(collection_meta.get("naming_source") or "none") == "none":
+                    collection_meta["naming_source"] = "profile_fallback"
+        collection_meta["batch_key"] = f"batch::{target_profile}"
+        collection_meta["aggregate_mode"] = (
+            "path_group" if bool(collection_meta.get("groupable", False)) else "active_profile_batch"
+        )
         try:
             img = image_read_bgr(img_path, config.standardization)
             if img is None:
@@ -816,9 +1028,18 @@ def _run_pipeline_impl(
 
             cand_face = extract_face_feat(runtime, img, img_path)
             cand_pose = extract_pose_feat(runtime, img)
-            view_bucket, view_side, yaw_proxy = estimate_view_bucket_and_side(cand_face)
-            view_lane = canonicalize_view_lane(cand_face, view_bucket)
+            legacy_view_bucket, legacy_view_side, yaw_proxy = estimate_view_bucket_and_side(cand_face)
+            legacy_view_lane = canonicalize_view_lane(cand_face, legacy_view_bucket)
             shadow_view_route = route_view_lane(runtime, img, cand_face, cand_pose)
+            view_bucket = legacy_view_bucket
+            view_side = legacy_view_side
+            view_lane = legacy_view_lane
+            if view_lane == "unknown" and shadow_view_route.lane != "unknown":
+                view_lane = shadow_view_route.lane
+            if view_bucket == "unknown" and shadow_view_route.face_bucket != "unknown":
+                view_bucket = shadow_view_route.face_bucket
+            if view_side == "unknown" and shadow_view_route.face_side in {"left", "right"}:
+                view_side = shadow_view_route.face_side
             face_size_bucket = get_face_size_bucket(cand_face.bbox_area_ratio if cand_face.ok else 0.0)
             tone_bucket_stats = get_stats_for_bucket(tone_ref_stats, face_size_bucket)
             tone_reference_lab = None
@@ -841,7 +1062,8 @@ def _run_pipeline_impl(
                 img,
                 cand_face,
                 cand_pose,
-                view_bucket=view_bucket,
+                view_bucket=view_lane,
+                view_lane_detail=shadow_view_route.lane_detail,
             )
             skin_metrics = extract_skin_consistency_metrics(
                 runtime,
@@ -850,12 +1072,34 @@ def _run_pipeline_impl(
                 cand_pose,
                 tone_reference_lab=tone_reference_lab,
             )
+            garment_metrics = extract_garment_metrics(
+                runtime,
+                img,
+                cand_face,
+                cand_pose,
+                layer_tag=collection_meta.get("layer_tag") or infer_layer_tag_from_profile(target_profile),
+            )
             depth_3d_metrics = extract_depth_3d_lite_metrics(
                 cand_face,
                 cand_pose,
                 view_bucket=view_lane,
                 yaw_proxy=yaw_proxy,
+                body_yaw_deg=shadow_view_route.body_yaw_deg,
+                pose_frontal_strength=shadow_view_route.pose_frontal_strength,
+                lane_strictness_score=shadow_view_route.lane_strictness_score,
+                mask_symmetry=shadow_view_route.mask_symmetry,
+                head_skin_ratio=shadow_view_route.head_skin_ratio,
                 scoring=config.consistency.depth3d_scoring,
+                view_lane_detail=shadow_view_route.lane_detail,
+            )
+            body_identity = _body_identity_signature(
+                cand_pose,
+                constitution_metrics,
+                depth_3d_metrics,
+            )
+            depth_identity = _depth_identity_signature(
+                cand_pose,
+                depth_3d_metrics,
             )
 
             constitution_score = constitution_metrics.get("body_constitution_score", None)
@@ -872,6 +1116,7 @@ def _run_pipeline_impl(
                 cand_face,
                 face_identity_anchors_view,
                 view_bucket=view_lane,
+                view_lane_detail=shadow_view_route.lane_detail,
             )
 
             face_score = face_score_o
@@ -884,6 +1129,8 @@ def _run_pipeline_impl(
                 "yaw_proxy": yaw_proxy,
                 "flip_canonicalized": False,
                 "identity_anchor_count_view": len(face_identity_anchors_view),
+                "view_surface_requested": face_debug_o.get("view_surface_requested"),
+                "view_surface_used": face_debug_o.get("view_surface_used"),
                 "original": face_debug_o,
             }
 
@@ -895,6 +1142,7 @@ def _run_pipeline_impl(
                     cand_face_flip,
                     face_identity_anchors_view,
                     view_bucket=view_lane,
+                    view_lane_detail=shadow_view_route.lane_detail,
                 )
                 face_debug["flipped"] = face_debug_f
                 if face_score_f > face_score_o:
@@ -902,18 +1150,40 @@ def _run_pipeline_impl(
                     face_conf = face_conf_f
                     face_reasons = ["FACE_FLIP_CANONICALIZED"] + face_reasons_f
                     face_debug["flip_canonicalized"] = True
+                    face_debug["view_surface_requested"] = face_debug_f.get("view_surface_requested")
+                    face_debug["view_surface_used"] = face_debug_f.get("view_surface_used")
+
+            batch_identity_samples.append(
+                {
+                    "record_key": str(collection_meta.get("input_relative_path") or img_path.name),
+                    "embedding": cand_face.embedding.copy() if getattr(cand_face, "embedding", None) is not None else None,
+                    "body_signature": body_identity.get("signature"),
+                    "body_weight": float(body_identity.get("weight", 0.0) or 0.0),
+                    "body_ready_features": int(body_identity.get("ready_features", 0) or 0),
+                    "depth_signature": depth_identity.get("signature"),
+                    "depth_weight": float(depth_identity.get("weight", 0.0) or 0.0),
+                    "depth_ready_features": int(depth_identity.get("ready_features", 0) or 0),
+                    "face_conf": float(face_conf),
+                    "face_score": float(face_score),
+                    "bbox_area_ratio": float(cand_face.bbox_area_ratio if cand_face.ok else 0.0),
+                    "view_lane": view_lane,
+                    "view_lane_detail": shadow_view_route.lane_detail,
+                }
+            )
 
             upper_score, upper_conf, upper_reasons, upper_debug = score_upper_against_anchor_set(
                 runtime,
                 cand_pose,
                 anchors.upper_pose_feats,
                 view_bucket=view_lane,
+                view_lane_detail=shadow_view_route.lane_detail,
             )
             full_score, full_conf, full_reasons, full_debug = score_full_against_anchor_set(
                 runtime,
                 cand_pose,
                 anchors.full_pose_feats,
                 view_bucket=view_lane,
+                view_lane_detail=shadow_view_route.lane_detail,
             )
 
             face_state, face_state_reasons = classify_module(
@@ -1102,6 +1372,7 @@ def _run_pipeline_impl(
                 "image": img_path.name,
                 "task_profile": target_profile,
                 "quota_bucket": policy.get("quota_bucket"),
+                "collection": collection_meta,
                 "status": final_status,
                 "scores": {
                     "face": round(face_score, 4),
@@ -1142,8 +1413,20 @@ def _run_pipeline_impl(
                     "full": full_debug,
                     "constitution_metrics": constitution_metrics,
                     "skin_metrics": skin_metrics,
+                    "garment_metrics": garment_metrics,
+                    "body_identity_signature": {
+                        "ready_features": body_identity.get("ready_features"),
+                        "feature_count": body_identity.get("feature_count"),
+                        "weight": body_identity.get("weight"),
+                    },
+                    "depth_identity_signature": {
+                        "ready_features": depth_identity.get("ready_features"),
+                        "feature_count": depth_identity.get("feature_count"),
+                        "weight": depth_identity.get("weight"),
+                    },
                     "depth_3d_metrics": depth_3d_metrics,
                     "consistency_gate": consistency_gate_debug,
+                    "collection_metadata": collection_meta,
                     "candidate_pose_framing": cand_pose.framing,
                     "candidate_upper_geom": cand_pose.upper_geom,
                     "candidate_full_geom": cand_pose.full_geom,
@@ -1159,9 +1442,16 @@ def _run_pipeline_impl(
                     "quality_ref_stats": quality_debug,
                     "view_bucket": view_bucket,
                     "view_lane": view_lane,
-                    "view_lane_source": "legacy_face_router",
+                    "view_lane_detail": shadow_view_route.lane_detail,
+                    "view_lane_detail_source": "shadow_router_v2",
+                    "view_lane_detail_confidence": shadow_view_route.lane_detail_confidence,
+                    "view_lane_strictness_score": shadow_view_route.lane_strictness_score,
+                    "legacy_view_bucket": legacy_view_bucket,
+                    "legacy_view_lane": legacy_view_lane,
+                    "view_lane_source": "legacy_face_router" if legacy_view_lane != "unknown" else "shadow_router_v2_fallback",
                     "view_side": view_side,
                     "yaw_proxy": yaw_proxy,
+                    "view_scoring_surface_requested": face_debug.get("view_surface_requested"),
                     "view_router_v2": shadow_view_route.to_json_dict(),
                     "view_router_v2_disagrees": shadow_view_route.lane != view_lane,
                     "identity_anchor_count_view": len(face_identity_anchors_view),
@@ -1207,6 +1497,7 @@ def _run_pipeline_impl(
                     "image": img_path.name,
                     "task_profile": target_profile,
                     "quota_bucket": policy.get("quota_bucket"),
+                    "collection": collection_meta,
                     "status": "FAIL",
                     "scores": {
                         "face": 0.0,
@@ -1233,8 +1524,10 @@ def _run_pipeline_impl(
                     "recommendations": ["检查依赖、图片可读性、模型环境与日志"],
                     "engine": {"face": runtime.engines.face_mode, "pose": runtime.engines.pose_mode},
                     "debug": {
+                        "collection_metadata": collection_meta,
                         "constitution_metrics": None,
                         "skin_metrics": None,
+                        "garment_metrics": None,
                         "depth_3d_metrics": None,
                         "consistency_gate": None,
                     },
@@ -1247,15 +1540,62 @@ def _run_pipeline_impl(
                 pass
 
     config.paths.dir_output.mkdir(parents=True, exist_ok=True)
+    collection_aggregates = build_collection_aggregates(report_items, target_profile=target_profile)
+    collection_aggregates = apply_collection_diagnostics(
+        report_items,
+        collection_aggregates,
+        target_profile=target_profile,
+        identity_samples=batch_identity_samples,
+    )
+    shot_selection = build_shot_selection_report(
+        report_items,
+        collection_aggregates,
+        target_profile=target_profile,
+    )
+    batch_gate = evaluate_active_batch_gate(
+        collection_aggregates,
+        policy,
+        target_profile=target_profile,
+    )
+    if bool(batch_gate.get("applied")) and str(batch_gate.get("status")) != "pass":
+        gate_reasons = list(batch_gate.get("reasons") or [])
+        gate_mode = str(batch_gate.get("mode") or "warn_all_pass")
+        for item in report_items:
+            item_debug = item.setdefault("debug", {})
+            item_debug["batch_gate"] = batch_gate
+            item["reasons"] = dedupe_keep_order(list(item.get("reasons") or []) + gate_reasons)
+            if gate_mode == "warn_all_pass" and item.get("status") == "PASS":
+                item["status"] = "WARN"
+                module_state = item.setdefault("module_state", {})
+                module_state["overall"] = "WARN"
+                item["reasons"] = dedupe_keep_order(list(item.get("reasons") or []) + ["PROFILE_BATCH_GATE_CAPPED_TO_WARN"])
+    else:
+        for item in report_items:
+            item.setdefault("debug", {})["batch_gate"] = batch_gate
+    for item in report_items:
+        item["recommendations"] = make_recommendations(runtime, item, target_profile)
     report_payload = {
         "report_meta": report_meta,
+        "collection_aggregates": collection_aggregates,
+        "shot_selection": shot_selection,
         "items": report_items,
     }
     with open(config.paths.report_file, "w", encoding="utf-8") as file:
         json.dump(report_payload, file, indent=2, ensure_ascii=False)
+    ranked_candidates_file = config.paths.dir_output / "ranked_candidates.json"
+    with open(ranked_candidates_file, "w", encoding="utf-8") as file:
+        json.dump(shot_selection, file, indent=2, ensure_ascii=False)
 
     print("\n[完工] 质检完成 [OK]")
     print(f"[报告] {config.paths.report_file}")
+    print(f"[排序] {ranked_candidates_file}")
+    collection_summary = collection_aggregates.get("summary", {})
+    print(
+        "[集合聚合] "
+        f"groupable_items={collection_summary.get('groupable_items', 0)} "
+        f"look_groups={collection_summary.get('look_group_count', 0)} "
+        f"layer_groups={collection_summary.get('layer_group_count', 0)}"
+    )
     print(
         f"[输出目录] PASS={config.paths.dir_out_pass} | WARN={config.paths.dir_out_warn} | FAIL={config.paths.dir_out_fail}"
     )

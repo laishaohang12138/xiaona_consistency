@@ -1,6 +1,7 @@
 anchors:
   ref_1_face_master:
     role: FACE_MASTER
+    anchor_tier: absolute
     priority: 1
     required_default: true
     path: ${PROJECT_ROOT}/anchors/face/front/A-Core_01_0deg_MASTER.png
@@ -16,6 +17,7 @@ anchors:
       - front_face_master
   ref_2_full_body_master:
     role: FULL_BODY_MASTER
+    anchor_tier: absolute
     priority: 2
     required_default: true
     path: ${PROJECT_ROOT}/anchors/full/Task-63987060-116-1.png
@@ -33,6 +35,7 @@ anchors:
       - constitution_master
   ref_3_upper_support_94:
     role: UPPER_SUPPORT
+    anchor_tier: support
     priority: 3
     required_default: false
     path: ${PROJECT_ROOT}/anchors/upper/Task-63987060-94-1.png
@@ -49,6 +52,7 @@ anchors:
       - clavicle_drift
   ref_3_upper_support_97:
     role: UPPER_SUPPORT
+    anchor_tier: support
     priority: 3
     required_default: false
     path: ${PROJECT_ROOT}/anchors/upper/Task-63987060-97-1.png
@@ -65,6 +69,7 @@ anchors:
       - clavicle_drift
   ref_4_face_profile_side90_left:
     role: FACE_SUPPORT
+    anchor_tier: support
     priority: 4
     required_default: false
     path: ${PROJECT_ROOT}/anchors/face/profile_like/strict_side_90_left_support_v2.png
@@ -79,6 +84,7 @@ anchors:
       - profile_like_identity
   ref_5_face_profile_side90_right:
     role: FACE_SUPPORT
+    anchor_tier: support
     priority: 4
     required_default: false
     path: ${PROJECT_ROOT}/anchors/face/profile_like/strict_side_90_right_support_v2.png
@@ -95,6 +101,9 @@ anchors:
 rules:
   face_conflict_winner: ref_1_face_master
   body_conflict_winner: ref_2_full_body_master
+  face_identity_policy: absolute_only
+  body_master_policy: absolute_only
+  support_anchor_policy: assist_only
   upper_support_activation:
     - shoulder_drift
     - neck_drift

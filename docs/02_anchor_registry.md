@@ -4,6 +4,8 @@
 - Ref #1 always owns face identity
 - Ref #2 always owns body proportion, body architecture, and full-body framing
 - Ref #3 only joins when shoulders, neckline, clavicle, or upper-body boundary drifts
+- Only Ref #1 and Ref #2 are absolute anchors
+- All later anchors are support-only and must not redefine who XiaoNa is
 - Single person only
 - No redesign
 - No beautify
@@ -12,6 +14,7 @@
 ## Ref #1
 - ID: `ref_1_face_master`
 - Role: FACE MASTER
+- Tier: ABSOLUTE
 - File: `anchors/face/front/A-Core_01_0deg_MASTER.png`
 - Absolute path: `D:\xiaona_consistency\anchors\face\front\A-Core_01_0deg_MASTER.png`
 - Purpose:
@@ -24,6 +27,7 @@
 ## Ref #2
 - ID: `ref_2_full_body_master`
 - Role: FULL BODY MASTER
+- Tier: ABSOLUTE
 - File: `anchors/full/Task-63987060-116-1.png`
 - Absolute path: `D:\xiaona_consistency\anchors\full\Task-63987060-116-1.png`
 - Purpose:
@@ -37,6 +41,7 @@
 ## Ref #3
 - ID: `ref_3_upper_support_94`
 - Role: UPPER SUPPORT
+- Tier: SUPPORT
 - File: `anchors/upper/Task-63987060-94-1.png`
 - Absolute path: `D:\xiaona_consistency\anchors\upper\Task-63987060-94-1.png`
 
@@ -56,6 +61,7 @@
 ## Side Supports
 - ID: `ref_4_face_profile_side90_left`
 - Role: FACE SUPPORT
+- Tier: SUPPORT
 - File: `anchors/face/profile_like/strict_side_90_left_support_v2.png`
 - Purpose:
   - Support left-side `side_90` / `profile_like` face comparison
@@ -63,6 +69,7 @@
 
 - ID: `ref_5_face_profile_side90_right`
 - Role: FACE SUPPORT
+- Tier: SUPPORT
 - File: `anchors/face/profile_like/strict_side_90_right_support_v2.png`
 - Purpose:
   - Support right-side strict `side_90` face comparison
@@ -74,3 +81,8 @@
 - Use this anchor whenever the review question is:
   - "Is this still XiaoNa?"
   - "Is this the current body constitution of XiaoNa?"
+
+## Governance
+- Face identity must be defined only by `A-Core_01_0deg_MASTER.png`
+- Full-body constitution and framing must be defined only by `Task-63987060-116-1.png`
+- Side/back/profile support anchors may assist observation, but they are not allowed to become new identity masters

@@ -55,6 +55,24 @@ task_profiles:
       full_warn: 0.62
       overall_pass: 0.78
       overall_warn: 0.62
+  bridge_simple_outfit:
+    weights:
+      face: 0.50
+      upper: 0.15
+      full: 0.35
+    require:
+      face: true
+      upper: false
+      full: true
+    thresholds:
+      face_pass: 0.80
+      face_warn: 0.66
+      upper_pass: 0.72
+      upper_warn: 0.56
+      full_pass: 0.78
+      full_warn: 0.62
+      overall_pass: 0.80
+      overall_warn: 0.66
   lora_dataset:
     weights:
       face: 0.65
@@ -223,6 +241,37 @@ profile_policy:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL
       - HIP_POP_DETECTED_POSSIBLE_MODEL_POSE
+  bridge_simple_outfit:
+    identity_anchor_pool: face
+    quality_anchor_pool: upper_or_full
+    tone_anchor_pool: upper_or_full
+    soft_quality_hits_to_warn: 1
+    skin_lighting_high_caps_pass: false
+    skin_sample_high_caps_pass: false
+    allowed_view_buckets:
+      - front
+      - three_quarter
+    soft_review_buckets:
+      - three_quarter
+    pass_cap_mode: none
+    quota_bucket: BRIDGE.simple_outfit
+    hard_quality_flags:
+      - FACE_UNDEREXPOSED_DARK
+      - FACE_NO_RELIABLE_SIGNAL
+      - HIP_POP_DETECTED_POSSIBLE_MODEL_POSE
+    batch_identity_gate_enabled: true
+    batch_identity_continuity_min: 0.78
+    batch_identity_cohesion_min: 0.88
+    batch_clothfree_identity_cohesion_min: 0.88
+    batch_hybrid_identity_cohesion_min: 0.85
+    batch_body_under_clothes_continuity_min: 0.84
+    batch_3d_cohesion_min: 0.95
+    batch_garment_boundary_stability_min: 0.90
+    batch_routing_consistency_min: 0.95
+    batch_garment_confidence_min: 0.78
+    batch_outlier_item_ratio_max: 0.10
+    batch_image_count_min: 8
+    batch_gate_pass_cap_mode: warn_all_pass
   lora_dataset:
     identity_anchor_pool: face
     quality_anchor_pool: face

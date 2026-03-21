@@ -12,7 +12,10 @@ from .qa_utils import canonicalize_view_lane, clamp, estimate_view_bucket_and_si
 @dataclass
 class ViewRouteResult:
     lane: str = "unknown"
+    lane_detail: str = "unknown"
     confidence: float = 0.0
+    lane_detail_confidence: float = 0.0
+    lane_strictness_score: float = 0.0
     source: str = "none"
     body_yaw_deg: float = 0.0
     face_bucket: str = "unknown"
@@ -32,6 +35,8 @@ class ViewRouteResult:
             key: round(float(value), 6) for key, value in sorted(self.lane_scores.items())
         }
         payload["confidence"] = round(float(self.confidence), 6)
+        payload["lane_detail_confidence"] = round(float(self.lane_detail_confidence), 6)
+        payload["lane_strictness_score"] = round(float(self.lane_strictness_score), 6)
         payload["body_yaw_deg"] = round(float(self.body_yaw_deg), 3)
         payload["pose_profile_strength"] = round(float(self.pose_profile_strength), 6)
         payload["pose_frontal_strength"] = round(float(self.pose_frontal_strength), 6)
@@ -149,6 +154,108 @@ def _head_skin_ratio(mask_u8: Optional[np.ndarray], skin_u8: Optional[np.ndarray
     return float(np.logical_and(head_subject, head_skin).sum() / max(1, int(head_subject.sum())))
 
 
+def _side_lane_strictness(
+    *,
+    body_yaw_deg: float,
+    pose_profile_strength: float,
+    pose_frontal_strength: float,
+    mask_symmetry: Optional[float],
+    head_skin_ratio: Optional[float],
+) -> float:
+    yaw_term = _linear_map(body_yaw_deg, 72.0, 80.0)
+    profile_term = clamp(pose_profile_strength, 0.0, 1.0)
+    frontal_term = clamp(1.0 - pose_frontal_strength, 0.0, 1.0)
+    asym_term = 0.35 if mask_symmetry is None else clamp(1.0 - mask_symmetry, 0.0, 1.0)
+    if head_skin_ratio is None:
+        head_skin_term = 0.50
+    else:
+        head_skin_term = clamp(1.0 - _linear_map(head_skin_ratio, 0.74, 0.88), 0.0, 1.0)
+
+    score = (
+        0.20 * yaw_term
+        + 0.25 * profile_term
+        + 0.20 * frontal_term
+        + 0.25 * asym_term
+        + 0.10 * head_skin_term
+    )
+    return clamp(score, 0.0, 1.0)
+
+
+def _back_lane_strictness(
+    *,
+    body_yaw_deg: float,
+    pose_frontal_strength: float,
+    mask_symmetry: Optional[float],
+    head_skin_ratio: Optional[float],
+    face_signal_available: bool,
+) -> float:
+    yaw_term = _linear_map(body_yaw_deg, 112.0, 120.0)
+    frontal_term = _linear_map(pose_frontal_strength, 0.60, 0.72)
+    symmetry_term = 0.45 if mask_symmetry is None else _linear_map(mask_symmetry, 0.92, 0.97)
+    face_absence_term = 0.15 if face_signal_available else 1.0
+    if head_skin_ratio is None:
+        head_absence_term = 0.50
+    else:
+        head_absence_term = clamp(1.0 - _linear_map(head_skin_ratio, 0.28, 0.55), 0.0, 1.0)
+    score = (
+        0.24 * yaw_term
+        + 0.24 * frontal_term
+        + 0.22 * symmetry_term
+        + 0.24 * face_absence_term
+        + 0.06 * head_absence_term
+    )
+    return clamp(score, 0.0, 1.0)
+
+
+def _classify_lane_detail(
+    *,
+    lane: str,
+    confidence: float,
+    face_side: str,
+    body_yaw_deg: float,
+    pose_profile_strength: float,
+    pose_frontal_strength: float,
+    mask_symmetry: Optional[float],
+    head_skin_ratio: Optional[float],
+    face_signal_available: bool,
+) -> Tuple[str, float, float]:
+    if lane == "side_90":
+        strictness = _side_lane_strictness(
+            body_yaw_deg=body_yaw_deg,
+            pose_profile_strength=pose_profile_strength,
+            pose_frontal_strength=pose_frontal_strength,
+            mask_symmetry=mask_symmetry,
+            head_skin_ratio=head_skin_ratio,
+        )
+        side = face_side if face_side in {"left", "right"} else "unknown"
+        if strictness >= 0.70 and side in {"left", "right"}:
+            detail = f"strict_side_90_{side}"
+        elif side in {"left", "right"}:
+            detail = f"side_like_{side}"
+        else:
+            detail = "side_like"
+        detail_confidence = clamp(confidence * (0.70 + 0.30 * strictness), 0.0, 1.0)
+        return detail, detail_confidence, strictness
+
+    if lane == "back_180":
+        strictness = _back_lane_strictness(
+            body_yaw_deg=body_yaw_deg,
+            pose_frontal_strength=pose_frontal_strength,
+            mask_symmetry=mask_symmetry,
+            head_skin_ratio=head_skin_ratio,
+            face_signal_available=face_signal_available,
+        )
+        detail = "strict_back_180" if strictness >= 0.72 else "back_like"
+        detail_confidence = clamp(confidence * (0.72 + 0.28 * strictness), 0.0, 1.0)
+        return detail, detail_confidence, strictness
+
+    if lane == "front":
+        return "front", confidence, 1.0
+    if lane == "three_quarter":
+        return "three_quarter", confidence, 1.0
+    return "unknown", 0.0, 0.0
+
+
 def route_view_lane(
     runtime: RuntimeContext,
     img_bgr: Optional[np.ndarray],
@@ -159,7 +266,12 @@ def route_view_lane(
     face_side = "unknown"
     face_yaw_proxy = 0.0
     legacy_lane = "unknown"
-    if face_feat.ok and face_feat.kps5 is not None:
+    face_signal_available = bool(
+        face_feat.ok
+        and face_feat.kps5 is not None
+        and _safe_float(getattr(face_feat, "confidence", 0.0), 0.0) >= 0.08
+    )
+    if face_signal_available:
         face_bucket, face_side, face_yaw_proxy = estimate_view_bucket_and_side(face_feat)
         legacy_lane = canonicalize_view_lane(face_feat, face_bucket)
 
@@ -238,20 +350,27 @@ def route_view_lane(
 
     if head_skin_ratio is not None:
         if head_skin_ratio >= 0.085:
-            scores["front"] += 0.08
-            scores["three_quarter"] += 0.08
-            if pose_profile_strength >= 0.45:
-                scores["side_90"] += 0.06
-            reasons.append("HEAD_SKIN_VISIBLE")
+            if face_signal_available:
+                scores["front"] += 0.08
+                scores["three_quarter"] += 0.08
+                if pose_profile_strength >= 0.45:
+                    scores["side_90"] += 0.06
+                reasons.append("HEAD_SKIN_VISIBLE")
+            else:
+                reasons.append("HEAD_SKIN_VISIBLE_NO_FACE")
         elif head_skin_ratio <= 0.020:
             scores["back_180"] += 0.18
             reasons.append("HEAD_SKIN_ABSENT")
 
-    if (not face_feat.ok) and pose_frontal_strength >= 0.55 and (head_skin_ratio is None or head_skin_ratio <= 0.020):
+    if (not face_signal_available) and pose_frontal_strength >= 0.55 and (head_skin_ratio is None or head_skin_ratio <= 0.020):
         scores["back_180"] += 0.20
         reasons.append("NO_FACE_FRONTAL_BODY_BACK_HINT")
 
-    if (not face_feat.ok) and pose_profile_strength >= 0.60:
+    if (not face_signal_available) and pose_frontal_strength >= 0.55 and (mask_symmetry is not None and mask_symmetry >= 0.84):
+        scores["back_180"] += 0.12
+        reasons.append("NO_FACE_HIGH_SYMMETRY_BACK_HINT")
+
+    if (not face_signal_available) and pose_profile_strength >= 0.60:
         scores["side_90"] += 0.12
         reasons.append("NO_FACE_PROFILE_BODY_SIDE_HINT")
 
@@ -277,7 +396,7 @@ def route_view_lane(
     else:
         body_yaw = 0.0
 
-    if face_feat.ok and best_lane in {"front", "three_quarter", "side_90"}:
+    if face_signal_available and best_lane in {"front", "three_quarter", "side_90"}:
         source = "face_pose_mask_fusion"
     elif best_lane == "back_180":
         source = "pose_mask_fusion"
@@ -286,9 +405,24 @@ def route_view_lane(
     else:
         source = "fallback_unknown"
 
-    return ViewRouteResult(
+    lane_detail, lane_detail_confidence, lane_strictness_score = _classify_lane_detail(
         lane=best_lane,
         confidence=confidence,
+        face_side=face_side,
+        body_yaw_deg=body_yaw,
+        pose_profile_strength=pose_profile_strength,
+        pose_frontal_strength=pose_frontal_strength,
+        mask_symmetry=mask_symmetry,
+        head_skin_ratio=head_skin_ratio,
+        face_signal_available=face_signal_available,
+    )
+
+    return ViewRouteResult(
+        lane=best_lane,
+        lane_detail=lane_detail,
+        confidence=confidence,
+        lane_detail_confidence=lane_detail_confidence,
+        lane_strictness_score=lane_strictness_score,
         source=source,
         body_yaw_deg=body_yaw,
         face_bucket=face_bucket,

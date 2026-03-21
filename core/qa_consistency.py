@@ -8,7 +8,14 @@ import cv2
 import numpy as np
 
 from .qa_runtime import FaceFeat, PoseFeat, RuntimeContext
-from .qa_utils import clamp, dedupe_keep_order, linear_map_to_01, safe_float
+from .qa_utils import (
+    clamp,
+    dedupe_keep_order,
+    linear_map_to_01,
+    resolve_view_scoring_candidates,
+    resolve_view_scoring_surface,
+    safe_float,
+)
 
 
 def soft_range_score(x: Optional[float], lo: float, hi: float, margin: float) -> Optional[float]:
@@ -268,8 +275,20 @@ def _mask_width_soft_min(
     return waist_y, waist_w
 
 
-def _normalize_scoring_view_key(view_bucket: str) -> str:
-    return view_bucket if view_bucket in {"front", "three_quarter"} else "profile_like"
+def _resolve_scoring_view_spec(
+    scoring: Dict[str, Any],
+    view_bucket: str,
+    view_lane_detail: Optional[str] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    views = scoring.get("views", {})
+    if not isinstance(views, dict):
+        views = {}
+    requested_surface = resolve_view_scoring_surface(view_bucket, view_lane_detail=view_lane_detail)
+    for view_key in resolve_view_scoring_candidates(view_bucket, view_lane_detail=view_lane_detail):
+        view_spec = views.get(view_key, {})
+        if isinstance(view_spec, dict) and len(view_spec) > 0:
+            return view_key, view_spec
+    return requested_surface, {}
 
 
 def _score_from_range_spec(value: Optional[float], spec: Dict[str, Any]) -> Optional[float]:
@@ -281,15 +300,33 @@ def _score_from_range_spec(value: Optional[float], spec: Dict[str, Any]) -> Opti
     )
 
 
+def _score_metric_from_view_or_common(
+    value: Optional[float],
+    metric_key: str,
+    view_spec: Dict[str, Any],
+    common_spec: Dict[str, Any],
+) -> Optional[float]:
+    spec = view_spec.get(metric_key, None)
+    if not isinstance(spec, dict) or len(spec) == 0:
+        spec = common_spec.get(metric_key, {})
+    return _score_from_range_spec(value, spec if isinstance(spec, dict) else {})
+
+
 def score_body_constitution_measurements(
     measurements: Dict[str, Any],
     scoring: Dict[str, Any],
     view_bucket: str,
+    view_lane_detail: Optional[str] = None,
 ) -> Dict[str, Optional[float]]:
-    view_key = _normalize_scoring_view_key(view_bucket)
-    view_spec = scoring.get("views", {}).get(view_key, {})
+    requested_surface = resolve_view_scoring_surface(view_bucket, view_lane_detail=view_lane_detail)
+    view_key, view_spec = _resolve_scoring_view_spec(
+        scoring,
+        view_bucket,
+        view_lane_detail=view_lane_detail,
+    )
     common_spec = scoring.get("common_ranges", {})
     weights = scoring.get("weights", {})
+    profile_like_family = requested_surface not in {"front", "three_quarter"}
 
     waist_shoulder = _score_from_range_spec(
         measurements.get("waist_to_shoulder_ratio", None),
@@ -307,40 +344,72 @@ def score_body_constitution_measurements(
         measurements.get("hip_to_shoulder_ratio", None),
         view_spec.get("hip_to_shoulder", {}),
     )
+    waist_torso = _score_from_range_spec(
+        measurements.get("waist_to_torso_ratio", None),
+        view_spec.get("waist_to_torso", {}),
+    )
+    chest_torso = _score_from_range_spec(
+        measurements.get("chest_to_torso_ratio", None),
+        view_spec.get("chest_to_torso", {}),
+    )
+    hip_torso = _score_from_range_spec(
+        measurements.get("hip_to_torso_ratio", None),
+        view_spec.get("hip_to_torso", {}),
+    )
     thigh_calf = _score_from_range_spec(
         measurements.get("thigh_to_calf_ratio", None),
         view_spec.get("thigh_to_calf", {}),
     )
 
-    body_constitution_score = weighted_mean_valid(
-        [
-            (
-                _score_from_range_spec(
-                    measurements.get("leg_ratio", None),
-                    common_spec.get("leg_ratio", {}),
-                ),
-                float(weights.get("leg_ratio", 0.18)),
+    base_terms = [
+        (
+            _score_from_range_spec(
+                measurements.get("leg_ratio", None),
+                common_spec.get("leg_ratio", {}),
             ),
-            (
-                _score_from_range_spec(
-                    measurements.get("waist_height_ratio", None),
-                    common_spec.get("waist_height_ratio", {}),
-                ),
-                float(weights.get("waist_height_ratio", 0.18)),
+            float(weights.get("leg_ratio", 0.18)),
+        ),
+        (
+            _score_from_range_spec(
+                measurements.get("waist_height_ratio", None),
+                common_spec.get("waist_height_ratio", {}),
             ),
-            (waist_shoulder, float(weights.get("waist_to_shoulder", 0.20))),
-            (chest_waist, float(weights.get("chest_to_waist", 0.12))),
-            (hip_waist, float(weights.get("hip_to_waist", 0.14))),
-            (hip_shoulder, float(weights.get("hip_to_shoulder", 0.10))),
-            (thigh_calf, float(weights.get("thigh_to_calf", 0.08))),
-        ]
-    )
+            float(weights.get("waist_height_ratio", 0.18)),
+        ),
+        (chest_waist, float(weights.get("chest_to_waist", 0.12))),
+        (hip_waist, float(weights.get("hip_to_waist", 0.14))),
+        (thigh_calf, float(weights.get("thigh_to_calf", 0.08))),
+    ]
+
+    if profile_like_family:
+        body_constitution_score = weighted_mean_valid(
+            base_terms
+            + [
+                (waist_torso, float(weights.get("waist_to_torso", 0.22))),
+                (chest_torso, float(weights.get("chest_to_torso", 0.10))),
+                (hip_torso, float(weights.get("hip_to_torso", 0.10))),
+            ]
+        )
+        pelvis_compactness = hip_torso if hip_torso is not None else hip_waist
+        abdomen_flatness = waist_torso if waist_torso is not None else waist_shoulder
+    else:
+        body_constitution_score = weighted_mean_valid(
+            base_terms
+            + [
+                (waist_shoulder, float(weights.get("waist_to_shoulder", 0.20))),
+                (hip_shoulder, float(weights.get("hip_to_shoulder", 0.10))),
+            ]
+        )
+        pelvis_compactness = hip_shoulder
+        abdomen_flatness = waist_shoulder
 
     return {
-        "pelvis_compactness_score": hip_shoulder,
-        "abdomen_flatness_score": waist_shoulder,
+        "pelvis_compactness_score": pelvis_compactness,
+        "abdomen_flatness_score": abdomen_flatness,
         "lower_body_slenderness_score": thigh_calf,
         "body_constitution_score": body_constitution_score,
+        "view_surface_requested": requested_surface,
+        "view_surface_used": view_key,
     }
 
 
@@ -350,9 +419,13 @@ def compute_body_constitution_confidence(
     width_ready: int,
     pose_visibility: float,
     torso_fill: Optional[float],
+    view_lane_detail: Optional[str] = None,
 ) -> float:
-    view_key = _normalize_scoring_view_key(view_bucket)
-    view_spec = scoring.get("views", {}).get(view_key, {})
+    _, view_spec = _resolve_scoring_view_spec(
+        scoring,
+        view_bucket,
+        view_lane_detail=view_lane_detail,
+    )
     confidence_weights = scoring.get("confidence_weights", {})
     conf = weighted_mean_valid(
         [
@@ -373,12 +446,25 @@ def score_depth_3d_lite_geometry(
     full_geom: Dict[str, float],
     view_bucket: str,
     yaw_proxy: float,
+    body_yaw_deg: Optional[float],
+    pose_frontal_strength: Optional[float],
+    lane_strictness_score: Optional[float],
+    mask_symmetry: Optional[float],
+    head_skin_ratio: Optional[float],
     scoring: Dict[str, Any],
+    view_lane_detail: Optional[str] = None,
 ) -> Dict[str, Optional[float]]:
-    view_key = _normalize_scoring_view_key(view_bucket)
-    view_spec = scoring.get("views", {}).get(view_key, {})
+    requested_surface = resolve_view_scoring_surface(view_bucket, view_lane_detail=view_lane_detail)
+    view_key, view_spec = _resolve_scoring_view_spec(
+        scoring,
+        view_bucket,
+        view_lane_detail=view_lane_detail,
+    )
     common_spec = scoring.get("common_ranges", {})
     weights = scoring.get("weights", {})
+    profile_like_family = requested_surface not in {"front", "three_quarter"}
+    back_family = requested_surface in {"strict_back_180", "back_like"}
+    side_family = profile_like_family and not back_family
 
     sw = upper_geom.get("shoulder_width_norm", None)
     hw = upper_geom.get("hip_width_norm", None)
@@ -388,6 +474,12 @@ def score_depth_3d_lite_geometry(
     center_offset = upper_geom.get("shoulder_hip_center_offset_norm", None)
     leg_straightness = full_geom.get("leg_straightness_min_deg", None)
     ankle_gap = full_geom.get("ankle_gap_norm", None)
+    shoulder_level_delta = full_geom.get("shoulder_level_delta_norm", None)
+    hip_level_delta = full_geom.get("hip_level_delta_norm", None)
+    thigh_balance = full_geom.get("thigh_length_balance", None)
+    calf_balance = full_geom.get("calf_length_balance", None)
+    lower_limb_balance = full_geom.get("lower_limb_balance", None)
+    foot_balance = full_geom.get("foot_length_balance", None)
 
     if sw is None or hw is None:
         return {
@@ -396,79 +488,306 @@ def score_depth_3d_lite_geometry(
             "fake_turn_risk": None,
             "depth_3d_score": None,
             "side_profile_score": None,
+            "posterior_score": None,
             "confidence": 0.0,
         }
 
     hip_shoulder_ratio = float(hw / max(1e-6, sw))
-    turn_score = _score_from_range_spec(yaw_proxy, view_spec.get("yaw", {}))
+    turn_value = float(body_yaw_deg) if profile_like_family and body_yaw_deg is not None else float(yaw_proxy)
+    turn_spec = view_spec.get("body_yaw_deg", {}) if profile_like_family else view_spec.get("yaw", {})
+    if not isinstance(turn_spec, dict) or len(turn_spec) == 0:
+        turn_spec = view_spec.get("yaw", {})
+    turn_score = _score_from_range_spec(turn_value, turn_spec if isinstance(turn_spec, dict) else {})
+    turn_signal_body_yaw_score = turn_score
+    turn_signal_pose_frontal_score = None
+    turn_signal_mask_symmetry_score = None
+    turn_signal_head_skin_score = None
+    turn_signal_lane_strictness_score = lane_strictness_score
+    posterior_raw_score = None
+    posterior_gate_score = None
     shoulder_score = _score_from_range_spec(sw, view_spec.get("shoulder_width", {}))
     hip_score = _score_from_range_spec(hw, view_spec.get("hip_width", {}))
-    ratio_score = _score_from_range_spec(hip_shoulder_ratio, common_spec.get("hip_shoulder_ratio", {}))
-    spine_score = _score_from_range_spec(spine_angle, common_spec.get("spine_angle", {}))
-    torso_score = _score_from_range_spec(torso_len, common_spec.get("torso_length", {}))
+    ratio_score = _score_metric_from_view_or_common(
+        hip_shoulder_ratio,
+        "hip_shoulder_ratio",
+        view_spec,
+        common_spec,
+    )
+    spine_score = _score_metric_from_view_or_common(spine_angle, "spine_angle", view_spec, common_spec)
+    torso_score = _score_metric_from_view_or_common(torso_len, "torso_length", view_spec, common_spec)
+    torso_compactness_score = None
 
     side_profile_score = None
-    if view_key == "profile_like":
+    if side_family:
         side_weights = weights.get("side_profile", {})
         side_profile_score = weighted_mean_valid(
             [
                 (
-                    _score_from_range_spec(center_offset, common_spec.get("side_profile_center_offset", {})),
+                    _score_metric_from_view_or_common(
+                        center_offset,
+                        "side_profile_center_offset",
+                        view_spec,
+                        common_spec,
+                    ),
                     float(side_weights.get("center_offset", 0.34)),
                 ),
                 (
-                    _score_from_range_spec(
+                    _score_metric_from_view_or_common(
                         leg_straightness,
-                        common_spec.get("side_profile_leg_straightness", {}),
+                        "side_profile_leg_straightness",
+                        view_spec,
+                        common_spec,
                     ),
                     float(side_weights.get("leg_straightness", 0.40)),
                 ),
                 (
-                    _score_from_range_spec(
+                    _score_metric_from_view_or_common(
                         torso_compactness,
-                        common_spec.get("side_profile_torso_compactness", {}),
+                        "side_profile_torso_compactness",
+                        view_spec,
+                        common_spec,
                     ),
                     float(side_weights.get("torso_compactness", 0.18)),
                 ),
                 (
-                    _score_from_range_spec(ankle_gap, common_spec.get("side_profile_ankle_gap", {})),
+                    _score_metric_from_view_or_common(
+                        ankle_gap,
+                        "side_profile_ankle_gap",
+                        view_spec,
+                        common_spec,
+                    ),
                     float(side_weights.get("ankle_gap", 0.08)),
                 ),
             ]
         )
 
-    torso_volume_weights = weights.get("torso_volume", {})
-    torso_volume_score = weighted_mean_valid(
-        [
-            (shoulder_score, float(torso_volume_weights.get("shoulder_width", 0.30))),
-            (hip_score, float(torso_volume_weights.get("hip_width", 0.24))),
-            (ratio_score, float(torso_volume_weights.get("hip_shoulder_ratio", 0.20))),
-            (spine_score, float(torso_volume_weights.get("spine_angle", 0.14))),
-            (torso_score, float(torso_volume_weights.get("torso_length", 0.12))),
-            (
-                side_profile_score,
-                float(torso_volume_weights.get("side_profile", 0.18)) if view_key == "profile_like" else 0.0,
-            ),
-        ]
-    )
+    posterior_score = None
+    if back_family:
+        back_turn_weights = weights.get("back_turn_signal", {})
+        posterior_mask_symmetry_score = _score_metric_from_view_or_common(
+            mask_symmetry,
+            "posterior_mask_symmetry",
+            view_spec,
+            common_spec,
+        )
+        posterior_shoulder_level_score = _score_metric_from_view_or_common(
+            shoulder_level_delta,
+            "posterior_shoulder_level_delta",
+            view_spec,
+            common_spec,
+        )
+        posterior_hip_level_score = _score_metric_from_view_or_common(
+            hip_level_delta,
+            "posterior_hip_level_delta",
+            view_spec,
+            common_spec,
+        )
+        posterior_leg_balance_score = _score_metric_from_view_or_common(
+            lower_limb_balance if lower_limb_balance is not None else thigh_balance,
+            "posterior_leg_balance",
+            view_spec,
+            common_spec,
+        )
+        posterior_calf_balance_score = _score_metric_from_view_or_common(
+            calf_balance,
+            "posterior_calf_balance",
+            view_spec,
+            common_spec,
+        )
+        posterior_foot_balance_score = _score_metric_from_view_or_common(
+            foot_balance,
+            "posterior_foot_balance",
+            view_spec,
+            common_spec,
+        )
+        posterior_leg_straightness_score = _score_metric_from_view_or_common(
+            leg_straightness,
+            "posterior_leg_straightness",
+            view_spec,
+            common_spec,
+        )
+        posterior_head_skin_score = _score_metric_from_view_or_common(
+            head_skin_ratio,
+            "posterior_head_skin_ratio",
+            view_spec,
+            common_spec,
+        )
+        turn_signal_pose_frontal_score = _score_metric_from_view_or_common(
+            pose_frontal_strength,
+            "posterior_pose_frontal_strength",
+            view_spec,
+            common_spec,
+        )
+        turn_signal_mask_symmetry_score = _score_metric_from_view_or_common(
+            mask_symmetry,
+            "posterior_turn_mask_symmetry",
+            view_spec,
+            common_spec,
+        )
+        turn_signal_head_skin_score = _score_metric_from_view_or_common(
+            head_skin_ratio,
+            "posterior_head_skin_ratio",
+            view_spec,
+            common_spec,
+        )
+        turn_score = weighted_mean_valid(
+            [
+                (turn_signal_body_yaw_score, float(back_turn_weights.get("body_yaw", 0.34))),
+                (turn_signal_pose_frontal_score, float(back_turn_weights.get("pose_frontal", 0.30))),
+                (turn_signal_mask_symmetry_score, float(back_turn_weights.get("mask_symmetry", 0.22))),
+                (turn_signal_head_skin_score, float(back_turn_weights.get("head_skin_ratio", 0.14))),
+            ]
+        )
+        if isinstance(lane_strictness_score, (int, float)):
+            turn_score = (
+                min(float(turn_score), float(lane_strictness_score))
+                if turn_score is not None
+                else float(lane_strictness_score)
+            )
+        torso_compactness_score = _score_metric_from_view_or_common(
+            torso_compactness,
+            "posterior_torso_compactness",
+            view_spec,
+            common_spec,
+        )
+        posterior_weights = weights.get("posterior_profile", {})
+        posterior_raw_score = weighted_mean_valid(
+            [
+                (
+                    posterior_mask_symmetry_score,
+                    float(posterior_weights.get("mask_symmetry", 0.28)),
+                ),
+                (
+                    posterior_shoulder_level_score,
+                    float(posterior_weights.get("shoulder_level", 0.18)),
+                ),
+                (
+                    posterior_hip_level_score,
+                    float(posterior_weights.get("hip_level", 0.18)),
+                ),
+                (
+                    posterior_leg_balance_score,
+                    float(posterior_weights.get("leg_balance", 0.14)),
+                ),
+                (
+                    posterior_calf_balance_score,
+                    float(posterior_weights.get("calf_balance", 0.10)),
+                ),
+                (
+                    posterior_foot_balance_score,
+                    float(posterior_weights.get("foot_balance", 0.06)),
+                ),
+                (
+                    posterior_leg_straightness_score,
+                    float(posterior_weights.get("leg_straightness", 0.06)),
+                ),
+                (
+                    posterior_head_skin_score,
+                    float(posterior_weights.get("head_skin_ratio", 0.04)),
+                ),
+                (
+                    torso_compactness_score,
+                    float(posterior_weights.get("torso_compactness", 0.06)),
+                ),
+            ]
+        )
+        posterior_gate_weights = weights.get("posterior_gate", {})
+        posterior_gate_score = weighted_mean_valid(
+            [
+                (lane_strictness_score, float(posterior_gate_weights.get("lane_strictness", 0.52))),
+                (posterior_mask_symmetry_score, float(posterior_gate_weights.get("mask_symmetry", 0.16))),
+                (torso_compactness_score, float(posterior_gate_weights.get("torso_compactness", 0.14))),
+                (posterior_calf_balance_score, float(posterior_gate_weights.get("calf_balance", 0.10))),
+                (posterior_head_skin_score, float(posterior_gate_weights.get("head_skin_ratio", 0.08))),
+            ]
+        )
+        if posterior_raw_score is None:
+            posterior_score = posterior_gate_score
+        elif posterior_gate_score is None:
+            posterior_score = posterior_raw_score
+        else:
+            posterior_score = min(float(posterior_raw_score), float(posterior_gate_score))
 
-    overall_weights = weights.get("overall", {})
-    depth_3d_score = weighted_mean_valid(
-        [
-            (turn_score, float(overall_weights.get("yaw", 0.24))),
-            (torso_volume_score, float(overall_weights.get("torso_volume", 0.52))),
-            (spine_score, float(overall_weights.get("spine_angle", 0.14))),
-            (torso_score, float(overall_weights.get("torso_length", 0.10))),
-            (
-                side_profile_score,
-                float(overall_weights.get("side_profile", 0.16)) if view_key == "profile_like" else 0.0,
-            ),
-        ]
-    )
+    if back_family:
+        torso_volume_weights = weights.get("torso_volume_back", {})
+        torso_volume_score = weighted_mean_valid(
+            [
+                (posterior_score, float(torso_volume_weights.get("posterior", 0.46))),
+                (torso_score, float(torso_volume_weights.get("torso_length", 0.16))),
+                (spine_score, float(torso_volume_weights.get("spine_angle", 0.12))),
+                (torso_compactness_score, float(torso_volume_weights.get("torso_compactness", 0.16))),
+                (shoulder_score, float(torso_volume_weights.get("shoulder_width", 0.10))),
+                (hip_score, float(torso_volume_weights.get("hip_width", 0.08))),
+                (ratio_score, float(torso_volume_weights.get("hip_shoulder_ratio", 0.08))),
+            ]
+        )
+        overall_weights = weights.get("overall_back", {})
+        depth_3d_score = weighted_mean_valid(
+            [
+                (turn_score, float(overall_weights.get("turn_signal", 0.22))),
+                (torso_volume_score, float(overall_weights.get("torso_volume", 0.44))),
+                (posterior_score, float(overall_weights.get("posterior", 0.22))),
+                (spine_score, float(overall_weights.get("spine_angle", 0.06))),
+                (torso_score, float(overall_weights.get("torso_length", 0.06))),
+            ]
+        )
+        pelvis_depth_score = posterior_score
+    elif side_family:
+        torso_volume_weights = weights.get("torso_volume_profile", {})
+        torso_volume_score = weighted_mean_valid(
+            [
+                (side_profile_score, float(torso_volume_weights.get("side_profile", 0.46))),
+                (torso_score, float(torso_volume_weights.get("torso_length", 0.18))),
+                (spine_score, float(torso_volume_weights.get("spine_angle", 0.16))),
+                (shoulder_score, float(torso_volume_weights.get("shoulder_width", 0.08))),
+                (hip_score, float(torso_volume_weights.get("hip_width", 0.06))),
+                (ratio_score, float(torso_volume_weights.get("hip_shoulder_ratio", 0.06))),
+            ]
+        )
+        overall_weights = weights.get("overall_profile", {})
+        depth_3d_score = weighted_mean_valid(
+            [
+                (turn_score, float(overall_weights.get("turn_signal", 0.18))),
+                (torso_volume_score, float(overall_weights.get("torso_volume", 0.48))),
+                (spine_score, float(overall_weights.get("spine_angle", 0.12))),
+                (torso_score, float(overall_weights.get("torso_length", 0.08))),
+                (side_profile_score, float(overall_weights.get("side_profile", 0.14))),
+            ]
+        )
+        pelvis_depth_score = side_profile_score
+    else:
+        torso_volume_weights = weights.get("torso_volume", {})
+        torso_volume_score = weighted_mean_valid(
+            [
+                (shoulder_score, float(torso_volume_weights.get("shoulder_width", 0.30))),
+                (hip_score, float(torso_volume_weights.get("hip_width", 0.24))),
+                (ratio_score, float(torso_volume_weights.get("hip_shoulder_ratio", 0.20))),
+                (spine_score, float(torso_volume_weights.get("spine_angle", 0.14))),
+                (torso_score, float(torso_volume_weights.get("torso_length", 0.12))),
+                (
+                    side_profile_score,
+                    float(torso_volume_weights.get("side_profile", 0.18)) if profile_like_family else 0.0,
+                ),
+            ]
+        )
+        overall_weights = weights.get("overall", {})
+        depth_3d_score = weighted_mean_valid(
+            [
+                (turn_score, float(overall_weights.get("yaw", 0.24))),
+                (torso_volume_score, float(overall_weights.get("torso_volume", 0.52))),
+                (spine_score, float(overall_weights.get("spine_angle", 0.14))),
+                (torso_score, float(overall_weights.get("torso_length", 0.10))),
+                (
+                    side_profile_score,
+                    float(overall_weights.get("side_profile", 0.16)) if profile_like_family else 0.0,
+                ),
+            ]
+        )
+        pelvis_depth_score = ratio_score
 
-    if view_key == "front":
+    if requested_surface == "front":
         confidence = float(view_spec.get("confidence_fixed", 0.20))
-    elif view_key == "three_quarter":
+    elif requested_surface == "three_quarter":
         confidence_weights = weights.get("confidence_three_quarter", {})
         confidence = weighted_mean_valid(
             [
@@ -483,29 +802,59 @@ def score_depth_3d_lite_geometry(
                 (spine_score, float(confidence_weights.get("spine_angle", 0.20))),
             ]
         )
+    elif back_family:
+        confidence_weights = weights.get("confidence_back_family", {})
+        confidence = weighted_mean_valid(
+            [
+                (turn_score, float(confidence_weights.get("turn_signal", 0.32))),
+                (torso_volume_score, float(confidence_weights.get("torso_volume", 0.34))),
+                (posterior_score, float(confidence_weights.get("posterior", 0.24))),
+                (spine_score, float(confidence_weights.get("spine_angle", 0.10))),
+            ]
+        )
     else:
-        confidence_weights = weights.get("confidence_profile_like", {})
+        confidence_weights = weights.get("confidence_profile_family", {})
+        confidence_turn_spec = (
+            view_spec.get("confidence_body_yaw", {})
+            if body_yaw_deg is not None
+            else view_spec.get("confidence_yaw", {})
+        )
+        if not isinstance(confidence_turn_spec, dict) or len(confidence_turn_spec) == 0:
+            confidence_turn_spec = view_spec.get("confidence_yaw", turn_spec if isinstance(turn_spec, dict) else {})
         confidence = weighted_mean_valid(
             [
                 (
                     _score_from_range_spec(
-                        yaw_proxy,
-                        view_spec.get("confidence_yaw", view_spec.get("yaw", {})),
+                        turn_value,
+                        confidence_turn_spec if isinstance(confidence_turn_spec, dict) else {},
                     ),
-                    float(confidence_weights.get("yaw", 0.45)),
+                    float(confidence_weights.get("turn_signal", 0.36)),
                 ),
-                (torso_volume_score, float(confidence_weights.get("torso_volume", 0.35))),
-                (spine_score, float(confidence_weights.get("spine_angle", 0.10))),
-                (side_profile_score, float(confidence_weights.get("side_profile", 0.10))),
+                (torso_volume_score, float(confidence_weights.get("torso_volume", 0.38))),
+                (side_profile_score, float(confidence_weights.get("side_profile", 0.18))),
+                (spine_score, float(confidence_weights.get("spine_angle", 0.08))),
             ]
         )
 
     return {
         "torso_volume_score": torso_volume_score,
-        "pelvis_depth_score": ratio_score,
+        "pelvis_depth_score": pelvis_depth_score,
         "fake_turn_risk": float(1.0 - torso_volume_score) if torso_volume_score is not None else None,
         "depth_3d_score": depth_3d_score,
         "side_profile_score": side_profile_score,
+        "posterior_score": posterior_score,
+        "posterior_raw_score": posterior_raw_score,
+        "posterior_gate_score": posterior_gate_score,
+        "turn_signal_value": turn_value,
+        "turn_signal_score": turn_score,
+        "turn_signal_body_yaw_score": turn_signal_body_yaw_score,
+        "turn_signal_pose_frontal_score": turn_signal_pose_frontal_score,
+        "turn_signal_mask_symmetry_score": turn_signal_mask_symmetry_score,
+        "turn_signal_head_skin_score": turn_signal_head_skin_score,
+        "turn_signal_lane_strictness_score": turn_signal_lane_strictness_score,
+        "torso_compactness_score": torso_compactness_score,
+        "view_surface_requested": requested_surface,
+        "view_surface_used": view_key,
         "confidence": 0.0 if confidence is None else float(confidence),
     }
 
@@ -528,6 +877,7 @@ def extract_body_constitution_metrics(
     face_feat: FaceFeat,
     pose_feat: PoseFeat,
     view_bucket: str = "front",
+    view_lane_detail: Optional[str] = None,
 ) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "is_valid": False,
@@ -546,10 +896,15 @@ def extract_body_constitution_metrics(
         "hip_width_px": None,
         "thigh_width_px": None,
         "calf_width_px": None,
+        "torso_reference_width_px": None,
+        "torso_reference_width_domain": "silhouette_mask_width",
         "waist_to_shoulder_ratio": None,
         "chest_to_waist_ratio": None,
         "hip_to_waist_ratio": None,
         "hip_to_shoulder_ratio": None,
+        "waist_to_torso_ratio": None,
+        "chest_to_torso_ratio": None,
+        "hip_to_torso_ratio": None,
         "thigh_to_calf_ratio": None,
         "pelvis_compactness_score": None,
         "abdomen_flatness_score": None,
@@ -660,11 +1015,29 @@ def extract_body_constitution_metrics(
     if thigh_w is not None and calf_w is not None and calf_w > 1e-6:
         out["thigh_to_calf_ratio"] = float(thigh_w / calf_w)
 
+    torso_reference_candidates = [float(v) for v in [chest_w, waist_w, hip_w] if v is not None]
+    torso_reference_w: Optional[float] = None
+    if len(torso_reference_candidates) == 1:
+        torso_reference_w = float(torso_reference_candidates[0])
+    elif len(torso_reference_candidates) >= 2:
+        # Side/back lanes should compare widths in the same silhouette domain
+        # instead of mixing mask widths with landmark shoulder spans.
+        torso_reference_w = float(np.median(np.array(torso_reference_candidates, dtype=np.float32)))
+    out["torso_reference_width_px"] = torso_reference_w
+    if torso_reference_w is not None and torso_reference_w > 1e-6:
+        if chest_w is not None:
+            out["chest_to_torso_ratio"] = float(chest_w / torso_reference_w)
+        if waist_w is not None:
+            out["waist_to_torso_ratio"] = float(waist_w / torso_reference_w)
+        if hip_w is not None:
+            out["hip_to_torso_ratio"] = float(hip_w / torso_reference_w)
+
     out.update(
         score_body_constitution_measurements(
             out,
             runtime.config.consistency.body_constitution_scoring,
             view_bucket=view_bucket,
+            view_lane_detail=view_lane_detail,
         )
     )
 
@@ -686,6 +1059,7 @@ def extract_body_constitution_metrics(
         width_ready=width_ready,
         pose_visibility=pose_vis,
         torso_fill=torso_fill,
+        view_lane_detail=view_lane_detail,
     )
     min_width_metrics = int(
         runtime.config.consistency.body_constitution_scoring.get("validity", {}).get("min_width_metrics", 3)
@@ -1208,7 +1582,13 @@ def extract_depth_3d_lite_metrics(
     pose_feat: PoseFeat,
     view_bucket: str,
     yaw_proxy: float,
+    body_yaw_deg: Optional[float] = None,
+    pose_frontal_strength: Optional[float] = None,
+    lane_strictness_score: Optional[float] = None,
+    mask_symmetry: Optional[float] = None,
+    head_skin_ratio: Optional[float] = None,
     scoring: Optional[Dict[str, Any]] = None,
+    view_lane_detail: Optional[str] = None,
 ) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "is_valid": False,
@@ -1217,6 +1597,17 @@ def extract_depth_3d_lite_metrics(
         "pelvis_depth_score": None,
         "fake_turn_risk": None,
         "depth_3d_score": None,
+        "turn_signal_value": None,
+        "turn_signal_score": None,
+        "posterior_score": None,
+        "posterior_raw_score": None,
+        "posterior_gate_score": None,
+        "turn_signal_body_yaw_score": None,
+        "turn_signal_pose_frontal_score": None,
+        "turn_signal_mask_symmetry_score": None,
+        "turn_signal_head_skin_score": None,
+        "turn_signal_lane_strictness_score": None,
+        "torso_compactness_score": None,
         "reasons": [],
     }
 
@@ -1235,12 +1626,68 @@ def extract_depth_3d_lite_metrics(
             pose_feat.full_geom,
             view_bucket=view_bucket,
             yaw_proxy=yaw_proxy,
+            body_yaw_deg=body_yaw_deg,
+            pose_frontal_strength=pose_frontal_strength,
+            lane_strictness_score=lane_strictness_score,
+            mask_symmetry=mask_symmetry,
+            head_skin_ratio=head_skin_ratio,
             scoring=scoring or {},
+            view_lane_detail=view_lane_detail,
         )
     )
     if out["depth_3d_score"] is None:
         out["reasons"].append("DEPTH_3D_LITE_EMPTY")
         return out
+
+    bottlenecks: List[Tuple[str, float]] = []
+
+    def add_bottleneck(reason: str, value: Optional[float], threshold: float) -> None:
+        if isinstance(value, (int, float)) and float(value) < threshold:
+            bottlenecks.append((reason, float(value)))
+
+    requested_surface = str(out.get("view_surface_requested", "") or "")
+    if requested_surface in {"strict_back_180", "back_like"}:
+        lane_strict = out.get("turn_signal_lane_strictness_score", lane_strictness_score)
+        posterior_raw = out.get("posterior_raw_score", None)
+        posterior_gate = out.get("posterior_gate_score", None)
+        posterior_score = out.get("posterior_score", None)
+        turn_score = out.get("turn_signal_score", None)
+        torso_volume_score = out.get("torso_volume_score", None)
+        turn_head = out.get("turn_signal_head_skin_score", None)
+        turn_sym = out.get("turn_signal_mask_symmetry_score", None)
+        turn_front = out.get("turn_signal_pose_frontal_score", None)
+        turn_yaw = out.get("turn_signal_body_yaw_score", None)
+        torso_compactness_score = out.get("torso_compactness_score", None)
+
+        if view_lane_detail == "back_like" and isinstance(lane_strict, (int, float)) and float(lane_strict) < 0.72:
+            out["reasons"].append("BACK_STRICTNESS_BELOW_STRICT")
+        if (
+            isinstance(posterior_raw, (int, float))
+            and isinstance(posterior_gate, (int, float))
+            and float(posterior_gate) + 0.04 < float(posterior_raw)
+        ):
+            out["reasons"].append("BACK_POSTERIOR_GATE_LIMITED")
+        if isinstance(turn_score, (int, float)) and float(turn_score) < 0.70:
+            out["reasons"].append("BACK_TURN_SIGNAL_WEAK")
+        if isinstance(torso_volume_score, (int, float)) and float(torso_volume_score) < 0.74:
+            out["reasons"].append("BACK_TORSO_VOLUME_WEAK")
+        if isinstance(posterior_score, (int, float)) and float(posterior_score) < 0.80:
+            out["reasons"].append("BACK_POSTERIOR_STRUCTURE_WEAK")
+
+        add_bottleneck("BACK_STRICTNESS_LOW", lane_strict, 0.72)
+        add_bottleneck("BACK_POSTERIOR_LOW", posterior_score, 0.80)
+        add_bottleneck("BACK_TURN_LOW", turn_score, 0.70)
+        add_bottleneck("BACK_TORSO_VOLUME_LOW", torso_volume_score, 0.74)
+        add_bottleneck("BACK_HEAD_SKIN_OUT_OF_RANGE", turn_head, 0.55)
+        add_bottleneck("BACK_MASK_SYMMETRY_LOW", turn_sym, 0.80)
+        add_bottleneck("BACK_FRONTAL_POSE_SIGNAL_LOW", turn_front, 0.70)
+        add_bottleneck("BACK_YAW_SIGNAL_LOW", turn_yaw, 0.70)
+        add_bottleneck("BACK_TORSO_COMPACTNESS_LOW", torso_compactness_score, 0.70)
+
+    bottlenecks = sorted(bottlenecks, key=lambda item: item[1])
+    out["bottlenecks"] = [name for name, _ in bottlenecks[:4]]
+    out["primary_bottleneck"] = bottlenecks[0][0] if bottlenecks else None
+
     out["is_valid"] = out["depth_3d_score"] is not None
     out["reasons"].append("DEPTH_3D_LITE_READY" if out["is_valid"] else "DEPTH_3D_LITE_EMPTY")
     return out

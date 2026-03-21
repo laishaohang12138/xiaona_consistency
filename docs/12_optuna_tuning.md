@@ -1,5 +1,9 @@
 # Optuna Tuning
 
+Current status:
+- Hyperparameter fitting is temporarily frozen.
+- Re-open Optuna only after anchor governance and measurement dimensions are stable.
+
 ## Purpose
 - Run offline parameter search on top of `benchmark_report()`
 - Tune thresholds and fusion weights without rerunning face / pose / parsing models

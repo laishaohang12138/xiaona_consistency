@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -15,6 +16,8 @@ from .qa_utils import (
     infer_anchor_view_from_path,
     linear_map_to_01,
     phash_similarity,
+    resolve_view_scoring_candidates,
+    resolve_view_scoring_surface,
     safe_float,
     ssim_similarity,
     valid_face_feats,
@@ -24,28 +27,27 @@ from .qa_utils import (
 DEFAULT_SCORE_FUSION = _default_score_fusion()
 
 
-def _normalize_view_bucket_key(view_bucket: str) -> str:
-    if view_bucket == "front":
-        return "front"
-    if view_bucket == "three_quarter":
-        return "three_quarter"
-    return "profile_like"
-
-
 def _score_fusion_config(scoring: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return scoring if isinstance(scoring, dict) else DEFAULT_SCORE_FUSION
 
 
-def _view_scoring_node(
+def _resolve_view_scoring_node(
     scoring: Optional[Dict[str, Any]],
     section: str,
     view_bucket: str,
-) -> Dict[str, Any]:
+    view_lane_detail: Optional[str] = None,
+) -> Tuple[str, Dict[str, Any]]:
     fusion = _score_fusion_config(scoring)
     section_node = fusion.get(section, {})
     views = section_node.get("views", {}) if isinstance(section_node, dict) else {}
-    view_node = views.get(_normalize_view_bucket_key(view_bucket), {})
-    return view_node if isinstance(view_node, dict) else {}
+    if not isinstance(views, dict):
+        views = {}
+    requested_surface = resolve_view_scoring_surface(view_bucket, view_lane_detail=view_lane_detail)
+    for view_key in resolve_view_scoring_candidates(view_bucket, view_lane_detail=view_lane_detail):
+        view_node = views.get(view_key, {})
+        if isinstance(view_node, dict) and len(view_node) > 0:
+            return view_key, view_node
+    return requested_surface, {}
 
 
 def _topk_settings(node: Dict[str, Any]) -> Tuple[int, float, float]:
@@ -161,12 +163,23 @@ def compare_face_feat(
 def fuse_face_identity_metrics(
     metrics: Dict[str, Optional[float]],
     view_bucket: str = "front",
+    view_lane_detail: Optional[str] = None,
     scoring: Optional[Dict[str, Any]] = None,
-) -> Tuple[float, Dict[str, float], List[str]]:
-    view_node = _view_scoring_node(scoring, "face_identity", view_bucket)
+) -> Tuple[float, Dict[str, float], List[str], str]:
+    view_key, view_node = _resolve_view_scoring_node(
+        scoring,
+        "face_identity",
+        view_bucket,
+        view_lane_detail=view_lane_detail,
+    )
     base_weights = view_node.get("weights", {})
     if not isinstance(base_weights, dict) or len(base_weights) == 0:
-        fallback = _view_scoring_node(DEFAULT_SCORE_FUSION, "face_identity", view_bucket)
+        view_key, fallback = _resolve_view_scoring_node(
+            DEFAULT_SCORE_FUSION,
+            "face_identity",
+            view_bucket,
+            view_lane_detail=view_lane_detail,
+        )
         base_weights = fallback.get("weights", {})
 
     reasons: List[str] = []
@@ -184,9 +197,9 @@ def fuse_face_identity_metrics(
         weight_sum += weight
 
     if weight_sum < 1e-8:
-        return 0.0, used, reasons
+        return 0.0, used, reasons, view_key
 
-    return float(clamp(weighted_sum / weight_sum, 0.0, 1.0)), used, reasons
+    return float(clamp(weighted_sum / weight_sum, 0.0, 1.0)), used, reasons, view_key
 
 
 def score_face_against_anchor_set(
@@ -194,18 +207,36 @@ def score_face_against_anchor_set(
     candidate: FaceFeat,
     anchors: List[FaceFeat],
     view_bucket: str = "front",
+    view_lane_detail: Optional[str] = None,
 ) -> Tuple[float, float, List[str], Dict[str, Any]]:
     reasons: List[str] = []
-    debug: Dict[str, Any] = {"anchor_scores": []}
+    requested_surface = resolve_view_scoring_surface(view_bucket, view_lane_detail=view_lane_detail)
+    debug: Dict[str, Any] = {
+        "anchor_scores": [],
+        "view_surface_requested": requested_surface,
+        "view_surface_used": requested_surface,
+    }
     fusion = runtime.config.consistency.score_fusion
     face_cfg = fusion.get("face_identity", {})
     conf_cfg = face_cfg.get("confidence", {}) if isinstance(face_cfg, dict) else {}
     topk_cfg = face_cfg.get("topk", {}) if isinstance(face_cfg, dict) else {}
-    face_views = face_cfg.get("views", {}) if isinstance(face_cfg, dict) else {}
-    face_view_node = face_views.get(_normalize_view_bucket_key(view_bucket), {})
+    view_key, face_view_node = _resolve_view_scoring_node(
+        fusion,
+        "face_identity",
+        view_bucket,
+        view_lane_detail=view_lane_detail,
+    )
+    debug["view_surface_used"] = view_key
     face_weight_map = face_view_node.get("weights", {}) if isinstance(face_view_node, dict) else {}
     if not isinstance(face_weight_map, dict) or len(face_weight_map) == 0:
-        face_weight_map = DEFAULT_SCORE_FUSION["face_identity"]["views"][_normalize_view_bucket_key(view_bucket)]["weights"]
+        fallback_key, fallback_node = _resolve_view_scoring_node(
+            DEFAULT_SCORE_FUSION,
+            "face_identity",
+            view_bucket,
+            view_lane_detail=view_lane_detail,
+        )
+        face_weight_map = fallback_node.get("weights", {})
+        debug["view_surface_used"] = fallback_key
     coverage_base = float(conf_cfg.get("base", 0.60))
     coverage_weight = float(conf_cfg.get("coverage", 0.40))
     coverage_denom = max(
@@ -225,7 +256,12 @@ def score_face_against_anchor_set(
         if not anchor.ok:
             continue
         metrics = compare_face_feat(candidate, anchor, runtime.engines.face_mode)
-        fused, used, rs = fuse_face_identity_metrics(metrics, view_bucket=view_bucket, scoring=fusion)
+        fused, used, rs, fused_view_key = fuse_face_identity_metrics(
+            metrics,
+            view_bucket=view_bucket,
+            view_lane_detail=view_lane_detail,
+            scoring=fusion,
+        )
         coverage = clamp(len(used) / coverage_denom, 0.0, 1.0)
         conf = clamp(
             candidate.confidence * anchor.confidence * (coverage_base + coverage_weight * coverage),
@@ -242,6 +278,7 @@ def score_face_against_anchor_set(
                 "conf": conf,
                 "identity_metrics": used,
                 "reasons": rs,
+                "view_surface_used": fused_view_key,
             }
         )
 
@@ -423,14 +460,25 @@ def upper_geom_similarity(
     g1: Dict[str, float],
     g2: Dict[str, float],
     view_bucket: str = "front",
+    view_lane_detail: Optional[str] = None,
     scoring: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
-    view_node = _view_scoring_node(scoring, "upper_geom", view_bucket)
+    _, view_node = _resolve_view_scoring_node(
+        scoring,
+        "upper_geom",
+        view_bucket,
+        view_lane_detail=view_lane_detail,
+    )
     weight_map = view_node.get("weights", {})
     tilt_weight = float(view_node.get("tilt_weight", 0.0))
     spine_weight = float(view_node.get("spine_weight", 0.0))
     if not isinstance(weight_map, dict) or len(weight_map) == 0:
-        fallback = _view_scoring_node(DEFAULT_SCORE_FUSION, "upper_geom", view_bucket)
+        _, fallback = _resolve_view_scoring_node(
+            DEFAULT_SCORE_FUSION,
+            "upper_geom",
+            view_bucket,
+            view_lane_detail=view_lane_detail,
+        )
         weight_map = fallback.get("weights", {})
         tilt_weight = float(fallback.get("tilt_weight", tilt_weight))
         spine_weight = float(fallback.get("spine_weight", spine_weight))
@@ -469,12 +517,23 @@ def full_geom_similarity(
     g1: Dict[str, float],
     g2: Dict[str, float],
     view_bucket: str = "front",
+    view_lane_detail: Optional[str] = None,
     scoring: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
-    view_node = _view_scoring_node(scoring, "full_geom", view_bucket)
+    _, view_node = _resolve_view_scoring_node(
+        scoring,
+        "full_geom",
+        view_bucket,
+        view_lane_detail=view_lane_detail,
+    )
     weight_map = view_node.get("weights", {})
     if not isinstance(weight_map, dict) or len(weight_map) == 0:
-        fallback = _view_scoring_node(DEFAULT_SCORE_FUSION, "full_geom", view_bucket)
+        _, fallback = _resolve_view_scoring_node(
+            DEFAULT_SCORE_FUSION,
+            "full_geom",
+            view_bucket,
+            view_lane_detail=view_lane_detail,
+        )
         weight_map = fallback.get("weights", {})
 
     avail = [key for key in weight_map.keys() if key in g1 and key in g2]
@@ -573,9 +632,22 @@ def score_upper_against_anchor_set(
     candidate: PoseFeat,
     anchors: List[PoseFeat],
     view_bucket: str = "front",
+    view_lane_detail: Optional[str] = None,
 ) -> Tuple[float, float, List[str], Dict[str, Any]]:
     reasons: List[str] = []
-    debug: Dict[str, Any] = {"anchor_scores": [], "view_bucket_used": view_bucket}
+    requested_surface = resolve_view_scoring_surface(view_bucket, view_lane_detail=view_lane_detail)
+    used_surface, _ = _resolve_view_scoring_node(
+        runtime.config.consistency.score_fusion,
+        "upper_geom",
+        view_bucket,
+        view_lane_detail=view_lane_detail,
+    )
+    debug: Dict[str, Any] = {
+        "anchor_scores": [],
+        "view_bucket_used": view_bucket,
+        "view_surface_requested": requested_surface,
+        "view_surface_used": used_surface,
+    }
     fusion = runtime.config.consistency.score_fusion
     upper_anchor_cfg = fusion.get("upper_anchor", {})
     upper_parts = upper_anchor_cfg.get("parts", {}) if isinstance(upper_anchor_cfg, dict) else {}
@@ -610,6 +682,7 @@ def score_upper_against_anchor_set(
             candidate.upper_geom,
             anchor.upper_geom,
             view_bucket=view_bucket,
+            view_lane_detail=view_lane_detail,
             scoring=fusion,
         )
 
@@ -661,9 +734,22 @@ def score_full_against_anchor_set(
     candidate: PoseFeat,
     anchors: List[PoseFeat],
     view_bucket: str = "front",
+    view_lane_detail: Optional[str] = None,
 ) -> Tuple[float, float, List[str], Dict[str, Any]]:
     reasons: List[str] = []
-    debug: Dict[str, Any] = {"anchor_scores": [], "view_bucket_used": view_bucket}
+    requested_surface = resolve_view_scoring_surface(view_bucket, view_lane_detail=view_lane_detail)
+    view_key, _ = _resolve_view_scoring_node(
+        runtime.config.consistency.score_fusion,
+        "full_anchor",
+        view_bucket,
+        view_lane_detail=view_lane_detail,
+    )
+    debug: Dict[str, Any] = {
+        "anchor_scores": [],
+        "view_bucket_used": view_bucket,
+        "view_surface_requested": requested_surface,
+        "view_surface_used": view_key,
+    }
     fusion = runtime.config.consistency.score_fusion
     full_anchor_cfg = fusion.get("full_anchor", {})
     full_views = full_anchor_cfg.get("views", {}) if isinstance(full_anchor_cfg, dict) else {}
@@ -706,13 +792,20 @@ def score_full_against_anchor_set(
             candidate.full_geom,
             anchor.full_geom,
             view_bucket=view_bucket,
+            view_lane_detail=view_lane_detail,
             scoring=fusion,
         )
 
-        view_key = _normalize_view_bucket_key(view_bucket)
         part_weights = full_views.get(view_key, {})
         if not isinstance(part_weights, dict) or len(part_weights) == 0:
-            part_weights = DEFAULT_SCORE_FUSION["full_anchor"]["views"].get(view_key, {})
+            fallback_key, fallback_node = _resolve_view_scoring_node(
+                DEFAULT_SCORE_FUSION,
+                "full_anchor",
+                view_bucket,
+                view_lane_detail=view_lane_detail,
+            )
+            part_weights = fallback_node
+            debug["view_surface_used"] = fallback_key
 
         parts = [("framing", fr_score, part_weights["framing"])]
         if s_geom is not None:
@@ -878,6 +971,50 @@ def make_recommendations(
         recs.append("当前视角不在该 profile 放行范围内：请改用匹配 profile，或转入 shadow lane 观察")
     if "PROFILE_PASS_CAPPED_TO_WARN" in reasons or "PROFILE_LIKE_NO_SIDE_ANCHOR_PASS_CAPPED" in reasons:
         recs.append("该图当前只适合作为 shadow / review 样本，不建议直接晋升到正式 frozen 配额")
+    if "GARMENT_COVERAGE_OUTLIER" in reasons or "GARMENT_UPPER_COVERAGE_OUTLIER" in reasons:
+        recs.append("该图上身穿搭覆盖度偏离当前批次：优先复查衣长、领口开合和肩线暴露是否跳变")
+    if "GARMENT_LOWER_COVERAGE_OUTLIER" in reasons:
+        recs.append("该图下身覆盖度偏离当前批次：复查裙摆/裤长/腿部露肤比例是否与本批次一致")
+    if "GARMENT_NECKLINE_OUTLIER" in reasons:
+        recs.append("该图领口开合偏离当前批次：不要把领型变化混入简单穿搭基线")
+    if "GARMENT_SHOULDER_BALANCE_OUTLIER" in reasons:
+        recs.append("该图肩部暴露或遮挡不对称：优先排查单侧滑肩、头发遮挡或服装边界漂移")
+    if "GARMENT_BODY_CONSTITUTION_OUTLIER" in reasons or "GARMENT_BODY_DEPTH_OUTLIER" in reasons:
+        recs.append("穿衣后人体连续性偏离当前批次：这类图容易把衣下身体结构教歪")
+    if "GARMENT_VIEW_ROUTING_OUTLIER" in reasons:
+        recs.append("该图视角与当前批次主路由不一致：不要混入同一简单穿搭批次")
+    if "GARMENT_BATCH_QUALITY_OUTLIER" in reasons:
+        recs.append("该图整体质量偏离当前批次：优先降为观察样本，不要直接进入稳定穿搭集合")
+    if "IDENTITY_FACE_OUTLIER_IN_BATCH" in reasons:
+        recs.append("该图脸部身份分相对当前批次偏离明显：这类图会直接拉低 LoRA 的身份连续性")
+    if "IDENTITY_BODY_OUTLIER_IN_BATCH" in reasons:
+        recs.append("该图衣下人体结构相对当前批次偏离明显：即使服装相近，也会把角色体态教偏")
+    if "IDENTITY_3D_OUTLIER_IN_BATCH" in reasons:
+        recs.append("该图的 3D 几何相对当前批次偏离明显：优先复查转体厚度、躯干体积和腿脚空间关系")
+    if "BATCH_IDENTITY_CONTINUITY_LOW" in reasons:
+        recs.append("这整批图的身份连续性不足：不要直接进入 LoRA 训练，先回看是否混入身份漂移样本")
+    if "BATCH_IDENTITY_COHESION_LOW" in reasons:
+        recs.append("这整批图的人脸 embedding 凝聚度不足：说明它们彼此没有稳定收敛到同一个身份中心")
+    if "BATCH_CLOTHFREE_IDENTITY_COHESION_LOW" in reasons:
+        recs.append("这整批图的衣物无关身份凝聚度不足：说明换上简单穿搭后，人体结构仍没有稳定收敛")
+    if "BATCH_HYBRID_IDENTITY_COHESION_LOW" in reasons:
+        recs.append("这整批图的多通道身份凝聚度不足：脸部和衣物无关结构还没有共同收敛到同一个身份中心")
+    if "BATCH_BODY_UNDER_CLOTHES_CONTINUITY_LOW" in reasons:
+        recs.append("这整批图衣下人体连续性不足：服装稳定但身体结构在漂，不适合作为身份强化批次")
+    if "BATCH_3D_COHESION_LOW" in reasons:
+        recs.append("这整批图的 3D 几何凝聚度不足：即使衣服相近，也会在空间厚度和体积感上教偏")
+    if "BATCH_GARMENT_BOUNDARY_STABILITY_LOW" in reasons:
+        recs.append("这整批图衣物边界稳定性不足：边界漂移会把穿搭层和身份层一起教歪")
+    if "BATCH_ROUTING_CONSISTENCY_LOW" in reasons:
+        recs.append("这整批图主视角不一致：简单穿搭训练应先保持单一主路由批次")
+    if "BATCH_GARMENT_CONFIDENCE_LOW" in reasons:
+        recs.append("这整批图服装量纲置信度不足：当前批次不适合直接拿来做稳定穿搭训练")
+    if "BATCH_OUTLIER_RATIO_TOO_HIGH" in reasons:
+        recs.append("这整批图内部异常样本过多：先剔除偏离样本，再决定是否入库")
+    if "BATCH_IMAGE_COUNT_BELOW_MIN" in reasons:
+        recs.append("这整批图样本量不足：对简单穿搭训练而言，当前批次还不够稳定")
+    if "PROFILE_BATCH_GATE_CAPPED_TO_WARN" in reasons:
+        recs.append("该图所在批次未通过训练型 batch gate：当前只适合作为观察样本，不建议直接训练")
     if len(recs) == 0:
         recs.append("该图未触发明显警报，可进入人工终审或训练入库下一步")
     return recs
@@ -887,6 +1024,61 @@ def get_profile_policy(runtime: RuntimeContext, profile_name: str) -> Dict[str, 
     return runtime.config.profile_policy.get(profile_name, runtime.config.profile_policy["lora_dataset"])
 
 
+def _normalize_anchor_source_path(path_str: Optional[str]) -> str:
+    if not path_str:
+        return ""
+    try:
+        return str(Path(str(path_str)).resolve()).replace("\\", "/").lower()
+    except Exception:
+        return str(path_str).replace("\\", "/").lower()
+
+
+def _resolve_registry_anchor_path(runtime: RuntimeContext, raw_path: str) -> str:
+    expanded = str(raw_path).strip()
+    expanded = expanded.replace("${PROJECT_ROOT}", str(runtime.config.paths.base_dir))
+    expanded = expanded.replace("${CONFIG_DIR}", str(runtime.config.paths.config_dir))
+    return _normalize_anchor_source_path(expanded)
+
+
+def _anchor_registry_entry_for_path(runtime: RuntimeContext, source_path: Optional[str]) -> Optional[Dict[str, Any]]:
+    normalized_source = _normalize_anchor_source_path(source_path)
+    if not normalized_source:
+        return None
+    anchors_node = runtime.config.anchor_registry.get("anchors", {})
+    if not isinstance(anchors_node, dict):
+        return None
+    for node in anchors_node.values():
+        if not isinstance(node, dict):
+            continue
+        raw_path = str(node.get("path", "")).strip()
+        if not raw_path:
+            continue
+        if _resolve_registry_anchor_path(runtime, raw_path) == normalized_source:
+            return node
+    return None
+
+
+def _anchor_tier_for_face(runtime: RuntimeContext, feat: FaceFeat) -> str:
+    entry = _anchor_registry_entry_for_path(runtime, feat.source_path)
+    if isinstance(entry, dict):
+        tier = str(entry.get("anchor_tier", "")).strip().lower()
+        if tier:
+            return tier
+        role = str(entry.get("role", "")).strip().upper()
+        if role in {"FACE_MASTER", "FULL_BODY_MASTER"}:
+            return "absolute"
+    return "support"
+
+
+def _filter_face_feats_by_tier(
+    runtime: RuntimeContext,
+    feats: List[FaceFeat],
+    tier: str,
+) -> List[FaceFeat]:
+    expected = str(tier).strip().lower()
+    return [feat for feat in valid_face_feats(feats) if _anchor_tier_for_face(runtime, feat) == expected]
+
+
 def get_identity_anchor_pool(
     runtime: RuntimeContext,
     profile_name: str,
@@ -894,6 +1086,9 @@ def get_identity_anchor_pool(
 ) -> List[FaceFeat]:
     policy = get_profile_policy(runtime, profile_name)
     mode = policy.get("identity_anchor_pool", "face")
+    absolute_face_pool = _filter_face_feats_by_tier(runtime, anchors.face_feats, "absolute")
+    if len(absolute_face_pool) > 0:
+        return absolute_face_pool
     if mode == "face":
         return valid_face_feats(anchors.face_feats)
     if mode == "upper_first":

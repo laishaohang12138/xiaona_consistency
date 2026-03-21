@@ -23,7 +23,7 @@
     "front_core_fit": {
       "label": "正脸主线拟合",
       "description": "仅拟合 front 主线；要求 front 锚点和 front benchmark 标签已经冻结。",
-      "fit_enabled": true,
+      "fit_enabled": false,
       "search_space_path": "configs/optuna_search_space.front_core.json",
       "guard_path": "configs/optuna_guard.front_core_fit.json",
       "recommended_runtime_profile": "body_gold_front_cal",
@@ -44,7 +44,7 @@
     "three_quarter_fit": {
       "label": "3/4 复核线拟合",
       "description": "拟合 three_quarter 复核线；要求 3/4 锚点已经冻结。",
-      "fit_enabled": true,
+      "fit_enabled": false,
       "search_space_path": "configs/optuna_search_space.three_quarter_review.json",
       "guard_path": "configs/optuna_guard.three_quarter_fit.json",
       "recommended_runtime_profile": "body_gold_threequarter_review",
@@ -65,7 +65,7 @@
     "side90_shadow_fit": {
       "label": "侧颜 Shadow 拟合",
       "description": "拟合 side_90 shadow 线；要求 profile_like 脸锚和侧身全身锚已经冻结。",
-      "fit_enabled": true,
+      "fit_enabled": false,
       "search_space_path": "configs/optuna_search_space.side90_shadow.json",
       "guard_path": "configs/optuna_guard.side90_shadow_fit.json",
       "recommended_runtime_profile": "body_gold_side90_shadow",
@@ -86,7 +86,7 @@
     "back180_shadow_fit": {
       "label": "背身 Shadow 拟合",
       "description": "拟合 back_180 shadow 线；要求背身全身锚和背身 upper support 已经冻结。",
-      "fit_enabled": true,
+      "fit_enabled": false,
       "search_space_path": "configs/optuna_search_space.back180_shadow.json",
       "guard_path": "configs/optuna_guard.back180_shadow_fit.json",
       "recommended_runtime_profile": "body_gold_back180_shadow",
@@ -107,7 +107,7 @@
     "full_release_fit": {
       "label": "全局发布拟合",
       "description": "全局拟合；要求 front、3/4、side、back 各条锚点线都已经冻结。",
-      "fit_enabled": true,
+      "fit_enabled": false,
       "search_space_path": "configs/optuna_search_space.template.json",
       "guard_path": "configs/optuna_guard.full_release_fit.json",
       "recommended_runtime_profile": "body_gold_fullbody",

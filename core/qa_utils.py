@@ -315,7 +315,7 @@ def get_quality_tolerances_by_face_size(
 
 def estimate_view_bucket_and_side(face_feat: FaceFeat) -> Tuple[str, str, float]:
     if (not face_feat.ok) or (face_feat.kps5 is None):
-        return "front", "unknown", 0.0
+        return "unknown", "unknown", 0.0
 
     le, re, nose, ml, mr = [face_feat.kps5[i] for i in range(5)]
 
@@ -350,6 +350,62 @@ def canonicalize_view_lane(face_feat: FaceFeat, raw_view_bucket: str) -> str:
     if raw_view_bucket == "profile_like":
         return "side_90"
     return raw_view_bucket
+
+
+def normalize_view_lane_detail(view_lane_detail: Optional[str]) -> str:
+    detail = str(view_lane_detail or "").strip().lower()
+    if detail.startswith("strict_side_90_"):
+        return detail
+    if detail in {"strict_side_90", "side_like", "strict_back_180", "back_like", "front", "three_quarter"}:
+        return detail
+    if detail.startswith("side_like_"):
+        return detail
+    return ""
+
+
+def resolve_view_scoring_surface(
+    view_bucket: str,
+    view_lane_detail: Optional[str] = None,
+) -> str:
+    detail = normalize_view_lane_detail(view_lane_detail)
+    if detail.startswith("strict_side_90_") or detail == "strict_side_90":
+        return "strict_side_90"
+    if detail.startswith("side_like_") or detail == "side_like":
+        return "side_like"
+    if detail == "strict_back_180":
+        return "strict_back_180"
+    if detail == "back_like":
+        return "back_like"
+    if detail in {"front", "three_quarter"}:
+        return detail
+
+    if view_bucket == "front":
+        return "front"
+    if view_bucket == "three_quarter":
+        return "three_quarter"
+    if view_bucket in {"back_180"}:
+        return "back_like"
+    return "profile_like"
+
+
+def resolve_view_scoring_candidates(
+    view_bucket: str,
+    view_lane_detail: Optional[str] = None,
+) -> List[str]:
+    primary = resolve_view_scoring_surface(view_bucket, view_lane_detail=view_lane_detail)
+    candidates: List[str] = [primary]
+    if primary in {"strict_side_90", "side_like", "strict_back_180", "back_like"}:
+        candidates.append("profile_like")
+    if primary not in {"front", "three_quarter"} and view_bucket == "back_180":
+        candidates.append("back_180")
+
+    out: List[str] = []
+    seen = set()
+    for key in candidates:
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
 
 
 def infer_anchor_view_from_path(path_str: Optional[str]) -> str:
