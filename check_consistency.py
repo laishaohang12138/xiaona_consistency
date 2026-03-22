@@ -140,6 +140,109 @@ def _prompt_path(
         return candidate
 
 
+def _load_json_file(path: Path, label: str) -> Dict[str, Any]:
+    if not path.exists():
+        raise ValueError(f"{label} does not exist: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} must decode to a JSON object")
+    return payload
+
+
+def _select_workflow_interactively(default: str = "shot_review") -> str:
+    return _select_choice(
+        "请选择当前要完成的任务",
+        [
+            ("shot_review", "审一个 shot 批次，输出 QA、排序和 review packet"),
+            ("inspect_review_packet", "查看最近一次 review packet 的批次摘要和复核提示"),
+            ("promote_winner", "把人工确认的 winner 写入 winner bank"),
+            ("winner_bank_status", "查看 winner bank 状态与最新跨批次漂移报告"),
+            ("advanced_cli", "进入高级工程模式（qa / benchmark / optuna / calibrate）"),
+        ],
+        default=default,
+    )
+
+
+def _select_review_profile_interactively(default: str = "body_gold_fullbody") -> str:
+    return _select_choice(
+        "请选择本轮 shot 批次最接近的量纲体系",
+        [
+            ("body_gold_fullbody", "BODY GOLD 前向/普通主体批次"),
+            ("bridge_simple_outfit", "简单穿搭 / BRIDGE 训练准入批次"),
+            ("body_gold_side90_shadow", "90 度侧面 shadow 观察批次"),
+            ("body_gold_back180_shadow", "180 度背部 shadow 观察批次"),
+            ("full_body_outfit", "通用穿搭稳定性批次"),
+        ],
+        default=default,
+    )
+
+
+def _default_review_paths(base_dir: Path) -> Dict[str, Path]:
+    output_dir = (base_dir / "outputs").resolve()
+    return {
+        "review_packet": output_dir / "review_packet.json",
+        "winner_bank_candidate": output_dir / "winner_bank_candidate.json",
+        "winner_bank_report": output_dir / "winner_bank_report.json",
+        "winner_bank": output_dir / "winner_bank.json",
+    }
+
+
+def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
+    batch = packet.get("batch_summary") or {}
+    selection = batch.get("selection") or {}
+    batch_gate = batch.get("batch_gate") or {}
+    identity = batch.get("identity_summary") or {}
+    geometry = batch.get("geometry_summary") or {}
+    print("\n[Review Packet]")
+    print(f"  Profile: {batch.get('target_profile')}")
+    print(f"  Images : {batch.get('input_count')}")
+    print(f"  Top1   : {selection.get('top_ranked_image')}")
+    print(f"  Window : top {selection.get('manual_review_window')}")
+    print(f"  Gate   : {batch_gate.get('status')} | reasons={batch_gate.get('reasons') or []}")
+    print(
+        "  Identity: "
+        f"face={identity.get('batch_identity_cohesion')} "
+        f"clothfree={identity.get('batch_clothfree_identity_cohesion')} "
+        f"hybrid={identity.get('batch_hybrid_identity_cohesion')}"
+    )
+    print(
+        "  Geometry: "
+        f"body={geometry.get('body_under_clothes_continuity')} "
+        f"3d={geometry.get('batch_3d_cohesion')} "
+        f"world3d={geometry.get('batch_world3d_cohesion')}"
+    )
+    print(f"  Risks  : {batch.get('primary_risks') or []}")
+    print(f"  Guidance: {batch.get('review_guidance') or []}")
+
+
+def _print_winner_bank_summary(report: Dict[str, Any]) -> None:
+    print("\n[Winner Bank]")
+    print(f"  Status     : {report.get('status')}")
+    print(f"  Curated    : {report.get('curated_bank_available')} | entries={report.get('curated_entry_count')}")
+    print(f"  Candidates : {report.get('candidate_entry_count')}")
+    print(f"  Drift rows : {report.get('drift_row_count')}")
+    print(f"  Next step  : {report.get('manual_next_step')}")
+
+
+def _select_winner_candidate_interactively(entries: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    print("[交互引导] 可晋升的候选 winner：")
+    for index, entry in enumerate(entries, start=1):
+        print(
+            f"  {index}. {entry.get('image')} | score={entry.get('selection_score')} "
+            f"| profile={entry.get('target_profile')} | reasons={list(entry.get('winner_reasons') or [])[:2]}"
+        )
+    while True:
+        choice = _prompt_text("请选择要写入 winner bank 的候选编号", "1")
+        if choice.isdigit():
+            index = int(choice)
+            if 1 <= index <= len(entries):
+                return dict(entries[index - 1])
+        print(f"[交互引导] 无法识别的候选编号：{choice}")
+
+
 def _maybe_enable_interactive_wizard(args: argparse.Namespace, raw_argv: Sequence[str]) -> None:
     if args.interactive or len(raw_argv) > 0:
         return
@@ -175,8 +278,22 @@ def _select_benchmark_action_interactively(default: str = "replay") -> str:
 
 
 def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
+    workflow = str(args.workflow or "").strip()
     effective_mode = str(args.mode or "qa")
     if not args.interactive:
+        return
+
+    if args.workflow is None and args.mode is None:
+        args.workflow = _select_workflow_interactively(default="shot_review")
+        workflow = str(args.workflow or "").strip()
+
+    if workflow == "shot_review":
+        args.mode = "qa"
+        if args.profile is None:
+            args.profile = _select_review_profile_interactively(default=str(args.profile or "body_gold_fullbody"))
+        return
+
+    if workflow in {"inspect_review_packet", "promote_winner", "winner_bank_status"}:
         return
 
     if args.mode is None:
@@ -247,6 +364,73 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
             default="outputs/benchmark_labels.interactive.json",
             must_exist=True,
         )
+
+
+def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optional[int]:
+    workflow = str(args.workflow or "").strip()
+    if workflow in {"", "shot_review", "advanced_cli"}:
+        return None
+
+    paths = _default_review_paths(base_dir)
+    if workflow == "inspect_review_packet":
+        packet = _load_json_file(paths["review_packet"], "review packet")
+        _print_review_packet_summary(packet)
+        print(f"[Review Packet File] {paths['review_packet']}")
+        print("[交互引导] 如需让 GPT 深入分析，请直接读取这份 review_packet.json。")
+        return 0
+
+    if workflow == "winner_bank_status":
+        report = _load_json_file(paths["winner_bank_report"], "winner bank report")
+        _print_winner_bank_summary(report)
+        print(f"[Winner Bank Report] {paths['winner_bank_report']}")
+        return 0
+
+    if workflow == "promote_winner":
+        from core.qa_winner_bank import load_winner_bank_candidates, promote_winner_entry
+
+        candidate_payload = load_winner_bank_candidates(paths["winner_bank_candidate"])
+        if not candidate_payload.get("available"):
+            raise ValueError(
+                f"winner bank candidate file is not ready: {paths['winner_bank_candidate']} "
+                f"({candidate_payload.get('reason')})"
+            )
+        entries = list(candidate_payload.get("entries") or [])
+        selected_entry: Optional[Dict[str, Any]] = None
+        if args.winner_image:
+            needle = str(args.winner_image).strip()
+            for entry in entries:
+                if needle in {
+                    str(entry.get("image") or "").strip(),
+                    str(entry.get("record_key") or "").strip(),
+                }:
+                    selected_entry = dict(entry)
+                    break
+            if selected_entry is None:
+                raise ValueError(f"winner candidate not found: {needle}")
+        elif len(entries) == 1 and not args.interactive:
+            selected_entry = dict(entries[0])
+        elif args.interactive:
+            selected_entry = _select_winner_candidate_interactively(entries)
+        else:
+            raise ValueError("promote_winner requires --winner-image when multiple candidates exist")
+
+        manual_note = args.winner_note
+        if args.interactive and not manual_note:
+            manual_note = _prompt_text("可选：为这次人工确认写一句备注", "")
+
+        result = promote_winner_entry(
+            selected_entry,
+            paths["winner_bank"],
+            manual_note=manual_note,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(
+            "[交互引导] 已写入 winner bank。建议下一次重新跑 shot review，"
+            "让系统用新的 curated bank 做跨批次漂移检查。"
+        )
+        return 0
+
+    raise ValueError(f"unsupported workflow: {workflow}")
 
 
 def _select_preset_interactively(
@@ -351,6 +535,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Override runtime.config.run_mode for this invocation.",
     )
     parser.add_argument(
+        "--workflow",
+        choices=["shot_review", "inspect_review_packet", "promote_winner", "winner_bank_status", "advanced_cli"],
+        help="User-facing workflow entry. Prefer this over --mode when you want task-oriented review actions.",
+    )
+    parser.add_argument(
         "--auto-load-thresholds",
         action="store_true",
         help="Load outputs/quality_thresholds.json before running QA.",
@@ -368,6 +557,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--interactive",
         action="store_true",
         help="Enable interactive preset selection and benchmark metadata prompts.",
+    )
+    parser.add_argument(
+        "--winner-image",
+        help="Image name or record_key promoted into outputs/winner_bank.json in promote_winner workflow.",
+    )
+    parser.add_argument(
+        "--winner-note",
+        help="Optional manual note attached when promoting a winner into outputs/winner_bank.json.",
     )
     parser.add_argument(
         "--benchmark-report",
@@ -464,12 +661,20 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
     _maybe_enable_interactive_wizard(args, raw_argv)
     base_dir = _resolve_cli_path(args.base_dir, BASE_DIR)
     _prepare_interactive_args(args, base_dir)
+    if str(args.workflow or "").strip() == "shot_review" and args.mode is None:
+        args.mode = "qa"
     effective_mode = str(args.mode or "qa")
     presets_path = _resolve_cli_path(args.optuna_presets_file, base_dir) if args.optuna_presets_file else None
     try:
         threshold_override = _load_threshold_override(args, base_dir)
     except ValueError as exc:
         parser.error(str(exc))
+    try:
+        workflow_result = _handle_workflow_action(args, base_dir)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if workflow_result is not None:
+        return workflow_result
 
     if args.optuna_list_presets:
         from core.qa_optuna import list_optuna_mode_presets
@@ -610,6 +815,15 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
         benchmark_freeze_tag=benchmark_freeze_tag,
         benchmark_update_labels=bool(args.benchmark_seal_labels),
     )
+    if effective_mode == "qa":
+        review_packet_path = _default_review_paths(base_dir)["review_packet"]
+        try:
+            packet = _load_json_file(review_packet_path, "review packet")
+        except ValueError:
+            packet = None
+        if packet is not None:
+            _print_review_packet_summary(packet)
+            print(f"[Review Packet File] {review_packet_path}")
     return 0
 
 

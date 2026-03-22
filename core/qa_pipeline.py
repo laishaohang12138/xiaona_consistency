@@ -30,6 +30,7 @@ from .qa_outfit import (
     infer_layer_tag_from_profile,
     parse_collection_metadata,
 )
+from .qa_review_packet import build_review_packet
 from .qa_runtime import (
     AnchorSet,
     EngineState,
@@ -382,6 +383,12 @@ def _build_report_meta(
             ],
             "auto_promote_machine_top1": False,
             "final_decision_owner": "custom_gpt_plus_human",
+        },
+        "review_packet": {
+            "enabled": True,
+            "output": "review_packet.json",
+            "goal": "unified evidence packet for GPT-assisted and human review",
+            "mode": "summary_plus_structured_items",
         },
         "input_count": int(input_count),
     }
@@ -1776,10 +1783,18 @@ def _run_pipeline_impl(
     ranked_candidates_file = config.paths.dir_output / "ranked_candidates.json"
     with open(ranked_candidates_file, "w", encoding="utf-8") as file:
         json.dump(shot_selection, file, indent=2, ensure_ascii=False)
+    build_review_packet(
+        report_payload,
+        config.paths.dir_output,
+        config.paths.report_file,
+        ranked_candidates_file,
+    )
+    review_packet_file = config.paths.dir_output / "review_packet.json"
 
     print("\n[完工] 质检完成 [OK]")
     print(f"[报告] {config.paths.report_file}")
     print(f"[排序] {ranked_candidates_file}")
+    print(f"[复核包] {review_packet_file}")
     collection_summary = collection_aggregates.get("summary", {})
     print(
         "[集合聚合] "

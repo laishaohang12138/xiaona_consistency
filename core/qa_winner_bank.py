@@ -220,6 +220,76 @@ def _load_curated_bank(bank_file: Path) -> Dict[str, Any]:
     }
 
 
+def load_winner_bank_candidates(candidate_file: Path) -> Dict[str, Any]:
+    if not candidate_file.exists():
+        return {"available": False, "entries": [], "reason": "missing_candidate_file"}
+    try:
+        payload = json.loads(candidate_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"available": False, "entries": [], "reason": f"invalid_json:{exc}"}
+    entries = list(payload.get("entries") or [])
+    return {
+        "available": len(entries) > 0,
+        "entries": entries,
+        "reason": None if len(entries) > 0 else "empty_candidate_file",
+        "payload": payload,
+    }
+
+
+def load_curated_winner_bank(bank_file: Path) -> Dict[str, Any]:
+    payload = _load_curated_bank(bank_file)
+    payload["file"] = str(bank_file)
+    return payload
+
+
+def promote_winner_entry(
+    candidate_entry: Dict[str, Any],
+    curated_bank_file: Path,
+    manual_note: Optional[str] = None,
+) -> Dict[str, Any]:
+    curated = _load_curated_bank(curated_bank_file)
+    entries = list(curated.get("entries") or [])
+    promoted = dict(candidate_entry)
+    promoted["manual_promoted_at_utc"] = datetime.now(timezone.utc).isoformat()
+    promoted["manual_note"] = manual_note or ""
+
+    candidate_id = str(promoted.get("record_key") or promoted.get("image") or "").strip()
+    existing_index: Optional[int] = None
+    for index, entry in enumerate(entries):
+        entry_id = str(entry.get("record_key") or entry.get("image") or "").strip()
+        if candidate_id and entry_id == candidate_id:
+            existing_index = index
+            break
+
+    if existing_index is None:
+        entries.append(promoted)
+        action = "added"
+    else:
+        entries[existing_index] = promoted
+        action = "updated"
+
+    payload = {
+        "schema_version": "winner_bank_v1",
+        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "entry_count": len(entries),
+        "entries": entries,
+        "policy": {
+            "manual_promotion_required": True,
+            "auto_promote_machine_top1": False,
+            "final_decision_owner": "custom_gpt_plus_human",
+        },
+    }
+    curated_bank_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {
+        "status": "ok",
+        "action": action,
+        "curated_bank_file": str(curated_bank_file),
+        "entry_count": len(entries),
+        "promoted_image": promoted.get("image"),
+        "promoted_record_key": promoted.get("record_key"),
+    }
+
+
 def _centroid_from_entries(entries: Sequence[Dict[str, Any]], key: str) -> Optional[np.ndarray]:
     rows: List[tuple[np.ndarray, float]] = []
     for entry in entries:
