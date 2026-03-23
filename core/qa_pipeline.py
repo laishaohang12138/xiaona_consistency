@@ -22,6 +22,10 @@ from .qa_consistency import (
 from .qa_features import extract_face_feat, extract_pose_feat, init_engines
 from .qa_garment import extract_garment_metrics
 from .qa_heavy_review import apply_shortlist_heavy_review
+from .qa_master_consistency import (
+    build_absolute_master_reference,
+    build_master_consistency_card,
+)
 from .qa_outfit import (
     apply_collection_diagnostics,
     build_collection_aggregates,
@@ -1170,6 +1174,7 @@ def _run_pipeline_impl(
 
     report_items: List[Dict[str, Any]] = []
     batch_identity_samples: List[Dict[str, Any]] = []
+    master_reference = build_absolute_master_reference(runtime, anchors)
     print(f"[RUN] TONE_FACE_REFS={len(face_tone_anchors)}")
     report_meta = _build_report_meta(runtime, target_profile, anchors, len(images))
     print(f"\n[运行中] 任务模板: {target_profile}")
@@ -1545,6 +1550,30 @@ def _run_pipeline_impl(
             )
 
             reasons_all = dedupe_keep_order(reasons_all)
+            master_consistency_card = build_master_consistency_card(
+                {
+                    "face": face_score,
+                    "upper": upper_score,
+                    "full": full_score,
+                    "constitution": constitution_score,
+                    "depth_3d": depth_3d_score,
+                },
+                {
+                    "face": face_conf,
+                    "upper": upper_conf,
+                    "full": full_conf,
+                },
+                face_debug,
+                reasons_all,
+                view_lane,
+                shadow_view_route.lane_detail,
+                shadow_view_route.lane_strictness_score,
+                body_identity,
+                depth_identity,
+                world3d_identity,
+                master_reference,
+                quality_debug=quality_debug,
+            )
 
             result_node = {
                 "image": img_path.name,
@@ -1638,6 +1667,7 @@ def _run_pipeline_impl(
                     "view_router_v2": shadow_view_route.to_json_dict(),
                     "view_router_v2_disagrees": shadow_view_route.lane != view_lane,
                     "identity_anchor_count_view": len(face_identity_anchors_view),
+                    "master_consistency_card": master_consistency_card,
                     "input_shape": list(img.shape[:2]),
                 },
             }

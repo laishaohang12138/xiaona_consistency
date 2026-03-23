@@ -14,6 +14,20 @@ def _round_or_none(value: Optional[float], digits: int = 4) -> Optional[float]:
     return round(float(value), digits)
 
 
+def _dedupe_keep_order(values: Sequence[str], limit: Optional[int] = None) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+        if limit is not None and len(out) >= int(limit):
+            break
+    return out
+
+
 def _normalize_embedding(value: Any) -> Optional[np.ndarray]:
     if value is None:
         return None
@@ -139,6 +153,91 @@ def _build_focus_points(top_row: Dict[str, Any], candidate_row: Dict[str, Any]) 
     return notes[:4]
 
 
+def _drift_severity(
+    face_sim: Optional[float],
+    body_sim: Optional[float],
+    depth_sim: Optional[float],
+    world3d_sim: Optional[float],
+    hybrid_sim: Optional[float],
+) -> str:
+    worst = min(
+        [
+            float(v)
+            for v in [face_sim, body_sim, depth_sim, world3d_sim, hybrid_sim]
+            if isinstance(v, (int, float))
+        ]
+        or [1.0]
+    )
+    if worst < 0.74:
+        return "high"
+    if worst < 0.82:
+        return "medium"
+    return "low"
+
+
+def _drift_manual_focus(
+    flags: Sequence[str],
+    entry: Dict[str, Any],
+    face_sim: Optional[float],
+    body_sim: Optional[float],
+    depth_sim: Optional[float],
+    world3d_sim: Optional[float],
+) -> List[str]:
+    focus: List[str] = []
+    if "WINNER_BANK_FACE_DRIFT" in flags:
+        focus.extend(
+            [
+                "compare this winner with the curated bank on face shape, age impression, and eye-mouth spacing",
+                "treat face drift as the first veto axis before accepting a new winner",
+            ]
+        )
+    if "WINNER_BANK_BODY_DRIFT" in flags:
+        focus.extend(
+            [
+                "check head-body ratio, torso length feel, and shoulder-hip structure against the curated bank",
+                "verify that body proportion has not shifted even if the face still looks plausible",
+            ]
+        )
+    if "WINNER_BANK_3D_DRIFT" in flags or "WINNER_BANK_WORLD3D_DRIFT" in flags:
+        focus.extend(
+            [
+                "check volume feel, shoulder depth, pelvis axis, and lower-limb length consistency",
+                "use 3D/world3d drift as a structural veto when top candidates are otherwise close",
+            ]
+        )
+    lane_family = str(((entry.get("master_consistency_card") or {}).get("lane_family")) or "").strip()
+    if lane_family == "three_quarter":
+        focus.append("for three-quarter winners, prioritize cheek shape and turn naturalness over small score gaps")
+    elif lane_family == "side":
+        focus.append("for side winners, prioritize profile contour and neck-head connection over frontal face similarity")
+    elif lane_family == "back":
+        focus.append("for back winners, treat posterior structure as the main evidence and keep identity interpretation conservative")
+    if isinstance(face_sim, (int, float)) and isinstance(body_sim, (int, float)) and float(face_sim) < float(body_sim) - 0.08:
+        focus.append("body stays closer than face; check whether facial rendering drift is the real blocker")
+    if isinstance(depth_sim, (int, float)) and isinstance(world3d_sim, (int, float)) and min(float(depth_sim), float(world3d_sim)) < 0.82:
+        focus.append("3D structure is the main drift axis; compare shoulders, torso depth, and leg length feel side by side")
+    if len(focus) == 0:
+        focus.append("drift signals are mild; confirm with GPT/human before promoting into the curated bank")
+    return _dedupe_keep_order(focus, limit=6)
+
+
+def _drift_review_prompts(flags: Sequence[str], severity: str) -> List[str]:
+    prompts: List[str] = []
+    if "WINNER_BANK_FACE_DRIFT" in flags:
+        prompts.append("Face similarity to the curated bank is weak. Verify face shape and age impression before admitting this winner.")
+    if "WINNER_BANK_BODY_DRIFT" in flags:
+        prompts.append("Body signature drift is visible. Compare body proportion and shoulder-hip structure against the curated bank.")
+    if "WINNER_BANK_3D_DRIFT" in flags or "WINNER_BANK_WORLD3D_DRIFT" in flags:
+        prompts.append("3D drift is visible. Check torso depth, shoulder-pelvis axis, and lower-limb structure before promotion.")
+    if severity == "high":
+        prompts.append("Cross-batch drift is high enough that this winner should remain advisory until GPT/human explicitly confirms it.")
+    elif severity == "medium":
+        prompts.append("Cross-batch drift is moderate. Review against curated winners before promotion.")
+    if len(prompts) == 0:
+        prompts.append("Curated-bank drift is currently mild. A final GPT/human check is still required before promotion.")
+    return _dedupe_keep_order(prompts, limit=5)
+
+
 def enrich_shot_selection_pairwise_cards(shot_selection: Dict[str, Any], top_n: int = 3) -> Dict[str, Any]:
     for group in shot_selection.get("groups") or []:
         shortlist = list(group.get("shortlist") or [])
@@ -185,6 +284,8 @@ def _build_candidate_entry(
         "look_key": group.get("look_key"),
         "image": candidate_row.get("image"),
         "record_key": candidate_row.get("record_key"),
+        "rank": candidate_row.get("rank"),
+        "review_bucket": candidate_row.get("review_bucket"),
         "status": candidate_row.get("status"),
         "selection_score": candidate_row.get("selection_score"),
         "enhanced_selection_score": ((candidate_row.get("heavy_review") or {}).get("enhanced_selection_score")),
@@ -194,6 +295,7 @@ def _build_candidate_entry(
         "winner_reasons": list(candidate_row.get("winner_reasons") or []),
         "caution_reasons": list(candidate_row.get("caution_reasons") or []),
         "top_reasons": list(candidate_row.get("top_reasons") or []),
+        "master_consistency_card": dict(debug.get("master_consistency_card") or {}),
         "identity_centroid_similarity": diagnostics.get("identity_centroid_similarity"),
         "body_identity_centroid_similarity": diagnostics.get("body_identity_centroid_similarity"),
         "depth_identity_centroid_similarity": diagnostics.get("depth_identity_centroid_similarity"),
@@ -330,13 +432,14 @@ def build_winner_bank_governance(
         shortlist = list(group.get("shortlist") or [])
         if len(shortlist) == 0:
             continue
-        top_row = shortlist[0]
-        record_key = str(top_row.get("record_key") or "").strip()
-        item = item_by_key.get(record_key)
-        signal = signal_by_key.get(record_key)
-        if item is None or signal is None:
-            continue
-        candidate_entries.append(_build_candidate_entry(group, top_row, item, signal, target_profile))
+        export_limit = int(group.get("manual_review_window") or len(shortlist) or 1)
+        for row in shortlist[: max(1, export_limit)]:
+            record_key = str(row.get("record_key") or "").strip()
+            item = item_by_key.get(record_key)
+            signal = signal_by_key.get(record_key)
+            if item is None or signal is None:
+                continue
+            candidate_entries.append(_build_candidate_entry(group, row, item, signal, target_profile))
 
     candidate_payload = {
         "schema_version": "winner_bank_candidate_v1",
@@ -348,6 +451,7 @@ def build_winner_bank_governance(
             "manual_promotion_required": True,
             "auto_promote_machine_top1": False,
             "final_decision_owner": "custom_gpt_plus_human",
+            "source": "shortlist_candidates",
         },
     }
     candidate_file.write_text(json.dumps(candidate_payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -384,6 +488,9 @@ def build_winner_bank_governance(
                 flags.append("WINNER_BANK_WORLD3D_DRIFT")
             if isinstance(hybrid_drift, (int, float)) and float(hybrid_drift) < 0.82:
                 flags.append("WINNER_BANK_HYBRID_DRIFT")
+            severity = _drift_severity(face_sim, body_sim, depth_sim, world3d_sim, hybrid_drift)
+            manual_focus = _drift_manual_focus(flags, entry, face_sim, body_sim, depth_sim, world3d_sim)
+            manual_review_prompts = _drift_review_prompts(flags, severity)
             drift_rows.append(
                 {
                     "image": entry.get("image"),
@@ -394,8 +501,20 @@ def build_winner_bank_governance(
                     "world3d_similarity_to_bank": _round_or_none(world3d_sim),
                     "hybrid_similarity_to_bank": _round_or_none(hybrid_drift),
                     "drift_flags": flags,
+                    "drift_severity": severity,
+                    "manual_focus": manual_focus,
+                    "manual_review_prompts": manual_review_prompts,
                 }
             )
+
+    drift_flag_counts: Dict[str, int] = {}
+    for row in drift_rows:
+        for flag in row.get("drift_flags") or []:
+            drift_flag_counts[flag] = drift_flag_counts.get(flag, 0) + 1
+    top_drift_risks = [
+        {"flag": flag, "count": count}
+        for flag, count in sorted(drift_flag_counts.items(), key=lambda pair: (-pair[1], pair[0]))[:6]
+    ]
 
     drift_payload = {
         "schema_version": "winner_bank_report_v1",
@@ -414,6 +533,7 @@ def build_winner_bank_governance(
             if not bool(curated.get("available"))
             else "review drift flags before admitting the winner into the training bank"
         ),
+        "top_drift_risks": top_drift_risks,
         "drift_rows": drift_rows,
         "manual_promotion_required": True,
     }

@@ -5,11 +5,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from .qa_admission import build_batch_admission_advice, build_candidate_admission_advice
+
 
 def _round_or_none(value: Optional[float], digits: int = 4) -> Optional[float]:
     if value is None:
         return None
     return round(float(value), digits)
+
+
+def _dedupe_keep_order(values: Sequence[str], limit: Optional[int] = None) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+        if limit is not None and len(out) >= int(limit):
+            break
+    return out
 
 
 def _top_reason_counts(items: Sequence[Dict[str, Any]], limit: int = 8) -> List[Dict[str, Any]]:
@@ -72,6 +88,16 @@ def _candidate_lookup(shot_selection: Dict[str, Any]) -> Dict[str, Dict[str, Any
             record_key = str(row.get("record_key") or row.get("image") or "").strip()
             if record_key:
                 lookup[record_key] = row
+    return lookup
+
+
+def _drift_flag_lookup(winner_bank_report: Optional[Dict[str, Any]]) -> Dict[str, List[str]]:
+    lookup: Dict[str, List[str]] = {}
+    report = winner_bank_report or {}
+    for row in report.get("drift_rows") or []:
+        record_key = str(row.get("record_key") or row.get("image") or "").strip()
+        if record_key:
+            lookup[record_key] = list(row.get("drift_flags") or [])
     return lookup
 
 
@@ -149,9 +175,45 @@ def _build_batch_summary(report_payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _build_ranked_review_packet(shot_selection: Dict[str, Any]) -> Dict[str, Any]:
+def _build_ranked_review_packet(
+    shot_selection: Dict[str, Any],
+    item_lookup: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
     groups_out: List[Dict[str, Any]] = []
     for group in shot_selection.get("groups") or []:
+        shortlist_rows: List[Dict[str, Any]] = []
+        for row in group.get("shortlist") or []:
+            enriched = dict(row)
+            record_key = str(row.get("record_key") or row.get("image") or "").strip()
+            item_row = item_lookup.get(record_key) or {}
+            if item_row:
+                enriched["master_consistency_card"] = item_row.get("master_consistency_card")
+                enriched["admission_advice"] = item_row.get("admission_advice")
+            shortlist_rows.append(enriched)
+        pairwise_rows: List[Dict[str, Any]] = []
+        for card in group.get("pairwise_compare_cards") or []:
+            enriched_card = dict(card)
+            top_row = item_lookup.get(str(card.get("top_image") or "").strip())
+            cand_row = item_lookup.get(str(card.get("candidate_image") or "").strip())
+            top_master = (top_row or {}).get("master_consistency_card") or {}
+            cand_master = (cand_row or {}).get("master_consistency_card") or {}
+            if top_row:
+                enriched_card["top_master_consistency"] = top_master
+            if cand_row:
+                enriched_card["candidate_master_consistency"] = cand_master
+                enriched_card["candidate_admission_advice"] = cand_row.get("admission_advice")
+            enriched_card["combined_manual_focus"] = _dedupe_keep_order(
+                list(card.get("manual_focus") or [])
+                + list(top_master.get("manual_focus") or [])
+                + list(cand_master.get("manual_focus") or []),
+                limit=8,
+            )
+            enriched_card["manual_review_prompts"] = _dedupe_keep_order(
+                list(top_master.get("manual_review_prompts") or [])
+                + list(cand_master.get("manual_review_prompts") or []),
+                limit=6,
+            )
+            pairwise_rows.append(enriched_card)
         groups_out.append(
             {
                 "group_key": group.get("group_key"),
@@ -165,8 +227,8 @@ def _build_ranked_review_packet(shot_selection: Dict[str, Any]) -> Dict[str, Any
                 "shortlist_size": group.get("shortlist_size"),
                 "review_guidance": list(group.get("review_guidance") or []),
                 "batch_reference": dict(group.get("batch_reference") or {}),
-                "shortlist": list(group.get("shortlist") or []),
-                "pairwise_compare_cards": list(group.get("pairwise_compare_cards") or []),
+                "shortlist": shortlist_rows,
+                "pairwise_compare_cards": pairwise_rows,
             }
         )
     return {
@@ -178,13 +240,19 @@ def _build_ranked_review_packet(shot_selection: Dict[str, Any]) -> Dict[str, Any
     }
 
 
-def _summarize_item(item: Dict[str, Any], candidate_row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _summarize_item(
+    item: Dict[str, Any],
+    candidate_row: Optional[Dict[str, Any]],
+    batch_admission: Dict[str, Any],
+    drift_flags: Optional[Sequence[str]],
+) -> Dict[str, Any]:
     debug = item.get("debug") or {}
     diagnostics = debug.get("collection_diagnostics") or {}
     garment = debug.get("garment_metrics") or {}
     depth_metrics = debug.get("depth_3d_metrics") or {}
+    master_consistency_card = debug.get("master_consistency_card") or {}
     record_key = (item.get("collection") or {}).get("input_relative_path") or item.get("image")
-    return {
+    row = {
         "image": item.get("image"),
         "record_key": record_key,
         "status": item.get("status"),
@@ -230,18 +298,37 @@ def _summarize_item(item: Dict[str, Any], candidate_row: Optional[Dict[str, Any]
             "score": diagnostics.get("outlier_score"),
             "reasons": list(diagnostics.get("outlier_reasons") or []),
         },
+        "master_consistency_card": master_consistency_card,
+        "review_focus": {
+            "manual_focus": list(master_consistency_card.get("manual_focus") or []),
+            "manual_review_prompts": list(master_consistency_card.get("manual_review_prompts") or []),
+        },
         "top_reasons": list(item.get("reasons") or [])[:10],
         "recommendations": list(item.get("recommendations") or [])[:6],
     }
+    row["admission_advice"] = build_candidate_admission_advice(row, batch_admission, drift_flags=drift_flags)
+    return row
 
 
-def _build_item_analysis(report_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _build_item_analysis(
+    report_payload: Dict[str, Any],
+    batch_admission: Dict[str, Any],
+    winner_bank_report: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     shot_selection = report_payload.get("shot_selection") or {}
     candidate_lookup = _candidate_lookup(shot_selection)
+    drift_lookup = _drift_flag_lookup(winner_bank_report)
     rows: List[Dict[str, Any]] = []
     for item in report_payload.get("items") or []:
         record_key = str(((item.get("collection") or {}).get("input_relative_path") or item.get("image") or "")).strip()
-        rows.append(_summarize_item(item, candidate_lookup.get(record_key)))
+        rows.append(
+            _summarize_item(
+                item,
+                candidate_lookup.get(record_key),
+                batch_admission,
+                drift_flags=drift_lookup.get(record_key),
+            )
+        )
     rows.sort(
         key=lambda row: (
             9999 if row.get("rank") is None else int(row.get("rank")),
@@ -261,8 +348,16 @@ def build_review_packet(
     winner_meta = report_payload.get("winner_bank_governance") or {}
     winner_bank_report = _load_json_if_exists(winner_meta.get("drift_report_file"))
     winner_bank_candidate = _load_json_if_exists(winner_meta.get("candidate_file"))
+    batch_summary = _build_batch_summary(report_payload)
+    batch_admission = build_batch_admission_advice(batch_summary, {"report": winner_bank_report})
+    item_rows = _build_item_analysis(report_payload, batch_admission, winner_bank_report)
+    item_lookup = {
+        str(row.get("record_key") or row.get("image") or "").strip(): row
+        for row in item_rows
+        if str(row.get("record_key") or row.get("image") or "").strip()
+    }
     review_packet = {
-        "schema_version": "review_packet_v1",
+        "schema_version": "review_packet_v1_1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "system_role": "evidence_only",
         "final_decision_owner": "custom_gpt_plus_human",
@@ -282,8 +377,11 @@ def build_review_packet(
             "winner_bank_candidate": winner_meta.get("candidate_file"),
             "winner_bank_report": winner_meta.get("drift_report_file"),
         },
-        "batch_summary": _build_batch_summary(report_payload),
-        "ranked_review_packet": _build_ranked_review_packet(report_payload.get("shot_selection") or {}),
+        "batch_summary": {
+            **batch_summary,
+            "admission_advice": batch_admission,
+        },
+        "ranked_review_packet": _build_ranked_review_packet(report_payload.get("shot_selection") or {}, item_lookup),
         "winner_bank_status": {
             "enabled": winner_meta.get("enabled"),
             "mode": winner_meta.get("mode"),
@@ -292,13 +390,23 @@ def build_review_packet(
             "curated_entry_count": winner_meta.get("curated_entry_count"),
             "candidate_entry_count": winner_meta.get("candidate_entry_count"),
             "drift_row_count": winner_meta.get("drift_row_count"),
+            "top_drift_risks": list((winner_bank_report or {}).get("top_drift_risks") or []),
+            "drift_highlights": [
+                {
+                    "image": row.get("image"),
+                    "drift_flags": list(row.get("drift_flags") or []),
+                    "drift_severity": row.get("drift_severity"),
+                    "manual_focus": list(row.get("manual_focus") or []),
+                }
+                for row in list((winner_bank_report or {}).get("drift_rows") or [])[:3]
+            ],
             "report": winner_bank_report,
             "candidate": {
                 "entry_count": (winner_bank_candidate or {}).get("entry_count"),
                 "target_profile": (winner_bank_candidate or {}).get("target_profile"),
             },
         },
-        "items": _build_item_analysis(report_payload),
+        "items": item_rows,
         "debug": {
             "report_meta": report_payload.get("report_meta"),
             "collection_summary": (report_payload.get("collection_aggregates") or {}).get("summary"),

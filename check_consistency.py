@@ -196,6 +196,7 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
     batch_gate = batch.get("batch_gate") or {}
     identity = batch.get("identity_summary") or {}
     geometry = batch.get("geometry_summary") or {}
+    admission = batch.get("admission_advice") or {}
     print("\n[Review Packet]")
     print(f"  Profile: {batch.get('target_profile')}")
     print(f"  Images : {batch.get('input_count')}")
@@ -215,6 +216,10 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
         f"world3d={geometry.get('batch_world3d_cohesion')}"
     )
     print(f"  Risks  : {batch.get('primary_risks') or []}")
+    print(
+        f"  Admission: target={admission.get('target_bucket')} "
+        f"| action={admission.get('suggested_action')} | blockers={admission.get('blockers') or []}"
+    )
     print(f"  Guidance: {batch.get('review_guidance') or []}")
 
 
@@ -225,15 +230,85 @@ def _print_winner_bank_summary(report: Dict[str, Any]) -> None:
     print(f"  Candidates : {report.get('candidate_entry_count')}")
     print(f"  Drift rows : {report.get('drift_row_count')}")
     print(f"  Next step  : {report.get('manual_next_step')}")
+    top_risks = list(report.get("top_drift_risks") or [])
+    if top_risks:
+        print(f"  Top risks  : {top_risks[:4]}")
+    drift_rows = list(report.get("drift_rows") or [])
+    for row in drift_rows[:2]:
+        print(
+            f"  Drift      : {row.get('image')} | severity={row.get('drift_severity')} "
+            f"| flags={list(row.get('drift_flags') or [])[:3]}"
+        )
+        focus = list(row.get("manual_focus") or [])[:2]
+        if focus:
+            print(f"               focus={focus}")
+
+
+def _review_packet_shortlist_entries(packet: Dict[str, Any]) -> List[Dict[str, Any]]:
+    groups = list((packet.get("ranked_review_packet") or {}).get("groups") or [])
+    if len(groups) == 0:
+        return []
+    return list((groups[0] or {}).get("shortlist") or [])
+
+
+def _print_shortlist_review_for_promotion(packet: Dict[str, Any]) -> None:
+    shortlist = _review_packet_shortlist_entries(packet)
+    if len(shortlist) == 0:
+        return
+    print("\n[Shortlist]")
+    for row in shortlist:
+        master = row.get("master_consistency_card") or {}
+        admission = row.get("admission_advice") or {}
+        print(
+            f"  rank {row.get('rank')}: {row.get('image')} | score={row.get('selection_score')} "
+            f"| master={master.get('hybrid_master_alignment')} | admit={admission.get('suggestion')}"
+        )
+        winner_reasons = list(row.get("winner_reasons") or [])[:2]
+        cautions = list((master.get("cautions") or []))[:2]
+        if winner_reasons:
+            print(f"    strengths: {winner_reasons}")
+        if cautions:
+            print(f"    cautions : {cautions}")
+        focus = list(master.get("manual_focus") or [])[:2]
+        if focus:
+            print(f"    focus    : {focus}")
+    groups = list((packet.get("ranked_review_packet") or {}).get("groups") or [])
+    pairwise = list((groups[0] if groups else {}).get("pairwise_compare_cards") or [])
+    if pairwise:
+        print("\n[Pairwise Focus]")
+        for card in pairwise[:2]:
+            print(
+                f"  top1={card.get('top_image')} vs rank{card.get('candidate_rank')}={card.get('candidate_image')} "
+                f"| focus={list(card.get('combined_manual_focus') or card.get('manual_focus') or [])[:3]}"
+            )
+            prompts = list(card.get("manual_review_prompts") or [])[:2]
+            if prompts:
+                print(f"    prompts : {prompts}")
+
+
+def _select_winner_candidate_by_rank(entries: Sequence[Dict[str, Any]], rank_value: int) -> Dict[str, Any]:
+    for entry in entries:
+        if int(entry.get("rank") or 0) == int(rank_value):
+            return dict(entry)
+    raise ValueError(f"winner shortlist rank not found: {rank_value}")
 
 
 def _select_winner_candidate_interactively(entries: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     print("[交互引导] 可晋升的候选 winner：")
     for index, entry in enumerate(entries, start=1):
+        master = entry.get("master_consistency_card") or {}
         print(
-            f"  {index}. {entry.get('image')} | score={entry.get('selection_score')} "
+            f"  {index}. rank={entry.get('rank')} {entry.get('image')} | score={entry.get('selection_score')} "
             f"| profile={entry.get('target_profile')} | reasons={list(entry.get('winner_reasons') or [])[:2]}"
         )
+        if master:
+            print(
+                f"     master={master.get('hybrid_master_alignment')} "
+                f"lane={master.get('lane_validity')} cautions={list(master.get('cautions') or [])[:2]}"
+            )
+            focus = list(master.get("manual_focus") or [])[:2]
+            if focus:
+                print(f"     focus={focus}")
     while True:
         choice = _prompt_text("请选择要写入 winner bank 的候选编号", "1")
         if choice.isdigit():
@@ -395,8 +470,14 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
                 f"({candidate_payload.get('reason')})"
             )
         entries = list(candidate_payload.get("entries") or [])
+        review_packet = _load_json_file(paths["review_packet"], "review packet") if paths["review_packet"].exists() else {}
+        if review_packet:
+            _print_review_packet_summary(review_packet)
+            _print_shortlist_review_for_promotion(review_packet)
         selected_entry: Optional[Dict[str, Any]] = None
-        if args.winner_image:
+        if args.winner_rank is not None:
+            selected_entry = _select_winner_candidate_by_rank(entries, args.winner_rank)
+        elif args.winner_image:
             needle = str(args.winner_image).strip()
             for entry in entries:
                 if needle in {
@@ -412,7 +493,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         elif args.interactive:
             selected_entry = _select_winner_candidate_interactively(entries)
         else:
-            raise ValueError("promote_winner requires --winner-image when multiple candidates exist")
+            raise ValueError("promote_winner requires --winner-rank or --winner-image when multiple candidates exist")
 
         manual_note = args.winner_note
         if args.interactive and not manual_note:
@@ -561,6 +642,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--winner-image",
         help="Image name or record_key promoted into outputs/winner_bank.json in promote_winner workflow.",
+    )
+    parser.add_argument(
+        "--winner-rank",
+        type=int,
+        help="Shortlist rank promoted into outputs/winner_bank.json in promote_winner workflow.",
     )
     parser.add_argument(
         "--winner-note",
