@@ -6,12 +6,14 @@ import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from .providers import build_provider_bundle
 from .qa_consistency import (
     apply_consistency_soft_gate,
     compute_body_constitution_confidence,
     score_body_constitution_measurements,
     score_depth_3d_lite_geometry,
 )
+from .qa_heavy_review import normalize_heavy_evidence_bundle
 from .qa_runtime import RuntimeContext
 from .qa_scoring import classify_module, fuse_overall, get_profile_policy
 from .qa_utils import dedupe_keep_order, get_face_size_bucket, get_quality_tolerances_by_face_size
@@ -19,6 +21,7 @@ from .qa_utils import dedupe_keep_order, get_face_size_bucket, get_quality_toler
 
 VALID_STATUSES = ("PASS", "WARN", "FAIL")
 BENCHMARK_LABEL_SCHEMA = "qa_benchmark_labels_v1"
+HEAVY_PROVIDER_COMPARE_SCHEMA = "qa_benchmark_heavy_compare_v1"
 DEFAULT_BENCHMARK_LABEL_ROLE = "candidate_review"
 DEFAULT_BENCHMARK_FROZEN_ROLE = "benchmark_frozen"
 
@@ -108,6 +111,16 @@ def _safe_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
     return bool(value)
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_ready(node) for key, node in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(node) for node in value]
+    return value
 
 
 def _normalize_string_list(value: Any, field_name: str, image_name: str) -> List[str]:
@@ -404,6 +417,14 @@ def _apply_profile_view_policy_like(
     return final_status, overall_state
 
 
+def _extract_heavy_evidence(debug: Dict[str, Any]) -> Dict[str, Any]:
+    if isinstance(debug.get("heavy_evidence", {}), dict):
+        return normalize_heavy_evidence_bundle(debug.get("heavy_evidence", {}))
+    if isinstance(debug.get("heavy_review", {}), dict):
+        return normalize_heavy_evidence_bundle(debug.get("heavy_review", {}))
+    return normalize_heavy_evidence_bundle({"ok": False, "reasons": ["HEAVY_EVIDENCE_MISSING"]})
+
+
 def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[str, Any]:
     target_profile = str(item.get("task_profile", runtime.config.review.active_profile))
     if target_profile not in runtime.config.task_profiles:
@@ -429,6 +450,7 @@ def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[st
     view_lane_detail = str(debug.get("view_lane_detail", ""))
     view_lane_detail_confidence = _safe_float(debug.get("view_lane_detail_confidence", 0.0), 0.0)
     view_lane_strictness_score = _safe_float(debug.get("view_lane_strictness_score", 0.0), 0.0)
+    heavy_evidence = _extract_heavy_evidence(debug)
 
     face_state, face_state_reasons = classify_module(
         runtime, face_score, face_conf, th["face_pass"], th["face_warn"], "face"
@@ -598,6 +620,7 @@ def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[st
             "view_lane_detail": view_lane_detail,
             "view_lane_detail_confidence": round(view_lane_detail_confidence, 6),
             "view_lane_strictness_score": round(view_lane_strictness_score, 6),
+            "heavy_evidence": heavy_evidence,
             "quality_flags": quality_flags,
             "quality_debug": quality_debug,
             "constitution_metrics": constitution_metrics,
@@ -606,6 +629,514 @@ def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[st
             "consistency_gate": consistency_gate_debug,
             "quality_gate_soft_hits": soft_hits,
             "quality_gate_hard_hits": hard_hits,
+        },
+    }
+
+
+def _resolve_heavy_image_root(
+    runtime: RuntimeContext,
+    report_payload: Dict[str, Any],
+    image_root: Optional[Path],
+) -> Optional[Path]:
+    if image_root is not None:
+        return image_root.resolve()
+
+    report_meta = report_payload.get("report_meta", {}) if isinstance(report_payload.get("report_meta", {}), dict) else {}
+    input_source = report_meta.get("input_source", {}) if isinstance(report_meta.get("input_source", {}), dict) else {}
+    root_dir = str(input_source.get("root_dir", "")).strip()
+    if root_dir:
+        candidate = Path(root_dir)
+        if candidate.exists():
+            return candidate.resolve()
+
+    runtime_input = getattr(getattr(runtime.config, "paths", None), "dir_input", None)
+    if runtime_input is not None and Path(runtime_input).exists():
+        return Path(runtime_input).resolve()
+    return None
+
+
+def _resolve_report_item_image_path(
+    item: Dict[str, Any],
+    *,
+    default_image_root: Optional[Path],
+) -> Tuple[Optional[Path], str]:
+    if not isinstance(item, dict):
+        return None, "invalid_report_item"
+
+    debug = item.get("debug", {}) if isinstance(item.get("debug", {}), dict) else {}
+    collection = (
+        debug.get("collection_metadata", {})
+        if isinstance(debug.get("collection_metadata", {}), dict)
+        else {}
+    )
+
+    absolute_candidates: List[Tuple[str, str]] = []
+    for key in ["source_path", "image_path", "input_path"]:
+        top_value = str(item.get(key, "")).strip()
+        if top_value:
+            absolute_candidates.append((top_value, f"item.{key}"))
+        debug_value = str(debug.get(key, "")).strip()
+        if debug_value:
+            absolute_candidates.append((debug_value, f"debug.{key}"))
+
+    for raw_path, source in absolute_candidates:
+        candidate = Path(raw_path)
+        if candidate.is_absolute() and candidate.exists():
+            return candidate.resolve(), source
+
+    relative_candidates: List[Tuple[str, str]] = []
+    input_relative = str(collection.get("input_relative_path", "")).strip()
+    if input_relative:
+        relative_candidates.append((input_relative, "collection_metadata.input_relative_path"))
+    image_name = str(item.get("image", "")).strip()
+    if image_name:
+        relative_candidates.append((image_name, "item.image"))
+
+    if default_image_root is not None:
+        for rel_path, source in relative_candidates:
+            candidate = (default_image_root / rel_path).resolve()
+            if candidate.exists():
+                return candidate, f"{source}@image_root"
+
+    for raw_path, source in absolute_candidates:
+        candidate = Path(raw_path)
+        if candidate.exists():
+            return candidate.resolve(), source
+
+    if len(relative_candidates) > 0 and default_image_root is None:
+        return None, "missing_image_root"
+    if len(relative_candidates) > 0:
+        return None, "image_not_found_under_root"
+    return None, "image_path_missing"
+
+
+def _new_heavy_metric_state() -> Dict[str, Any]:
+    return {
+        "num_items": 0,
+        "total_weight": 0.0,
+        "resolved_image_weight": 0.0,
+        "available_weight": 0.0,
+        "confidence_sum": 0.0,
+        "confidence_weight": 0.0,
+        "coverage_sum": 0.0,
+        "coverage_weight": 0.0,
+        "cache_hit_weight": 0.0,
+        "cache_write_weight": 0.0,
+        "cache_miss_weight": 0.0,
+        "failure_reasons": {},
+        "metric_stats": {},
+    }
+
+
+def _update_heavy_metric_state(
+    state: Dict[str, Any],
+    *,
+    heavy_evidence: Dict[str, Any],
+    weight: float,
+    image_resolved: bool,
+) -> None:
+    state["num_items"] += 1
+    state["total_weight"] += weight
+    if image_resolved:
+        state["resolved_image_weight"] += weight
+    if bool(heavy_evidence.get("available")):
+        state["available_weight"] += weight
+
+    confidence = heavy_evidence.get("confidence")
+    if isinstance(confidence, (int, float)):
+        state["confidence_sum"] += float(confidence) * weight
+        state["confidence_weight"] += weight
+
+    coverage = heavy_evidence.get("coverage")
+    if isinstance(coverage, (int, float)):
+        state["coverage_sum"] += float(coverage) * weight
+        state["coverage_weight"] += weight
+
+    cache_state = str(heavy_evidence.get("cache_state", "")).strip()
+    if cache_state == "hit":
+        state["cache_hit_weight"] += weight
+    elif cache_state == "write":
+        state["cache_write_weight"] += weight
+    elif cache_state == "miss":
+        state["cache_miss_weight"] += weight
+
+    failure_reason = str(heavy_evidence.get("failure_reason", "")).strip()
+    if failure_reason:
+        reasons = state["failure_reasons"]
+        reasons[failure_reason] = int(reasons.get(failure_reason, 0)) + 1
+
+    metric_stats = state["metric_stats"]
+    for metric in heavy_evidence.get("metrics", []) or []:
+        if not isinstance(metric, dict):
+            continue
+        metric_name = str(metric.get("metric_name", "")).strip()
+        if not metric_name:
+            continue
+        metric_state = metric_stats.setdefault(
+            metric_name,
+            {
+                "num_items": 0,
+                "value_sum": 0.0,
+                "value_weight": 0.0,
+                "confidence_sum": 0.0,
+                "confidence_weight": 0.0,
+                "coverage_sum": 0.0,
+                "coverage_weight": 0.0,
+            },
+        )
+        metric_state["num_items"] += 1
+
+        metric_value = metric.get("metric_value")
+        if isinstance(metric_value, (int, float)):
+            metric_state["value_sum"] += float(metric_value) * weight
+            metric_state["value_weight"] += weight
+
+        metric_conf = metric.get("confidence")
+        if isinstance(metric_conf, (int, float)):
+            metric_state["confidence_sum"] += float(metric_conf) * weight
+            metric_state["confidence_weight"] += weight
+
+        metric_cov = metric.get("coverage")
+        if isinstance(metric_cov, (int, float)):
+            metric_state["coverage_sum"] += float(metric_cov) * weight
+            metric_state["coverage_weight"] += weight
+
+
+def _finalize_heavy_metric_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    total_weight = float(state.get("total_weight", 0.0) or 0.0)
+    metric_means = {}
+    metric_stats = state.get("metric_stats", {})
+    if isinstance(metric_stats, dict):
+        for metric_name, metric_state in sorted(metric_stats.items()):
+            if not isinstance(metric_state, dict):
+                continue
+            metric_means[str(metric_name)] = {
+                "num_items": int(metric_state.get("num_items", 0) or 0),
+                "value_mean": None
+                if float(metric_state.get("value_weight", 0.0) or 0.0) <= 0.0
+                else round(
+                    _safe_div(
+                        float(metric_state.get("value_sum", 0.0) or 0.0),
+                        float(metric_state.get("value_weight", 0.0) or 0.0),
+                        default=0.0,
+                    ),
+                    6,
+                ),
+                "confidence_mean": None
+                if float(metric_state.get("confidence_weight", 0.0) or 0.0) <= 0.0
+                else round(
+                    _safe_div(
+                        float(metric_state.get("confidence_sum", 0.0) or 0.0),
+                        float(metric_state.get("confidence_weight", 0.0) or 0.0),
+                        default=0.0,
+                    ),
+                    6,
+                ),
+                "coverage_mean": None
+                if float(metric_state.get("coverage_weight", 0.0) or 0.0) <= 0.0
+                else round(
+                    _safe_div(
+                        float(metric_state.get("coverage_sum", 0.0) or 0.0),
+                        float(metric_state.get("coverage_weight", 0.0) or 0.0),
+                        default=0.0,
+                    ),
+                    6,
+                ),
+            }
+
+    return {
+        "num_items": int(state.get("num_items", 0) or 0),
+        "weight_sum": round(total_weight, 6),
+        "resolved_image_weight_ratio": round(
+            _safe_div(float(state.get("resolved_image_weight", 0.0) or 0.0), total_weight, default=0.0),
+            6,
+        ),
+        "available_weight_ratio": round(
+            _safe_div(float(state.get("available_weight", 0.0) or 0.0), total_weight, default=0.0),
+            6,
+        ),
+        "confidence_mean": None
+        if float(state.get("confidence_weight", 0.0) or 0.0) <= 0.0
+        else round(
+            _safe_div(
+                float(state.get("confidence_sum", 0.0) or 0.0),
+                float(state.get("confidence_weight", 0.0) or 0.0),
+                default=0.0,
+            ),
+            6,
+        ),
+        "coverage_mean": None
+        if float(state.get("coverage_weight", 0.0) or 0.0) <= 0.0
+        else round(
+            _safe_div(
+                float(state.get("coverage_sum", 0.0) or 0.0),
+                float(state.get("coverage_weight", 0.0) or 0.0),
+                default=0.0,
+            ),
+            6,
+        ),
+        "cache_hit_weight_ratio": round(
+            _safe_div(float(state.get("cache_hit_weight", 0.0) or 0.0), total_weight, default=0.0),
+            6,
+        ),
+        "cache_write_weight_ratio": round(
+            _safe_div(float(state.get("cache_write_weight", 0.0) or 0.0), total_weight, default=0.0),
+            6,
+        ),
+        "cache_miss_weight_ratio": round(
+            _safe_div(float(state.get("cache_miss_weight", 0.0) or 0.0), total_weight, default=0.0),
+            6,
+        ),
+        "failure_reasons": {
+            str(reason): int(count)
+            for reason, count in sorted((state.get("failure_reasons", {}) or {}).items(), key=lambda item: (-item[1], item[0]))
+        },
+        "metric_means": metric_means,
+    }
+
+
+def benchmark_heavy_provider_compare(
+    runtime: RuntimeContext,
+    report_path: Path,
+    labels_path: Path,
+    heavy_providers: Iterable[str],
+    *,
+    image_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    report_payload = _read_json_object(report_path)
+    report_items = report_payload.get("items", [])
+    label_bundle = load_benchmark_label_bundle(labels_path)
+    labels = label_bundle["items"]
+    items_by_name = {str(item.get("image", "")): item for item in report_items if str(item.get("image", "")).strip()}
+    compare_targets = dedupe_keep_order([str(name).strip() for name in heavy_providers if str(name).strip()])
+    if len(compare_targets) == 0:
+        raise ValueError("heavy provider compare requires at least one provider name")
+
+    default_image_root = _resolve_heavy_image_root(runtime, report_payload, image_root)
+    report_meta = report_payload.get("report_meta", {}) if isinstance(report_payload.get("report_meta", {}), dict) else {}
+    original_provider_policy = copy.deepcopy(runtime.config.provider_policy)
+    original_provider_bundle = runtime.providers
+
+    provider_results: Dict[str, Any] = {}
+    try:
+        for provider_name in compare_targets:
+            provider_policy = copy.deepcopy(original_provider_policy)
+            provider_policy["heavy_evidence"] = str(provider_name)
+            runtime.config.provider_policy = provider_policy
+            runtime.providers = build_provider_bundle(provider_policy)
+            provider_status = (
+                runtime.providers.describe_heavy_evidence()
+                if hasattr(runtime.providers, "describe_heavy_evidence")
+                else {}
+            )
+
+            aggregate_state = _new_heavy_metric_state()
+            by_expected_status = {status: _new_heavy_metric_state() for status in VALID_STATUSES}
+            missing_from_report: List[str] = []
+            missing_images: List[Dict[str, Any]] = []
+            per_item: List[Dict[str, Any]] = []
+
+            for image_name, label in labels.items():
+                report_item = items_by_name.get(image_name)
+                if report_item is None:
+                    missing_from_report.append(image_name)
+                    continue
+
+                weight = _safe_float(label.get("weight", 1.0), 1.0)
+                expected_status = str(label.get("expected_status", "")).strip().upper()
+                resolved_image_path, resolution_source = _resolve_report_item_image_path(
+                    report_item,
+                    default_image_root=default_image_root,
+                )
+
+                if resolved_image_path is None:
+                    heavy_evidence = normalize_heavy_evidence_bundle(
+                        {
+                            "ok": False,
+                            "provider_name": str(provider_status.get("provider_name") or provider_name),
+                            "provider_family": str(provider_status.get("provider_family") or "heavy_evidence"),
+                            "provider_version": str(provider_status.get("provider_version") or "unknown"),
+                            "reasons": [f"HEAVY_EVIDENCE_IMAGE_UNRESOLVED:{resolution_source}"],
+                            "summary": {"guidance": ["benchmark 对比缺少原图路径，无法回放重型证据。"]},
+                        }
+                    )
+                    missing_images.append(
+                        {
+                            "image": image_name,
+                            "reason": resolution_source,
+                            "reported_source_path": str(report_item.get("source_path", "")).strip() or None,
+                            "reported_input_relative_path": str(
+                                ((report_item.get("debug", {}) if isinstance(report_item.get("debug", {}), dict) else {})
+                                 .get("collection_metadata", {}) if isinstance(
+                                     (report_item.get("debug", {}) if isinstance(report_item.get("debug", {}), dict) else {}).get("collection_metadata", {}),
+                                     dict,
+                                 ) else {}
+                                ).get("input_relative_path", "")
+                            ).strip()
+                            or None,
+                        }
+                    )
+                else:
+                    heavy_evidence = normalize_heavy_evidence_bundle(
+                        runtime.providers.get_heavy_evidence(runtime, resolved_image_path)
+                    )
+
+                _update_heavy_metric_state(
+                    aggregate_state,
+                    heavy_evidence=heavy_evidence,
+                    weight=weight,
+                    image_resolved=resolved_image_path is not None,
+                )
+                if expected_status in by_expected_status:
+                    _update_heavy_metric_state(
+                        by_expected_status[expected_status],
+                        heavy_evidence=heavy_evidence,
+                        weight=weight,
+                        image_resolved=resolved_image_path is not None,
+                    )
+
+                per_item.append(
+                    {
+                        "image": image_name,
+                        "expected_status": expected_status,
+                        "weight": weight,
+                        "source_path": str(resolved_image_path) if resolved_image_path is not None else None,
+                        "source_resolution": resolution_source,
+                        "heavy_evidence": {
+                            "available": bool(heavy_evidence.get("available")),
+                            "provider_name": heavy_evidence.get("provider_name"),
+                            "provider_version": heavy_evidence.get("provider_version"),
+                            "confidence": heavy_evidence.get("confidence"),
+                            "coverage": heavy_evidence.get("coverage"),
+                            "cache_state": heavy_evidence.get("cache_state"),
+                            "failure_reason": heavy_evidence.get("failure_reason"),
+                            "summary": heavy_evidence.get("summary", {}),
+                        },
+                    }
+                )
+
+            heavy_metrics = _finalize_heavy_metric_state(aggregate_state)
+            evidence_readiness_score = round(
+                0.50 * float(heavy_metrics.get("available_weight_ratio", 0.0) or 0.0)
+                + 0.25 * float(heavy_metrics.get("confidence_mean", 0.0) or 0.0)
+                + 0.25 * float(heavy_metrics.get("coverage_mean", 0.0) or 0.0),
+                6,
+            )
+
+            provider_results[provider_name] = {
+                "provider_status": _json_ready(provider_status),
+                "comparison_scope": {
+                    "qa_role": "evidence_only",
+                    "status_replayed_from_saved_scores": True,
+                    "heavy_provider_changes_final_status": False,
+                    "heavy_provider_compare_focus": [
+                        "available_weight_ratio",
+                        "confidence_mean",
+                        "coverage_mean",
+                        "metric_means",
+                    ],
+                },
+                "derived_scores": {
+                    "evidence_readiness_score": evidence_readiness_score,
+                    "evidence_readiness_formula": "0.50*available + 0.25*confidence + 0.25*coverage",
+                },
+                "num_report_items": len(report_items),
+                "num_labeled_items": len(labels),
+                "num_compared_items": len(per_item),
+                "missing_from_report": sorted(missing_from_report),
+                "missing_images": missing_images,
+                "heavy_evidence_metrics": heavy_metrics,
+                "group_metrics": {
+                    status: _finalize_heavy_metric_state(state)
+                    for status, state in by_expected_status.items()
+                },
+                "items": per_item,
+            }
+    finally:
+        runtime.config.provider_policy = original_provider_policy
+        runtime.providers = original_provider_bundle
+
+    baseline_provider = compare_targets[0]
+    baseline_metrics = (
+        provider_results.get(baseline_provider, {}).get("heavy_evidence_metrics", {})
+        if isinstance(provider_results.get(baseline_provider, {}), dict)
+        else {}
+    )
+    ranking = []
+    deltas_vs_baseline = {}
+    for provider_name in compare_targets:
+        metrics = provider_results.get(provider_name, {}).get("heavy_evidence_metrics", {})
+        ranking.append(
+            {
+                "provider_name": provider_name,
+                "evidence_readiness_score": provider_results.get(provider_name, {}).get("derived_scores", {}).get(
+                    "evidence_readiness_score"
+                ),
+                "available_weight_ratio": metrics.get("available_weight_ratio"),
+                "confidence_mean": metrics.get("confidence_mean"),
+                "coverage_mean": metrics.get("coverage_mean"),
+            }
+        )
+        if provider_name == baseline_provider:
+            continue
+        deltas_vs_baseline[provider_name] = {
+            "available_weight_ratio_delta": round(
+                float(metrics.get("available_weight_ratio", 0.0) or 0.0)
+                - float(baseline_metrics.get("available_weight_ratio", 0.0) or 0.0),
+                6,
+            ),
+            "confidence_mean_delta": round(
+                float(metrics.get("confidence_mean", 0.0) or 0.0)
+                - float(baseline_metrics.get("confidence_mean", 0.0) or 0.0),
+                6,
+            ),
+            "coverage_mean_delta": round(
+                float(metrics.get("coverage_mean", 0.0) or 0.0)
+                - float(baseline_metrics.get("coverage_mean", 0.0) or 0.0),
+                6,
+            ),
+            "evidence_readiness_score_delta": round(
+                float(provider_results.get(provider_name, {}).get("derived_scores", {}).get("evidence_readiness_score", 0.0) or 0.0)
+                - float(provider_results.get(baseline_provider, {}).get("derived_scores", {}).get("evidence_readiness_score", 0.0) or 0.0),
+                6,
+            ),
+        }
+
+    ranking.sort(
+        key=lambda row: (
+            -float(row.get("evidence_readiness_score", 0.0) or 0.0),
+            -float(row.get("available_weight_ratio", 0.0) or 0.0),
+            -float(row.get("coverage_mean", 0.0) or 0.0),
+            str(row.get("provider_name", "")),
+        )
+    )
+
+    return {
+        "schema_version": HEAVY_PROVIDER_COMPARE_SCHEMA,
+        "report_file": str(report_path),
+        "labels_file": str(labels_path),
+        "report_schema_version": str(report_meta.get("schema_version", "")),
+        "label_bundle": {
+            "dataset_role": str(label_bundle.get("dataset_role", DEFAULT_BENCHMARK_LABEL_ROLE)),
+            "optuna_ready": bool(label_bundle.get("optuna_ready", False)),
+            "benchmark_id": str(label_bundle.get("benchmark_id", "")),
+            "freeze_tag": str(label_bundle.get("freeze_tag", "")),
+        },
+        "image_resolution": {
+            "requested_image_root": str(image_root.resolve()) if image_root is not None else None,
+            "default_image_root": str(default_image_root) if default_image_root is not None else None,
+        },
+        "comparison_scope": {
+            "qa_role": "evidence_only",
+            "heavy_provider_changes_final_status": False,
+            "compare_mode": "heavy_evidence_replay",
+            "note": "该对比只量化重型证据可用率、置信度、覆盖率和细项指标，不改写最终准入判断。",
+        },
+        "providers": provider_results,
+        "comparison": {
+            "baseline_provider": baseline_provider,
+            "ranking_by_evidence_readiness": ranking,
+            "deltas_vs_baseline": deltas_vs_baseline,
         },
     }
 
@@ -789,6 +1320,12 @@ def benchmark_report(
     view_lane_detail_matched_weight = 0.0
     reason_constraint_checked_weight = 0.0
     reason_constraint_matched_weight = 0.0
+    heavy_evidence_available_weight = 0.0
+    heavy_evidence_confidence_weighted_sum = 0.0
+    heavy_evidence_confidence_weight = 0.0
+    heavy_evidence_coverage_weighted_sum = 0.0
+    heavy_evidence_coverage_weight = 0.0
+    heavy_evidence_providers: set[str] = set()
     aggregate_by_view_lane: Dict[str, Dict[str, Any]] = {}
     aggregate_by_view_lane_detail: Dict[str, Dict[str, Any]] = {}
     aggregate_by_task_profile: Dict[str, Dict[str, Any]] = {}
@@ -822,6 +1359,7 @@ def benchmark_report(
             false_pass_weight += weight
 
         replay_debug = replayed.get("debug", {}) if isinstance(replayed.get("debug", {}), dict) else {}
+        heavy_evidence = _extract_heavy_evidence(replay_debug)
         predicted_view_lane = str(replay_debug.get("view_lane", ""))
         predicted_view_lane_detail = str(replay_debug.get("view_lane_detail", ""))
         predicted_reasons = set(str(reason) for reason in replayed.get("reasons", []))
@@ -868,6 +1406,20 @@ def benchmark_report(
         ]
         all_constraints_match = all(constraint_values) if constraint_values else None
 
+        if bool(heavy_evidence.get("available")):
+            heavy_evidence_available_weight += weight
+        heavy_provider = str(heavy_evidence.get("provider_name", "")).strip()
+        if heavy_provider:
+            heavy_evidence_providers.add(heavy_provider)
+        heavy_confidence = heavy_evidence.get("confidence", None)
+        if isinstance(heavy_confidence, (int, float)):
+            heavy_evidence_confidence_weighted_sum += float(heavy_confidence) * weight
+            heavy_evidence_confidence_weight += weight
+        heavy_coverage = heavy_evidence.get("coverage", None)
+        if isinstance(heavy_coverage, (int, float)):
+            heavy_evidence_coverage_weighted_sum += float(heavy_coverage) * weight
+            heavy_evidence_coverage_weight += weight
+
         view_lane_key = predicted_view_lane or "unknown"
         view_lane_detail_key = predicted_view_lane_detail or "unknown"
         task_profile_key = str(replayed["task_profile"] or "unknown")
@@ -898,6 +1450,15 @@ def benchmark_report(
                 "scores": replayed["scores"],
                 "module_state": replayed["module_state"],
                 "reasons": replayed["reasons"],
+                "heavy_evidence": {
+                    "available": bool(heavy_evidence.get("available")),
+                    "provider_name": heavy_evidence.get("provider_name"),
+                    "provider_version": heavy_evidence.get("provider_version"),
+                    "confidence": heavy_evidence.get("confidence"),
+                    "coverage": heavy_evidence.get("coverage"),
+                    "failure_reason": heavy_evidence.get("failure_reason"),
+                    "summary": heavy_evidence.get("summary", {}),
+                },
                 "agreement": {
                     "task_profile_match": task_profile_match,
                     "view_lane_match": view_lane_match,
@@ -982,6 +1543,16 @@ def benchmark_report(
             "view_lane_checked_weight": round(view_lane_checked_weight, 6),
             "view_lane_detail_checked_weight": round(view_lane_detail_checked_weight, 6),
             "reason_constraint_checked_weight": round(reason_constraint_checked_weight, 6),
+        },
+        "heavy_evidence_metrics": {
+            "available_weight_ratio": round(_safe_div(heavy_evidence_available_weight, total_weight, default=0.0), 6),
+            "confidence_mean": None
+            if heavy_evidence_confidence_weight <= 0.0
+            else round(_safe_div(heavy_evidence_confidence_weighted_sum, heavy_evidence_confidence_weight, default=0.0), 6),
+            "coverage_mean": None
+            if heavy_evidence_coverage_weight <= 0.0
+            else round(_safe_div(heavy_evidence_coverage_weighted_sum, heavy_evidence_coverage_weight, default=0.0), 6),
+            "providers": sorted(heavy_evidence_providers),
         },
         "class_metrics": {
             status: {key: round(value, 6) for key, value in metrics.items()}

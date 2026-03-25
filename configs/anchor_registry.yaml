@@ -33,23 +33,6 @@ anchors:
     supports:
       - body_gold_front_core
       - constitution_master
-  ref_3_upper_support_94:
-    role: UPPER_SUPPORT
-    anchor_tier: support
-    priority: 3
-    required_default: false
-    path: ${PROJECT_ROOT}/anchors/upper/Task-63987060-94-1.png
-    view_bucket: front
-    view_side: center
-    body_plane: frontal
-    owns:
-      - clavicle_boundary
-      - shoulder_line
-      - upper_body_edge
-    supports:
-      - shoulder_drift
-      - neck_drift
-      - clavicle_drift
   ref_3_upper_support_97:
     role: UPPER_SUPPORT
     anchor_tier: support
@@ -99,11 +82,15 @@ anchors:
       - profile_like_identity
 
 rules:
+  face_truth_anchor: ref_1_face_master
+  body_truth_anchor: ref_2_full_body_master
+  upper_support_anchor: ref_3_upper_support_97
   face_conflict_winner: ref_1_face_master
   body_conflict_winner: ref_2_full_body_master
   face_identity_policy: absolute_only
   body_master_policy: absolute_only
   support_anchor_policy: assist_only
+  upper_support_policy: single_active_support_only
   upper_support_activation:
     - shoulder_drift
     - neck_drift

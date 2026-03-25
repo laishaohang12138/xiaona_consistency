@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 
+from .providers import HeavyEvidenceProvider
 from .qa_utils import image_read_bgr
 
 try:
@@ -29,6 +32,11 @@ except Exception:  # pragma: no cover - optional heavy dependency
 
 _HEAVY_MODEL_ID = "mattmdjaga/segformer_b2_clothes"
 _HEAVY_BUNDLE: Optional[Dict[str, Any]] = None
+HEAVY_EVIDENCE_SCHEMA = "heavy_evidence_v1"
+HEAVY_CACHE_SCHEMA = "heavy_parser_metrics_v1"
+_HEAVY_PROVIDER_NAME = "segformer_parser"
+_HEAVY_PROVIDER_FAMILY = "semantic_segmentation"
+_HEAVY_PROVIDER_VERSION = _HEAVY_MODEL_ID
 
 _GARMENT_LABELS = {
     "Upper-clothes",
@@ -76,6 +84,29 @@ def _round_or_none(value: Optional[float], digits: int = 4) -> Optional[float]:
     if value is None:
         return None
     return round(float(value), digits)
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _json_ready_heavy_value(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return [float(item) for item in value.reshape(-1).tolist()]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): _json_ready_heavy_value(node) for key, node in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready_heavy_value(node) for node in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value
 
 
 def _normalize_embedding(value: Any) -> Optional[np.ndarray]:
@@ -143,6 +174,349 @@ def _weighted_geometric_mean(items: Sequence[tuple[Optional[float], float]], flo
     return float(np.exp(numerator / denominator))
 
 
+def _signature_summary(signature: Any, *, name: str) -> Dict[str, Any]:
+    vector = _normalize_embedding(signature)
+    return {
+        "kind": "signature",
+        "name": name,
+        "available": vector is not None,
+        "dimension": int(vector.shape[0]) if vector is not None else 0,
+    }
+
+
+def _metric_record(
+    metric_name: str,
+    metric_value: Any,
+    *,
+    confidence: Optional[float],
+    coverage: Optional[float],
+    lane_scope: str,
+    failure_reason: Optional[str],
+    provider_name: str,
+    provider_family: str,
+    provider_version: str,
+    signature_ref: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    metric_numeric = _float_or_none(metric_value)
+    return {
+        "metric_name": str(metric_name),
+        "metric_value": _round_or_none(metric_numeric),
+        "confidence": _round_or_none(confidence),
+        "coverage": _round_or_none(coverage),
+        "provider_name": str(provider_name),
+        "provider_family": str(provider_family),
+        "provider_version": str(provider_version),
+        "lane_scope": str(lane_scope),
+        "failure_reason": str(failure_reason or "").strip() or None,
+        "feature_vector_or_signature": signature_ref or {
+            "kind": "scalar",
+            "name": str(metric_name),
+            "available": metric_numeric is not None,
+        },
+    }
+
+
+def build_heavy_evidence_bundle(
+    metrics: Dict[str, Any],
+    *,
+    lane_scope: str,
+    advisory_only: bool = True,
+    mode: str = "shortlist_only_advisory",
+    record_key: str = "",
+    image: str = "",
+) -> Dict[str, Any]:
+    raw = metrics if isinstance(metrics, dict) else {}
+    provider_name = str(raw.get("provider_name") or _HEAVY_PROVIDER_NAME)
+    provider_family = str(raw.get("provider_family") or _HEAVY_PROVIDER_FAMILY)
+    provider_version = str(raw.get("provider_version") or _HEAVY_PROVIDER_VERSION)
+    reasons = [str(reason) for reason in raw.get("reasons", []) if str(reason).strip()]
+    failure_reason = reasons[0] if len(reasons) > 0 else None
+    confidence = _float_or_none(raw.get("confidence"))
+    coverage = _float_or_none(raw.get("coverage"))
+    metric_specs = raw.get("metric_specs")
+    boundary_signature_ref = _signature_summary(raw.get("boundary_signature"), name="boundary_signature")
+    visible_signature_ref = _signature_summary(raw.get("visible_body_signature"), name="visible_body_signature")
+    model_id = raw.get("model_id")
+    if model_id is None and provider_name == _HEAVY_PROVIDER_NAME:
+        model_id = _HEAVY_MODEL_ID
+
+    signature_refs: Dict[str, Any]
+    summary_node: Dict[str, Any]
+    if isinstance(metric_specs, list) and len(metric_specs) > 0:
+        metric_rows = []
+        signature_refs = dict(raw.get("signature_refs") or {}) if isinstance(raw.get("signature_refs"), dict) else {}
+        coverage_values: List[float] = []
+        for spec in metric_specs:
+            if not isinstance(spec, dict):
+                continue
+            metric_name = str(spec.get("metric_name") or "").strip()
+            if not metric_name:
+                continue
+            metric_value = spec.get("metric_value")
+            metric_conf = _float_or_none(spec.get("confidence"))
+            if metric_conf is None:
+                metric_conf = confidence
+            metric_cov = _float_or_none(spec.get("coverage"))
+            if metric_cov is None:
+                metric_cov = 1.0 if _float_or_none(metric_value) is not None else 0.0
+            signature_ref = spec.get("signature_ref") if isinstance(spec.get("signature_ref"), dict) else None
+            metric_rows.append(
+                _metric_record(
+                    metric_name,
+                    metric_value,
+                    confidence=metric_conf,
+                    coverage=metric_cov,
+                    lane_scope=str(spec.get("lane_scope") or lane_scope),
+                    failure_reason=str(spec.get("failure_reason") or failure_reason or "").strip() or None,
+                    provider_name=str(spec.get("provider_name") or provider_name),
+                    provider_family=str(spec.get("provider_family") or provider_family),
+                    provider_version=str(spec.get("provider_version") or provider_version),
+                    signature_ref=signature_ref,
+                )
+            )
+            coverage_values.append(float(metric_cov))
+            if signature_ref is not None:
+                signature_refs.setdefault(metric_name, signature_ref)
+        if coverage is None:
+            coverage = float(sum(coverage_values) / max(1, len(coverage_values))) if coverage_values else 0.0
+        summary_node = dict(raw.get("summary") or {}) if isinstance(raw.get("summary"), dict) else {}
+        if len(summary_node) == 0:
+            summary_node = {
+                "candidate_count": raw.get("candidate_count"),
+                "guidance": list(raw.get("guidance") or [])[:4],
+            }
+    else:
+        core_metric_names = [
+            "parser_boundary_alignment",
+            "parser_visible_body_alignment",
+            "parser_consensus_score",
+            "enhanced_selection_score",
+            "garment_coverage_ratio",
+            "upper_cloth_coverage",
+            "lower_cloth_coverage",
+            "neckline_depth_ratio",
+            "shoulder_cloth_balance",
+            "visible_body_ratio",
+            "visible_face_ratio",
+            "visible_arm_ratio",
+            "visible_leg_ratio",
+        ]
+        available_metric_count = sum(1 for key in core_metric_names if _float_or_none(raw.get(key)) is not None)
+        if coverage is None:
+            coverage = float(available_metric_count / max(1, len(core_metric_names)))
+        metric_rows = [
+            _metric_record(
+                "parser_confidence",
+                confidence,
+                confidence=confidence,
+                coverage=1.0 if confidence is not None else 0.0,
+                lane_scope=lane_scope,
+                failure_reason=failure_reason,
+                provider_name=provider_name,
+                provider_family=provider_family,
+                provider_version=provider_version,
+            ),
+            _metric_record(
+                "parser_boundary_alignment",
+                raw.get("parser_boundary_alignment"),
+                confidence=confidence,
+                coverage=1.0 if _float_or_none(raw.get("parser_boundary_alignment")) is not None else 0.0,
+                lane_scope=lane_scope,
+                failure_reason=failure_reason,
+                provider_name=provider_name,
+                provider_family=provider_family,
+                provider_version=provider_version,
+                signature_ref=boundary_signature_ref,
+            ),
+            _metric_record(
+                "parser_visible_body_alignment",
+                raw.get("parser_visible_body_alignment"),
+                confidence=confidence,
+                coverage=1.0 if _float_or_none(raw.get("parser_visible_body_alignment")) is not None else 0.0,
+                lane_scope=lane_scope,
+                failure_reason=failure_reason,
+                provider_name=provider_name,
+                provider_family=provider_family,
+                provider_version=provider_version,
+                signature_ref=visible_signature_ref,
+            ),
+            _metric_record(
+                "parser_consensus_score",
+                raw.get("parser_consensus_score"),
+                confidence=confidence,
+                coverage=1.0 if _float_or_none(raw.get("parser_consensus_score")) is not None else 0.0,
+                lane_scope=lane_scope,
+                failure_reason=failure_reason,
+                provider_name=provider_name,
+                provider_family=provider_family,
+                provider_version=provider_version,
+            ),
+            _metric_record(
+                "enhanced_selection_score",
+                raw.get("enhanced_selection_score"),
+                confidence=confidence,
+                coverage=1.0 if _float_or_none(raw.get("enhanced_selection_score")) is not None else 0.0,
+                lane_scope=lane_scope,
+                failure_reason=failure_reason,
+                provider_name=provider_name,
+                provider_family=provider_family,
+                provider_version=provider_version,
+            ),
+        ]
+        for metric_name in [
+            "garment_coverage_ratio",
+            "upper_cloth_coverage",
+            "lower_cloth_coverage",
+            "neckline_depth_ratio",
+            "shoulder_cloth_balance",
+            "visible_body_ratio",
+            "visible_face_ratio",
+            "visible_arm_ratio",
+            "visible_leg_ratio",
+            "hem_depth_ratio",
+        ]:
+            metric_rows.append(
+                _metric_record(
+                    metric_name,
+                    raw.get(metric_name),
+                    confidence=confidence,
+                    coverage=1.0 if _float_or_none(raw.get(metric_name)) is not None else 0.0,
+                    lane_scope=lane_scope,
+                    failure_reason=failure_reason,
+                    provider_name=provider_name,
+                    provider_family=provider_family,
+                    provider_version=provider_version,
+                )
+            )
+        signature_refs = {
+            "boundary_signature": boundary_signature_ref,
+            "visible_body_signature": visible_signature_ref,
+        }
+        summary_node = {
+            "parser_consensus_score": _round_or_none(_float_or_none(raw.get("parser_consensus_score"))),
+            "enhanced_selection_score": _round_or_none(_float_or_none(raw.get("enhanced_selection_score"))),
+            "garment_coverage_ratio": _round_or_none(_float_or_none(raw.get("garment_coverage_ratio"))),
+            "upper_cloth_coverage": _round_or_none(_float_or_none(raw.get("upper_cloth_coverage"))),
+            "lower_cloth_coverage": _round_or_none(_float_or_none(raw.get("lower_cloth_coverage"))),
+            "neckline_depth_ratio": _round_or_none(_float_or_none(raw.get("neckline_depth_ratio"))),
+            "shoulder_cloth_balance": _round_or_none(_float_or_none(raw.get("shoulder_cloth_balance"))),
+            "visible_body_ratio": _round_or_none(_float_or_none(raw.get("visible_body_ratio"))),
+            "visible_face_ratio": _round_or_none(_float_or_none(raw.get("visible_face_ratio"))),
+            "visible_arm_ratio": _round_or_none(_float_or_none(raw.get("visible_arm_ratio"))),
+            "visible_leg_ratio": _round_or_none(_float_or_none(raw.get("visible_leg_ratio"))),
+            "rank_in_heavy_review": raw.get("rank_in_heavy_review"),
+            "consensus_top_image": raw.get("consensus_top_image"),
+            "candidate_count": raw.get("candidate_count"),
+            "cache_hit_count": raw.get("cache_hit_count"),
+            "cache_miss_count": raw.get("cache_miss_count"),
+            "cache_write_count": raw.get("cache_write_count"),
+            "guidance": list(raw.get("guidance") or [])[:4],
+        }
+
+    if coverage is None:
+        coverage = 0.0
+
+    available = bool(raw.get("ok")) or confidence is not None or len(reasons) == 0
+    return {
+        "schema_version": HEAVY_EVIDENCE_SCHEMA,
+        "provider_name": provider_name,
+        "provider_family": provider_family,
+        "provider_version": provider_version,
+        "model_id": model_id,
+        "device": raw.get("device"),
+        "mode": str(mode),
+        "advisory_only": bool(advisory_only),
+        "lane_scope": str(lane_scope),
+        "record_key": str(record_key or raw.get("record_key") or "").strip(),
+        "image": str(image or raw.get("image") or "").strip(),
+        "source_path": str(raw.get("source_path") or "").strip() or None,
+        "cache_key": str(raw.get("cache_key") or "").strip() or None,
+        "cache_file": str(raw.get("cache_file") or "").strip() or None,
+        "cache_state": str(raw.get("cache_state") or "").strip() or None,
+        "available": bool(available),
+        "failure_reason": str(failure_reason or "").strip() or None,
+        "confidence": _round_or_none(confidence),
+        "coverage": _round_or_none(coverage),
+        "metrics": metric_rows,
+        "signature_refs": signature_refs,
+        "summary": summary_node,
+        "reasons": reasons[:8],
+    }
+
+
+def normalize_heavy_evidence_bundle(node: Any) -> Dict[str, Any]:
+    if isinstance(node, dict) and str(node.get("schema_version", "")).strip() == HEAVY_EVIDENCE_SCHEMA:
+        return {
+            **node,
+            "provider_name": str(node.get("provider_name") or _HEAVY_PROVIDER_NAME),
+            "provider_family": str(node.get("provider_family") or _HEAVY_PROVIDER_FAMILY),
+            "provider_version": str(node.get("provider_version") or _HEAVY_PROVIDER_VERSION),
+            "mode": str(node.get("mode") or "shortlist_only_advisory"),
+            "advisory_only": bool(node.get("advisory_only", True)),
+            "source_path": str(node.get("source_path") or "").strip() or None,
+            "cache_key": str(node.get("cache_key") or "").strip() or None,
+            "cache_file": str(node.get("cache_file") or "").strip() or None,
+            "cache_state": str(node.get("cache_state") or "").strip() or None,
+            "metrics": list(node.get("metrics") or []),
+            "summary": dict(node.get("summary") or {}),
+            "signature_refs": dict(node.get("signature_refs") or {}),
+            "reasons": [str(reason) for reason in node.get("reasons", []) if str(reason).strip()],
+        }
+    if not isinstance(node, dict):
+        return build_heavy_evidence_bundle(
+            {"ok": False, "reasons": ["HEAVY_EVIDENCE_MISSING"]},
+            lane_scope="report_item",
+        )
+    return build_heavy_evidence_bundle(node, lane_scope=str(node.get("lane_scope") or "report_item"))
+
+
+class SegformerHeavyEvidenceProvider(HeavyEvidenceProvider):
+    provider_name = _HEAVY_PROVIDER_NAME
+    provider_family = _HEAVY_PROVIDER_FAMILY
+    provider_version = _HEAVY_PROVIDER_VERSION
+
+    def get_provider_status(self) -> Dict[str, Any]:
+        bundle = _load_heavy_bundle()
+        return {
+            "enabled": bool(bundle.get("available")),
+            "provider_name": self.provider_name,
+            "provider_family": self.provider_family,
+            "provider_version": self.provider_version,
+            "model_id": bundle.get("model_id") or _HEAVY_MODEL_ID,
+            "device": bundle.get("device"),
+            "reason": bundle.get("reason"),
+            "cache_schema_version": HEAVY_CACHE_SCHEMA,
+            "evidence_schema_version": HEAVY_EVIDENCE_SCHEMA,
+        }
+
+    def get_heavy_evidence_metrics(
+        self,
+        runtime: Any,
+        image_path: Path,
+    ) -> Dict[str, Any]:
+        bundle = _load_heavy_bundle()
+        resolved_path = Path(image_path).resolve()
+        if not bool(bundle.get("available")):
+            return {
+                "ok": False,
+                "provider_name": self.provider_name,
+                "provider_family": self.provider_family,
+                "provider_version": self.provider_version,
+                "model_id": bundle.get("model_id") or _HEAVY_MODEL_ID,
+                "device": bundle.get("device"),
+                "source_path": str(resolved_path),
+                "reasons": [f"HEAVY_REVIEW_UNAVAILABLE:{bundle.get('reason') or 'unavailable'}"],
+            }
+        metrics = _extract_parser_metrics_cached(runtime, resolved_path)
+        metrics.setdefault("provider_name", self.provider_name)
+        metrics.setdefault("provider_family", self.provider_family)
+        metrics.setdefault("provider_version", self.provider_version)
+        metrics.setdefault("model_id", bundle.get("model_id") or _HEAVY_MODEL_ID)
+        metrics.setdefault("device", bundle.get("device"))
+        metrics.setdefault("source_path", str(resolved_path))
+        return metrics
+
+
 def _load_heavy_bundle() -> Dict[str, Any]:
     global _HEAVY_BUNDLE
     if _HEAVY_BUNDLE is not None:
@@ -181,6 +555,133 @@ def _load_heavy_bundle() -> Dict[str, Any]:
         bundle["reason"] = f"model_load_failed:{exc}"
     _HEAVY_BUNDLE = bundle
     return bundle
+
+
+def _heavy_cache_dir(runtime: Any) -> Path:
+    config = getattr(runtime, "config", None)
+    paths = getattr(config, "paths", None)
+    cache_dir = getattr(paths, "dir_heavy_cache", None)
+    if cache_dir is None:
+        output_dir = getattr(paths, "dir_output", Path.cwd() / "outputs")
+        cache_dir = Path(output_dir) / "heavy_evidence_cache"
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _heavy_standardization_config(runtime: Any) -> Dict[str, Any]:
+    standardization = getattr(getattr(runtime, "config", None), "standardization", None)
+    return {
+        "enabled": bool(getattr(standardization, "enabled", True)),
+        "long_side": int(getattr(standardization, "long_side", 0) or 0),
+        "upscale_small_input": bool(getattr(standardization, "upscale_small_input", False)),
+    }
+
+
+def _build_heavy_cache_key(runtime: Any, image_path: Path) -> tuple[str, Dict[str, Any]]:
+    resolved = image_path.resolve()
+    stat = resolved.stat()
+    standardization = _heavy_standardization_config(runtime)
+    payload = {
+        "provider_name": _HEAVY_PROVIDER_NAME,
+        "provider_version": _HEAVY_PROVIDER_VERSION,
+        "source_path": str(resolved),
+        "size_bytes": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "standardization": standardization,
+    }
+    digest = hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    return digest, payload
+
+
+def _serialize_parser_metrics(
+    metrics: Dict[str, Any],
+    *,
+    image_path: Path,
+    cache_key: str,
+    runtime: Any,
+) -> Dict[str, Any]:
+    source_meta = _build_heavy_cache_key(runtime, image_path)[1]
+    return {
+        "schema_version": HEAVY_CACHE_SCHEMA,
+        "provider_name": _HEAVY_PROVIDER_NAME,
+        "provider_family": _HEAVY_PROVIDER_FAMILY,
+        "provider_version": _HEAVY_PROVIDER_VERSION,
+        "cache_key": cache_key,
+        "source": source_meta,
+        "metrics": _json_ready_heavy_value(metrics),
+    }
+
+
+def _restore_parser_metrics(payload: Dict[str, Any]) -> Dict[str, Any]:
+    metrics = dict(payload.get("metrics") or {})
+    metrics["boundary_signature"] = _normalize_embedding(metrics.get("boundary_signature"))
+    metrics["visible_body_signature"] = _normalize_embedding(metrics.get("visible_body_signature"))
+    metrics["cache_key"] = str(payload.get("cache_key") or "").strip() or None
+    metrics["source_path"] = str(((payload.get("source") or {}).get("source_path")) or "").strip() or None
+    return metrics
+
+
+def _load_cached_parser_metrics(runtime: Any, image_path: Path) -> tuple[Optional[Dict[str, Any]], str, Path]:
+    cache_key, _ = _build_heavy_cache_key(runtime, image_path)
+    cache_file = _heavy_cache_dir(runtime) / f"{cache_key}.json"
+    if not cache_file.exists():
+        return None, cache_key, cache_file
+    try:
+        payload = json.loads(cache_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None, cache_key, cache_file
+    if str(payload.get("schema_version") or "") != HEAVY_CACHE_SCHEMA:
+        return None, cache_key, cache_file
+    if str(payload.get("provider_version") or "") != _HEAVY_PROVIDER_VERSION:
+        return None, cache_key, cache_file
+    metrics = _restore_parser_metrics(payload)
+    metrics["cache_key"] = cache_key
+    metrics["cache_file"] = str(cache_file)
+    metrics["cache_state"] = "hit"
+    return metrics, cache_key, cache_file
+
+
+def _write_cached_parser_metrics(
+    runtime: Any,
+    image_path: Path,
+    cache_key: str,
+    cache_file: Path,
+    metrics: Dict[str, Any],
+) -> bool:
+    try:
+        payload = _serialize_parser_metrics(metrics, image_path=image_path, cache_key=cache_key, runtime=runtime)
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def _extract_parser_metrics_cached(runtime: Any, image_path: Path) -> Dict[str, Any]:
+    cached, cache_key, cache_file = _load_cached_parser_metrics(runtime, image_path)
+    if cached is not None:
+        return cached
+    img = image_read_bgr(image_path, runtime.config.standardization)
+    if img is None:
+        return {
+            "ok": False,
+            "model_id": _HEAVY_MODEL_ID,
+            "device": None,
+            "reasons": ["HEAVY_REVIEW_IMAGE_READ_ERROR"],
+            "cache_key": cache_key,
+            "cache_file": str(cache_file),
+            "cache_state": "miss",
+            "source_path": str(image_path.resolve()),
+        }
+    metrics = _extract_parser_metrics(img)
+    metrics["cache_key"] = cache_key
+    metrics["cache_file"] = str(cache_file)
+    metrics["cache_state"] = "miss"
+    metrics["source_path"] = str(image_path.resolve())
+    if bool(metrics.get("ok")) and _write_cached_parser_metrics(runtime, image_path, cache_key, cache_file, metrics):
+        metrics["cache_state"] = "write"
+    return metrics
 
 
 def _mask_ratio(mask: np.ndarray, roi: Tuple[int, int, int, int], subject_mask: np.ndarray) -> Optional[float]:
@@ -417,25 +918,65 @@ def apply_shortlist_heavy_review(
 ) -> Dict[str, Any]:
     del target_profile
     groups = shot_selection.get("groups") or []
-    bundle = _load_heavy_bundle()
+    provider_status = (
+        runtime.providers.describe_heavy_evidence()
+        if hasattr(getattr(runtime, "providers", None), "describe_heavy_evidence")
+        else SegformerHeavyEvidenceProvider().get_provider_status()
+    )
     summary: Dict[str, Any] = {
-        "enabled": bool(bundle.get("available")),
+        "enabled": bool(provider_status.get("enabled")),
         "advisory_only": True,
         "mode": "shortlist_only",
-        "model_id": bundle.get("model_id"),
-        "device": bundle.get("device"),
-        "reason": bundle.get("reason"),
+        "evidence_schema_version": str(provider_status.get("evidence_schema_version") or HEAVY_EVIDENCE_SCHEMA),
+        "provider_name": str(provider_status.get("provider_name") or _HEAVY_PROVIDER_NAME),
+        "provider_family": str(provider_status.get("provider_family") or _HEAVY_PROVIDER_FAMILY),
+        "provider_version": str(provider_status.get("provider_version") or _HEAVY_PROVIDER_VERSION),
+        "model_id": provider_status.get("model_id"),
+        "device": provider_status.get("device"),
+        "reason": provider_status.get("reason"),
         "group_count": len(groups),
         "processed_group_count": 0,
         "processed_candidate_count": 0,
+        "cache_dir": str(_heavy_cache_dir(runtime)),
+        "cache_hit_count": 0,
+        "cache_miss_count": 0,
+        "cache_write_count": 0,
     }
-    if not bool(bundle.get("available")):
+    if not bool(provider_status.get("enabled")):
         shot_selection["heavy_review_summary"] = summary
+        shot_selection["heavy_evidence_summary"] = build_heavy_evidence_bundle(
+            {
+                "ok": False,
+                "provider_name": summary.get("provider_name"),
+                "provider_family": summary.get("provider_family"),
+                "provider_version": summary.get("provider_version"),
+                "model_id": summary.get("model_id"),
+                "device": summary.get("device"),
+                "reasons": [f"HEAVY_REVIEW_UNAVAILABLE:{summary.get('reason') or 'unavailable'}"],
+            },
+            lane_scope="shot_selection",
+            advisory_only=True,
+            mode="shortlist_only_advisory",
+        )
         for group in groups:
             group["heavy_review"] = {
                 "enabled": False,
-                "reason": bundle.get("reason") or "unavailable",
+                "reason": summary.get("reason") or "unavailable",
             }
+            group["heavy_evidence"] = build_heavy_evidence_bundle(
+                {
+                    "ok": False,
+                    "provider_name": summary.get("provider_name"),
+                    "provider_family": summary.get("provider_family"),
+                    "provider_version": summary.get("provider_version"),
+                    "model_id": summary.get("model_id"),
+                    "device": summary.get("device"),
+                    "reasons": [f"HEAVY_REVIEW_UNAVAILABLE:{summary.get('reason') or 'unavailable'}"],
+                },
+                lane_scope="shortlist_group",
+                advisory_only=True,
+                mode="shortlist_only_advisory",
+            )
         return shot_selection
 
     item_by_key: Dict[str, Dict[str, Any]] = {}
@@ -452,6 +993,12 @@ def apply_shortlist_heavy_review(
         shortlist = list(group.get("shortlist") or [])
         if len(shortlist) == 0:
             group["heavy_review"] = {"enabled": False, "reason": "empty_shortlist"}
+            group["heavy_evidence"] = build_heavy_evidence_bundle(
+                {"ok": False, "reasons": ["HEAVY_REVIEW_EMPTY_SHORTLIST"]},
+                lane_scope="shortlist_group",
+                advisory_only=True,
+                mode="shortlist_only_advisory",
+            )
             continue
         process_count = min(len(shortlist), max(1, max_candidates))
         candidate_rows: List[Dict[str, Any]] = []
@@ -467,37 +1014,22 @@ def apply_shortlist_heavy_review(
                     }
                 )
                 continue
-            img = image_read_bgr(image_path, runtime.config.standardization)
-            if img is None:
-                candidate_rows.append(
-                    {
-                        "record_key": row.get("record_key"),
-                        "image": row.get("image"),
-                        "ok": False,
-                        "reasons": ["HEAVY_REVIEW_IMAGE_READ_ERROR"],
-                    }
-                )
-                continue
-            metrics = _extract_parser_metrics(img)
+            if hasattr(getattr(runtime, "providers", None), "get_heavy_evidence"):
+                metrics = runtime.providers.get_heavy_evidence(runtime, image_path)
+            else:
+                metrics = SegformerHeavyEvidenceProvider().get_heavy_evidence_metrics(runtime, image_path)
             metrics["record_key"] = row.get("record_key")
             metrics["image"] = row.get("image")
             metrics["base_selection_score"] = row.get("selection_score")
+            cache_state = str(metrics.get("cache_state") or "").strip().lower()
+            if cache_state == "hit":
+                summary["cache_hit_count"] = int(summary.get("cache_hit_count", 0)) + 1
+            elif cache_state == "write":
+                summary["cache_miss_count"] = int(summary.get("cache_miss_count", 0)) + 1
+                summary["cache_write_count"] = int(summary.get("cache_write_count", 0)) + 1
+            elif cache_state == "miss":
+                summary["cache_miss_count"] = int(summary.get("cache_miss_count", 0)) + 1
             candidate_rows.append(metrics)
-            item = item_by_key.get(str(row.get("record_key") or ""))
-            if item is not None:
-                item.setdefault("debug", {})["heavy_review"] = {
-                    "parser_confidence": _round_or_none(metrics.get("confidence")),
-                    "garment_coverage_ratio": _round_or_none(metrics.get("garment_coverage_ratio")),
-                    "upper_cloth_coverage": _round_or_none(metrics.get("upper_cloth_coverage")),
-                    "lower_cloth_coverage": _round_or_none(metrics.get("lower_cloth_coverage")),
-                    "neckline_depth_ratio": _round_or_none(metrics.get("neckline_depth_ratio")),
-                    "shoulder_cloth_balance": _round_or_none(metrics.get("shoulder_cloth_balance")),
-                    "visible_body_ratio": _round_or_none(metrics.get("visible_body_ratio")),
-                    "visible_face_ratio": _round_or_none(metrics.get("visible_face_ratio")),
-                    "visible_arm_ratio": _round_or_none(metrics.get("visible_arm_ratio")),
-                    "visible_leg_ratio": _round_or_none(metrics.get("visible_leg_ratio")),
-                    "reasons": list(metrics.get("reasons") or []),
-                }
 
         boundary_centroid = _normalize_embedding(
             _weighted_sum(
@@ -564,6 +1096,17 @@ def apply_shortlist_heavy_review(
         shortlist_index = {str(row.get("record_key") or ""): row for row in shortlist}
         for rank, advisory in enumerate(advisory_rows, start=1):
             shortlist_row = shortlist_index.get(str(advisory.get("record_key") or ""))
+            evidence_bundle = build_heavy_evidence_bundle(
+                {
+                    **advisory,
+                    "rank_in_heavy_review": rank,
+                },
+                lane_scope="shortlist_candidate",
+                advisory_only=True,
+                mode="shortlist_only_advisory",
+                record_key=str(advisory.get("record_key") or ""),
+                image=str(advisory.get("image") or ""),
+            )
             heavy_node = {
                 "parser_confidence": _round_or_none(advisory.get("confidence")),
                 "parser_boundary_alignment": _round_or_none(advisory.get("parser_boundary_alignment")),
@@ -580,10 +1123,20 @@ def apply_shortlist_heavy_review(
                 "visible_arm_ratio": _round_or_none(advisory.get("visible_arm_ratio")),
                 "visible_leg_ratio": _round_or_none(advisory.get("visible_leg_ratio")),
                 "rank_in_heavy_review": rank,
+                "coverage": evidence_bundle.get("coverage"),
+                "provider_name": evidence_bundle.get("provider_name"),
+                "provider_version": evidence_bundle.get("provider_version"),
+                "cache_state": evidence_bundle.get("cache_state"),
                 "reasons": list(advisory.get("reasons") or []),
             }
             if shortlist_row is not None:
                 shortlist_row["heavy_review"] = heavy_node
+                shortlist_row["heavy_evidence"] = evidence_bundle
+            item = item_by_key.get(str(advisory.get("record_key") or ""))
+            if item is not None:
+                item_debug = item.setdefault("debug", {})
+                item_debug["heavy_review"] = heavy_node
+                item_debug["heavy_evidence"] = evidence_bundle
 
         heavy_guidance: List[str] = []
         if consensus_top and consensus_top != group.get("top_ranked_image"):
@@ -597,6 +1150,20 @@ def apply_shortlist_heavy_review(
             heavy_guidance.append("shortlist 的可见身体比例仍有波动，人工复核时要注意脸面积和露臂露腿比例是否突然变化。")
 
         group["review_guidance"] = list(dict.fromkeys(list(group.get("review_guidance") or []) + heavy_guidance))[:6]
+        group_metrics = {
+            "ok": True,
+            "confidence": _mean([row.get("confidence") for row in advisory_rows]),
+            "parser_boundary_alignment": boundary_cohesion,
+            "parser_visible_body_alignment": visible_cohesion,
+            "parser_consensus_score": _mean([row.get("parser_consensus_score") for row in advisory_rows]),
+            "candidate_count": len(advisory_rows),
+            "consensus_top_image": consensus_top,
+            "cache_hit_count": sum(1 for row in advisory_rows if str(row.get("cache_state") or "").strip().lower() == "hit"),
+            "cache_miss_count": sum(1 for row in advisory_rows if str(row.get("cache_state") or "").strip().lower() in {"miss", "write"}),
+            "cache_write_count": sum(1 for row in advisory_rows if str(row.get("cache_state") or "").strip().lower() == "write"),
+            "guidance": heavy_guidance[:4],
+            "reasons": [],
+        }
         group["heavy_review"] = {
             "enabled": True,
             "advisory_only": True,
@@ -605,8 +1172,17 @@ def apply_shortlist_heavy_review(
             "parser_boundary_cohesion": _round_or_none(boundary_cohesion),
             "parser_visible_body_cohesion": _round_or_none(visible_cohesion),
             "parser_confidence_mean": _round_or_none(_mean([row.get("confidence") for row in advisory_rows])),
+            "cache_hit_count": group_metrics.get("cache_hit_count"),
+            "cache_miss_count": group_metrics.get("cache_miss_count"),
+            "cache_write_count": group_metrics.get("cache_write_count"),
             "guidance": heavy_guidance[:4],
         }
+        group["heavy_evidence"] = build_heavy_evidence_bundle(
+            group_metrics,
+            lane_scope="shortlist_group",
+            advisory_only=True,
+            mode="shortlist_only_advisory",
+        )
         summary["processed_group_count"] = int(summary.get("processed_group_count", 0)) + 1
         summary["processed_candidate_count"] = int(summary.get("processed_candidate_count", 0)) + len(advisory_rows)
 
@@ -616,4 +1192,22 @@ def apply_shortlist_heavy_review(
         float(consensus_matches / max(1, int(summary.get("processed_group_count", 0) or 0)))
     )
     shot_selection["heavy_review_summary"] = summary
+    shot_selection["heavy_evidence_summary"] = build_heavy_evidence_bundle(
+        {
+            "ok": bool(summary.get("enabled")),
+            "confidence": summary.get("parser_boundary_cohesion_mean"),
+            "parser_boundary_alignment": summary.get("parser_boundary_cohesion_mean"),
+            "parser_visible_body_alignment": summary.get("parser_visible_body_cohesion_mean"),
+            "parser_consensus_score": summary.get("consensus_top_match_ratio"),
+            "candidate_count": summary.get("processed_candidate_count"),
+            "cache_hit_count": summary.get("cache_hit_count"),
+            "cache_miss_count": summary.get("cache_miss_count"),
+            "cache_write_count": summary.get("cache_write_count"),
+            "guidance": [],
+            "reasons": [] if bool(summary.get("enabled")) else [str(summary.get("reason") or "HEAVY_REVIEW_UNAVAILABLE")],
+        },
+        lane_scope="shot_selection",
+        advisory_only=True,
+        mode="shortlist_only_advisory",
+    )
     return shot_selection

@@ -24,7 +24,10 @@ from .qa_garment import extract_garment_metrics
 from .qa_heavy_review import apply_shortlist_heavy_review
 from .qa_master_consistency import (
     build_absolute_master_reference,
+    build_body_identity_signature as _shared_body_identity_signature,
+    build_depth_identity_signature as _shared_depth_identity_signature,
     build_master_consistency_card,
+    build_world3d_identity_signature as _shared_world3d_identity_signature,
 )
 from .qa_outfit import (
     apply_collection_diagnostics,
@@ -94,6 +97,8 @@ def create_runtime(base_dir: Optional[Path] = None) -> RuntimeContext:
 def print_runtime_config(runtime: RuntimeContext) -> None:
     config = runtime.config
     providers_desc = runtime.providers.describe() if hasattr(runtime.providers, "describe") else {"mode": "config_only"}
+    anchor_snapshot = anchor_registry_snapshot(config)
+    truth_anchors = anchor_snapshot.get("truth_anchors", {}) if isinstance(anchor_snapshot, dict) else {}
     print(f"[CONFIG] RUN_MODE={config.run_mode}")
     print(f"[CONFIG] ACTIVE_PROFILE={config.review.active_profile}")
     print(f"[CONFIG] CONFIG_DIR={config.paths.config_dir}")
@@ -101,6 +106,7 @@ def print_runtime_config(runtime: RuntimeContext) -> None:
     print(f"[CONFIG] PROVIDER_POLICY={config.provider_policy}")
     print(f"[CONFIG] PROVIDERS={providers_desc}")
     print(f"[CONFIG] ANCHOR_REGISTRY_SUMMARY={anchor_registry_summary(config)}")
+    print(f"[CONFIG] TRUTH_ANCHORS={truth_anchors}")
     print(f"[CONFIG] LAYER_QUOTAS_LOADED={bool(config.layer_quotas.get('training_layers'))}")
     print("[CONFIG] FACE_CONF_MAP = linear_map_to_01(bbox_ratio, 0.006, 0.035)")
     print(f"[CONFIG] FACE_NO_RELIABLE_SIGNAL_TH = {config.review.face_no_signal_conf_th}")
@@ -239,8 +245,16 @@ def _build_report_meta(
     target_profile: str,
     anchors: AnchorSet,
     input_count: int,
+    master_reference: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     profile_policy = get_profile_policy(runtime, target_profile)
+    anchor_snapshot = anchor_registry_snapshot(runtime.config)
+    truth_anchors = anchor_snapshot.get("truth_anchors", {}) if isinstance(anchor_snapshot, dict) else {}
+    heavy_provider_status = (
+        runtime.providers.describe_heavy_evidence()
+        if hasattr(runtime.providers, "describe_heavy_evidence")
+        else {}
+    )
     back180_readiness = {
         "legacy_router_supports_back_180": False,
         "shadow_router_supports_back_180": True,
@@ -250,7 +264,7 @@ def _build_report_meta(
         "source_of_truth": "view_detector.back_180_readiness",
     }
     return {
-        "schema_version": "qa_report_v2_6",
+        "schema_version": "qa_report_v2_8",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "active_profile": target_profile,
         "review_policy": {
@@ -261,13 +275,20 @@ def _build_report_meta(
         "profile_policy": _json_ready(profile_policy),
         "provider_policy": _json_ready(runtime.config.provider_policy),
         "providers": _json_ready(runtime.providers.describe()),
+        "heavy_provider_status": _json_ready(heavy_provider_status),
         "anchor_registry_summary": anchor_registry_summary(runtime.config),
-        "anchor_registry_snapshot": anchor_registry_snapshot(runtime.config),
+        "anchor_registry_snapshot": anchor_snapshot,
         "anchor_governance": {
             "face_identity_policy": "absolute_only",
             "body_master_policy": "absolute_only",
             "support_anchor_policy": "assist_only",
+            "face_truth_anchor": truth_anchors.get("face_identity"),
+            "body_truth_anchor": truth_anchors.get("body_master"),
+            "upper_support_anchor": truth_anchors.get("upper_support"),
+            "qa_role": "evidence_only",
+            "final_decision_owner": "custom_gpt_plus_human",
         },
+        "master_truth_reference": _json_ready((master_reference or {}).get("summary") or {}),
         "anchor_paths_resolved": _json_ready(anchors.meta),
         "layer_quotas": _json_ready(runtime.config.layer_quotas),
         "threshold_snapshot": _build_threshold_snapshot(runtime, target_profile),
@@ -394,6 +415,11 @@ def _build_report_meta(
             "goal": "unified evidence packet for GPT-assisted and human review",
             "mode": "summary_plus_structured_items",
         },
+        "input_source": {
+            "root_dir": str(runtime.config.paths.dir_input.resolve()),
+            "path_mode": "filesystem",
+            "supports_heavy_replay": True,
+        },
         "input_count": int(input_count),
     }
 
@@ -445,240 +471,18 @@ def _body_identity_signature(
     constitution_metrics: Dict[str, Any],
     depth_3d_metrics: Dict[str, Any],
 ) -> Dict[str, Any]:
-    upper = cand_pose.upper_geom or {}
-    full = cand_pose.full_geom or {}
-
-    feature_specs = [
-        ("head_body_ratio", full.get("head_body_ratio"), 5.0, 2.0),
-        ("leg_ratio", full.get("leg_ratio"), 0.47, 0.14),
-        ("torso_len_norm", upper.get("torso_len_norm"), 0.24, 0.08),
-        ("hip_shoulder_ratio", upper.get("hip_shoulder_ratio"), 0.58, 0.22),
-        ("torso_compactness", upper.get("torso_compactness"), 0.92, 0.26),
-        ("shoulder_hip_center_offset_norm", upper.get("shoulder_hip_center_offset_norm"), 0.02, 0.08),
-        ("lower_limb_balance", full.get("lower_limb_balance"), 0.96, 0.12),
-        ("foot_length_balance", full.get("foot_length_balance"), 0.93, 0.14),
-        ("waist_to_torso_ratio", constitution_metrics.get("waist_to_torso_ratio"), 0.80, 0.22),
-        ("hip_to_torso_ratio", constitution_metrics.get("hip_to_torso_ratio"), 1.00, 0.24),
-    ]
-
-    values: List[float] = []
-    ready = 0
-    for _, raw_value, center, scale in feature_specs:
-        if raw_value is None:
-            values.append(0.0)
-            continue
-        try:
-            numeric = float(raw_value)
-        except Exception:
-            values.append(0.0)
-            continue
-        values.append((numeric - float(center)) / max(1e-6, float(scale)))
-        ready += 1
-
-    signature = None
-    if ready >= 4:
-        vector = np.asarray(values, dtype=np.float32)
-        norm = float(np.linalg.norm(vector))
-        if norm > 1e-8:
-            signature = (vector / norm).astype(np.float32)
-
-    pose_weight = float(getattr(cand_pose, "confidence_full", 0.0) or 0.0)
-    constitution_conf = float(constitution_metrics.get("confidence", 0.0) or 0.0)
-    depth_conf = float(depth_3d_metrics.get("confidence", 0.0) or 0.0)
-    weight = float(
-        0.40 * pose_weight
-        + 0.35 * constitution_conf
-        + 0.25 * depth_conf
-    )
-    return {
-        "signature": signature,
-        "ready_features": ready,
-        "feature_count": len(feature_specs),
-        "weight": weight if signature is not None else 0.0,
-    }
+    return _shared_body_identity_signature(cand_pose, constitution_metrics, depth_3d_metrics)
 
 
 def _depth_identity_signature(
     cand_pose: PoseFeat,
     depth_3d_metrics: Dict[str, Any],
 ) -> Dict[str, Any]:
-    upper = cand_pose.upper_geom or {}
-    full = cand_pose.full_geom or {}
-
-    feature_specs = [
-        ("shoulder_width_norm", upper.get("shoulder_width_norm"), 0.17, 0.05),
-        ("hip_width_norm", upper.get("hip_width_norm"), 0.10, 0.04),
-        ("hip_shoulder_ratio", upper.get("hip_shoulder_ratio"), 0.58, 0.22),
-        ("torso_len_norm", upper.get("torso_len_norm"), 0.24, 0.08),
-        ("torso_compactness", upper.get("torso_compactness"), 0.92, 0.26),
-        ("shoulder_hip_center_offset_norm", upper.get("shoulder_hip_center_offset_norm"), 0.02, 0.08),
-        ("spine_angle_deg", upper.get("spine_angle_deg"), 0.0, 8.0),
-        ("lower_limb_balance", full.get("lower_limb_balance"), 0.96, 0.12),
-        ("thigh_length_balance", full.get("thigh_length_balance"), 0.95, 0.10),
-        ("calf_length_balance", full.get("calf_length_balance"), 0.95, 0.10),
-        ("foot_length_balance", full.get("foot_length_balance"), 0.93, 0.14),
-        ("ankle_gap_norm", full.get("ankle_gap_norm"), 0.09, 0.08),
-        ("depth_3d_score", depth_3d_metrics.get("depth_3d_score"), 0.82, 0.16),
-        ("turn_signal_score", depth_3d_metrics.get("turn_signal_score"), 0.75, 0.16),
-        ("torso_volume_score", depth_3d_metrics.get("torso_volume_score"), 0.80, 0.16),
-        ("side_profile_score", depth_3d_metrics.get("side_profile_score"), 0.84, 0.14),
-        ("posterior_score", depth_3d_metrics.get("posterior_score"), 0.84, 0.14),
-        ("torso_compactness_score", depth_3d_metrics.get("torso_compactness_score"), 0.80, 0.16),
-    ]
-
-    values: List[float] = []
-    ready = 0
-    for _, raw_value, center, scale in feature_specs:
-        if raw_value is None:
-            values.append(0.0)
-            continue
-        try:
-            numeric = float(raw_value)
-        except Exception:
-            values.append(0.0)
-            continue
-        values.append((numeric - float(center)) / max(1e-6, float(scale)))
-        ready += 1
-
-    signature = None
-    if ready >= 6:
-        vector = np.asarray(values, dtype=np.float32)
-        norm = float(np.linalg.norm(vector))
-        if norm > 1e-8:
-            signature = (vector / norm).astype(np.float32)
-
-    pose_weight = float(getattr(cand_pose, "confidence_full", 0.0) or 0.0)
-    depth_conf = float(depth_3d_metrics.get("confidence", 0.0) or 0.0)
-    depth_score = float(depth_3d_metrics.get("depth_3d_score", 0.0) or 0.0)
-    weight = float(
-        0.45 * depth_conf
-        + 0.35 * pose_weight
-        + 0.20 * depth_score
-    )
-    return {
-        "signature": signature,
-        "ready_features": ready,
-        "feature_count": len(feature_specs),
-        "weight": weight if signature is not None else 0.0,
-    }
+    return _shared_depth_identity_signature(cand_pose, depth_3d_metrics)
 
 
 def _world3d_identity_signature(cand_pose: PoseFeat) -> Dict[str, Any]:
-    xyz = getattr(cand_pose, "lm_world", None)
-    vis = getattr(cand_pose, "lm_vis", None)
-    if xyz is None or vis is None:
-        return {"signature": None, "ready_features": 0, "feature_count": 0, "weight": 0.0}
-
-    def _dist(i: int, j: int) -> Optional[float]:
-        if vis[i] <= 0.35 or vis[j] <= 0.35:
-            return None
-        return float(np.linalg.norm(xyz[i] - xyz[j]))
-
-    def _balance(left_value: Optional[float], right_value: Optional[float]) -> Optional[float]:
-        if left_value is None or right_value is None:
-            return None
-        hi = max(abs(float(left_value)), abs(float(right_value)))
-        if hi <= 1e-6:
-            return None
-        return float(min(abs(float(left_value)), abs(float(right_value))) / hi)
-
-    NOSE = 0
-    L_SHOULDER, R_SHOULDER = 11, 12
-    L_HIP, R_HIP = 23, 24
-    L_KNEE, R_KNEE = 25, 26
-    L_ANKLE, R_ANKLE = 27, 28
-    L_HEEL, R_HEEL = 29, 30
-    L_FOOT, R_FOOT = 31, 32
-
-    shoulder_span = _dist(L_SHOULDER, R_SHOULDER)
-    hip_span = _dist(L_HIP, R_HIP)
-    torso_len = None
-    if all(vis[idx] > 0.35 for idx in [L_SHOULDER, R_SHOULDER, L_HIP, R_HIP]):
-        shoulder_mid = (xyz[L_SHOULDER] + xyz[R_SHOULDER]) / 2.0
-        hip_mid = (xyz[L_HIP] + xyz[R_HIP]) / 2.0
-        torso_len = float(np.linalg.norm(shoulder_mid - hip_mid))
-    leg_len = None
-    if all(vis[idx] > 0.35 for idx in [L_HIP, R_HIP, L_ANKLE, R_ANKLE]):
-        hip_mid = (xyz[L_HIP] + xyz[R_HIP]) / 2.0
-        ankle_mid = (xyz[L_ANKLE] + xyz[R_ANKLE]) / 2.0
-        leg_len = float(np.linalg.norm(hip_mid - ankle_mid))
-
-    left_thigh = _dist(L_HIP, L_KNEE)
-    right_thigh = _dist(R_HIP, R_KNEE)
-    left_calf = _dist(L_KNEE, L_ANKLE)
-    right_calf = _dist(R_KNEE, R_ANKLE)
-    left_foot = _dist(L_HEEL, L_FOOT)
-    right_foot = _dist(R_HEEL, R_FOOT)
-
-    thigh_balance = _balance(left_thigh, right_thigh)
-    calf_balance = _balance(left_calf, right_calf)
-    foot_balance = _balance(left_foot, right_foot)
-    shoulder_level = None
-    shoulder_depth = None
-    hip_level = None
-    hip_depth = None
-    torso_twist = None
-    head_torso_ratio = None
-    leg_ratio = None
-    if shoulder_span is not None and shoulder_span > 1e-6 and all(vis[idx] > 0.35 for idx in [L_SHOULDER, R_SHOULDER]):
-        shoulder_level = abs(float(xyz[L_SHOULDER][1] - xyz[R_SHOULDER][1])) / shoulder_span
-        shoulder_depth = abs(float(xyz[L_SHOULDER][2] - xyz[R_SHOULDER][2])) / shoulder_span
-    if hip_span is not None and hip_span > 1e-6 and all(vis[idx] > 0.35 for idx in [L_HIP, R_HIP]):
-        hip_level = abs(float(xyz[L_HIP][1] - xyz[R_HIP][1])) / hip_span
-        hip_depth = abs(float(xyz[L_HIP][2] - xyz[R_HIP][2])) / hip_span
-    if shoulder_span is not None and shoulder_span > 1e-6 and all(vis[idx] > 0.35 for idx in [L_SHOULDER, R_SHOULDER, L_HIP, R_HIP]):
-        torso_twist = abs(
-            (float(xyz[L_SHOULDER][2] - xyz[R_SHOULDER][2]))
-            - (float(xyz[L_HIP][2] - xyz[R_HIP][2]))
-        ) / shoulder_span
-    if torso_len is not None and torso_len > 1e-6 and vis[NOSE] > 0.35 and all(vis[idx] > 0.35 for idx in [L_SHOULDER, R_SHOULDER]):
-        shoulder_mid = (xyz[L_SHOULDER] + xyz[R_SHOULDER]) / 2.0
-        head_torso_ratio = float(np.linalg.norm(xyz[NOSE] - shoulder_mid)) / torso_len
-    if torso_len is not None and torso_len > 1e-6 and leg_len is not None:
-        leg_ratio = leg_len / torso_len
-
-    feature_specs = [
-        ("shoulder_span_world", shoulder_span, 0.32, 0.10),
-        ("hip_span_world", hip_span, 0.24, 0.08),
-        ("torso_len_world", torso_len, 0.42, 0.10),
-        ("leg_ratio_world", leg_ratio, 2.25, 0.45),
-        ("head_torso_ratio_world", head_torso_ratio, 0.45, 0.16),
-        ("thigh_balance_world", thigh_balance, 0.95, 0.08),
-        ("calf_balance_world", calf_balance, 0.95, 0.08),
-        ("foot_balance_world", foot_balance, 0.94, 0.10),
-        ("shoulder_level_world", shoulder_level, 0.02, 0.06),
-        ("hip_level_world", hip_level, 0.02, 0.06),
-        ("shoulder_depth_world", shoulder_depth, 0.08, 0.08),
-        ("hip_depth_world", hip_depth, 0.08, 0.08),
-        ("torso_twist_world", torso_twist, 0.10, 0.10),
-    ]
-
-    values: List[float] = []
-    ready = 0
-    for _, raw_value, center, scale in feature_specs:
-        if raw_value is None:
-            values.append(0.0)
-            continue
-        values.append((float(raw_value) - float(center)) / max(1e-6, float(scale)))
-        ready += 1
-
-    signature = None
-    if ready >= 6:
-        vector = np.asarray(values, dtype=np.float32)
-        norm = float(np.linalg.norm(vector))
-        if norm > 1e-8:
-            signature = (vector / norm).astype(np.float32)
-
-    weight = float(
-        0.65 * float(getattr(cand_pose, "confidence_full", 0.0) or 0.0)
-        + 0.35 * min(1.0, ready / max(1, len(feature_specs)))
-    )
-    return {
-        "signature": signature,
-        "ready_features": ready,
-        "feature_count": len(feature_specs),
-        "weight": weight if signature is not None else 0.0,
-    }
+    return _shared_world3d_identity_signature(cand_pose)
 
 
 def calibrate_quality_thresholds(
@@ -1176,7 +980,7 @@ def _run_pipeline_impl(
     batch_identity_samples: List[Dict[str, Any]] = []
     master_reference = build_absolute_master_reference(runtime, anchors)
     print(f"[RUN] TONE_FACE_REFS={len(face_tone_anchors)}")
-    report_meta = _build_report_meta(runtime, target_profile, anchors, len(images))
+    report_meta = _build_report_meta(runtime, target_profile, anchors, len(images), master_reference=master_reference)
     print(f"\n[运行中] 任务模板: {target_profile}")
     print(f"[运行中] 身份锚池(face): {len(face_identity_anchors)}")
     print(f"[运行中] 质量锚池(face-like): {len(face_quality_anchors)}")
@@ -1577,6 +1381,7 @@ def _run_pipeline_impl(
 
             result_node = {
                 "image": img_path.name,
+                "source_path": str(img_path.resolve()),
                 "task_profile": target_profile,
                 "quota_bucket": policy.get("quota_bucket"),
                 "collection": collection_meta,
@@ -1624,17 +1429,26 @@ def _run_pipeline_impl(
                     "body_identity_signature": {
                         "ready_features": body_identity.get("ready_features"),
                         "feature_count": body_identity.get("feature_count"),
+                        "coverage": body_identity.get("coverage"),
                         "weight": body_identity.get("weight"),
+                        "feature_values": _json_ready(body_identity.get("feature_values")),
+                        "feature_scales": _json_ready(body_identity.get("feature_scales")),
                     },
                     "depth_identity_signature": {
                         "ready_features": depth_identity.get("ready_features"),
                         "feature_count": depth_identity.get("feature_count"),
+                        "coverage": depth_identity.get("coverage"),
                         "weight": depth_identity.get("weight"),
+                        "feature_values": _json_ready(depth_identity.get("feature_values")),
+                        "feature_scales": _json_ready(depth_identity.get("feature_scales")),
                     },
                     "world3d_identity_signature": {
                         "ready_features": world3d_identity.get("ready_features"),
                         "feature_count": world3d_identity.get("feature_count"),
+                        "coverage": world3d_identity.get("coverage"),
                         "weight": world3d_identity.get("weight"),
+                        "feature_values": _json_ready(world3d_identity.get("feature_values")),
+                        "feature_scales": _json_ready(world3d_identity.get("feature_scales")),
                     },
                     "depth_3d_metrics": depth_3d_metrics,
                     "consistency_gate": consistency_gate_debug,
@@ -1668,6 +1482,7 @@ def _run_pipeline_impl(
                     "view_router_v2_disagrees": shadow_view_route.lane != view_lane,
                     "identity_anchor_count_view": len(face_identity_anchors_view),
                     "master_consistency_card": master_consistency_card,
+                    "source_path": str(img_path.resolve()),
                     "input_shape": list(img.shape[:2]),
                 },
             }
@@ -1708,6 +1523,7 @@ def _run_pipeline_impl(
             report_items.append(
                 {
                     "image": img_path.name,
+                    "source_path": str(img_path.resolve()),
                     "task_profile": target_profile,
                     "quota_bucket": policy.get("quota_bucket"),
                     "collection": collection_meta,
@@ -1738,6 +1554,7 @@ def _run_pipeline_impl(
                     "engine": {"face": runtime.engines.face_mode, "pose": runtime.engines.pose_mode},
                     "debug": {
                         "collection_metadata": collection_meta,
+                        "source_path": str(img_path.resolve()),
                         "constitution_metrics": None,
                         "skin_metrics": None,
                         "garment_metrics": None,
@@ -1841,12 +1658,15 @@ def main(
     base_dir: Optional[Path] = None,
     profile_name: Optional[str] = None,
     run_mode: Optional[str] = None,
+    heavy_evidence_provider: Optional[str] = None,
     auto_load_thresholds: Optional[bool] = None,
     threshold_override: Optional[Dict[str, Any]] = None,
     benchmark_report_path: Optional[Path] = None,
     benchmark_labels_path: Optional[Path] = None,
     benchmark_output_path: Optional[Path] = None,
     benchmark_template_out: Optional[Path] = None,
+    benchmark_compare_heavy_providers: Optional[List[str]] = None,
+    benchmark_image_root: Optional[Path] = None,
     benchmark_dataset_role: Optional[str] = None,
     benchmark_optuna_ready: Optional[bool] = None,
     benchmark_id: Optional[str] = None,
@@ -1854,7 +1674,8 @@ def main(
     benchmark_update_labels: bool = False,
 ) -> None:
     effective_run_mode = str(run_mode) if run_mode is not None else "qa"
-    if effective_run_mode == "benchmark":
+    needs_live_visual_runtime = effective_run_mode == "benchmark" and bool(benchmark_compare_heavy_providers)
+    if effective_run_mode == "benchmark" and not needs_live_visual_runtime:
         config = create_runtime_config(base_dir)
         runtime = RuntimeContext(
             config=config,
@@ -1866,6 +1687,10 @@ def main(
         runtime = create_runtime(base_dir)
         if run_mode is not None:
             runtime.config.run_mode = str(run_mode)
+    if heavy_evidence_provider is not None:
+        runtime.config.provider_policy["heavy_evidence"] = str(heavy_evidence_provider)
+        if runtime.providers is not None:
+            runtime.providers = build_provider_bundle(runtime.config.provider_policy)
     if profile_name is not None:
         runtime.config.review.active_profile = str(profile_name)
     if auto_load_thresholds is not None:
@@ -1885,7 +1710,12 @@ def main(
         return
 
     if runtime.config.run_mode == "benchmark":
-        from .qa_benchmark import benchmark_report, export_benchmark_template, update_benchmark_label_metadata
+        from .qa_benchmark import (
+            benchmark_heavy_provider_compare,
+            benchmark_report,
+            export_benchmark_template,
+            update_benchmark_label_metadata,
+        )
 
         report_path = (benchmark_report_path or runtime.config.paths.report_file).resolve()
         if benchmark_template_out is not None:
@@ -1916,12 +1746,37 @@ def main(
         if benchmark_labels_path is None:
             raise ValueError("benchmark 模式需要 --benchmark-labels，或使用 --benchmark-template-out 导出模板")
 
-        result = benchmark_report(
-            runtime=runtime,
-            report_path=report_path,
-            labels_path=benchmark_labels_path.resolve(),
-            threshold_override=threshold_override,
-        )
+        if benchmark_compare_heavy_providers:
+            result = benchmark_heavy_provider_compare(
+                runtime=runtime,
+                report_path=report_path,
+                labels_path=benchmark_labels_path.resolve(),
+                heavy_providers=benchmark_compare_heavy_providers,
+                image_root=benchmark_image_root.resolve() if benchmark_image_root is not None else None,
+            )
+            ranking_rows = (
+                result.get("comparison", {}).get("ranking_by_evidence_readiness", [])
+                if isinstance(result.get("comparison", {}), dict)
+                else []
+            )
+            print("[Benchmark Heavy Compare]")
+            for index, row in enumerate(ranking_rows[:4], start=1):
+                if not isinstance(row, dict):
+                    continue
+                print(
+                    f"  {index}. {row.get('provider_name')} "
+                    f"| readiness={row.get('evidence_readiness_score')} "
+                    f"| available={row.get('available_weight_ratio')} "
+                    f"| conf={row.get('confidence_mean')} "
+                    f"| coverage={row.get('coverage_mean')}"
+                )
+        else:
+            result = benchmark_report(
+                runtime=runtime,
+                report_path=report_path,
+                labels_path=benchmark_labels_path.resolve(),
+                threshold_override=threshold_override,
+            )
         if benchmark_output_path is not None:
             benchmark_output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
             benchmark_output_path.resolve().write_text(

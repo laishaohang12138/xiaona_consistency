@@ -1,4 +1,4 @@
-# pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportGeneralTypeIssues=false
+﻿# pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportGeneralTypeIssues=false
 from __future__ import annotations
 
 import argparse
@@ -6,7 +6,7 @@ import json
 import sys
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from core.qa_pipeline import (
     calibrate_quality_thresholds,
@@ -31,6 +31,17 @@ from core.qa_runtime import (
 
 BASE_DIR = Path(__file__).resolve().parent
 main = pipeline_main
+
+
+def _configure_console_encoding() -> None:
+    for stream_name in ["stdin", "stdout", "stderr"]:
+        stream = getattr(sys, stream_name, None)
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
 
 
 def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -95,7 +106,7 @@ def _prompt_yes_no(prompt: str, default: bool = True) -> bool:
             return True
         if normalized in {"n", "no", "0", "false", "off"}:
             return False
-        print(f"[交互引导] 无法识别的是/否输入：{choice}")
+        print(f"[交互引导] 无法识别的是/否输入: {choice}")
 
 
 def _select_choice(
@@ -104,7 +115,7 @@ def _select_choice(
     *,
     default: str,
 ) -> str:
-    print("[交互引导] 可选项：")
+    print("[交互引导] 可选项:")
     for index, (value, description) in enumerate(options, start=1):
         print(f"  {index}. {value} | {description}")
     valid_names = {value for value, _ in options}
@@ -118,7 +129,7 @@ def _select_choice(
         matched = [value for value, _ in options if value == choice]
         if matched:
             return matched[0]
-        print(f"[交互引导] 无法识别的选项：{choice}")
+        print(f"[交互引导] 无法识别的选项: {choice}")
 
 
 def _prompt_path(
@@ -135,7 +146,7 @@ def _prompt_path(
             continue
         candidate = _resolve_cli_path(Path(raw), base_dir)
         if must_exist and not candidate.exists():
-            print(f"[交互引导] 路径不存在：{candidate}")
+            print(f"[交互引导] 路径不存在: {candidate}")
             continue
         return candidate
 
@@ -156,7 +167,7 @@ def _select_workflow_interactively(default: str = "shot_review") -> str:
     return _select_choice(
         "请选择当前要完成的任务",
         [
-            ("shot_review", "审一个 shot 批次，输出 QA、排序和 review packet"),
+            ("shot_review", "审一轮 shot 批次，输出 QA、排序和 review packet"),
             ("inspect_review_packet", "查看最近一次 review packet 的批次摘要和复核提示"),
             ("promote_winner", "把人工确认的 winner 写入 winner bank"),
             ("winner_bank_status", "查看 winner bank 状态与最新跨批次漂移报告"),
@@ -168,18 +179,69 @@ def _select_workflow_interactively(default: str = "shot_review") -> str:
 
 def _select_review_profile_interactively(default: str = "body_gold_fullbody") -> str:
     return _select_choice(
-        "请选择本轮 shot 批次最接近的量纲体系",
+        "请选择本轮 shot 批次最接近的训练层",
         [
-            ("body_gold_fullbody", "BODY GOLD 前向/普通主体批次"),
+            ("body_gold_fullbody", "BODY GOLD 前向/常规主体批次"),
             ("bridge_simple_outfit", "简单穿搭 / BRIDGE 训练准入批次"),
-            ("body_gold_side90_shadow", "90 度侧面 shadow 观察批次"),
-            ("body_gold_back180_shadow", "180 度背部 shadow 观察批次"),
+            ("body_gold_side90_shadow", "90 度侧身 shadow 观察批次"),
+            ("body_gold_back180_shadow", "180 度背身 shadow 观察批次"),
             ("full_body_outfit", "通用穿搭稳定性批次"),
         ],
         default=default,
     )
 
 
+def _select_heavy_provider_interactively(default: str = "segformer_body_fusion") -> str:
+    return _select_choice(
+        "请选择本轮使用的重型证据模式",
+        [
+            ("segformer_body_fusion", "工业默认模式：同时启用服装边界证据和体态几何证据"),
+            ("segformer_parser", "仅启用 Segformer 服装/领口/肩线边界证据"),
+            ("body_measure_lite", "仅启用 body measure 体态/3D/空间结构证据"),
+            ("disabled", "关闭重型证据，仅保留轻量 QA 主链路"),
+        ],
+        default=default,
+    )
+
+
+def _parse_heavy_provider_compare_targets(values: Optional[Sequence[str]]) -> List[str]:
+    allowed = {"segformer_body_fusion", "segformer_parser", "body_measure_lite", "disabled"}
+    parsed: List[str] = []
+    for raw_value in values or []:
+        for chunk in str(raw_value).split(","):
+            value = chunk.strip()
+            if not value:
+                continue
+            if value not in allowed:
+                raise ValueError(
+                    "unknown heavy provider in compare list: "
+                    f"{value}. allowed={sorted(allowed)}"
+                )
+            if value not in parsed:
+                parsed.append(value)
+    return parsed
+
+
+def _prompt_heavy_provider_compare_targets(
+    default: Sequence[str] = ("segformer_body_fusion", "segformer_parser", "body_measure_lite"),
+) -> List[str]:
+    print("[交互引导] 可对比的 heavy provider:")
+    print("  1. segformer_body_fusion | 工业默认融合模式")
+    print("  2. segformer_parser | 服装边界/领口/肩线重证据")
+    print("  3. body_measure_lite | 体态/3D/空间结构重证据")
+    print("  4. disabled | 关闭重型证据，仅作基线对照")
+    default_text = ",".join(default)
+    while True:
+        raw = _prompt_text("请输入需要对比的 heavy provider（逗号分隔）", default_text)
+        try:
+            parsed = _parse_heavy_provider_compare_targets([raw])
+        except ValueError as exc:
+            print(f"[交互引导] {exc}")
+            continue
+        if len(parsed) == 0:
+            print("[交互引导] 至少需要选择 1 个 heavy provider")
+            continue
+        return parsed
 def _default_review_paths(base_dir: Path) -> Dict[str, Path]:
     output_dir = (base_dir / "outputs").resolve()
     return {
@@ -194,15 +256,55 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
     batch = packet.get("batch_summary") or {}
     selection = batch.get("selection") or {}
     batch_gate = batch.get("batch_gate") or {}
+    anchor_truth = batch.get("anchor_truth") or {}
+    heavy_provider_status = batch.get("heavy_provider_status") or {}
+    heavy_evidence = batch.get("heavy_evidence_summary") or {}
     identity = batch.get("identity_summary") or {}
     geometry = batch.get("geometry_summary") or {}
     admission = batch.get("admission_advice") or {}
     print("\n[Review Packet]")
     print(f"  Profile: {batch.get('target_profile')}")
     print(f"  Images : {batch.get('input_count')}")
+    if anchor_truth:
+        print(
+            "  Truth  : "
+            f"face={((anchor_truth.get('face_truth_anchor') or {}).get('anchor_id'))} "
+            f"| body={((anchor_truth.get('body_truth_anchor') or {}).get('anchor_id'))} "
+            f"| upper={((anchor_truth.get('upper_support_anchor') or {}).get('anchor_id'))}"
+        )
+    if heavy_provider_status:
+        component_names = ",".join(
+            str(node.get("provider_name"))
+            for node in heavy_provider_status.get("component_providers", [])
+            if isinstance(node, dict) and str(node.get("provider_name") or "").strip()
+        )
+        print(
+            "  HeavyP : "
+            f"requested={heavy_provider_status.get('requested_heavy_evidence')} "
+            f"| active={heavy_provider_status.get('provider_name')} "
+            f"| enabled={heavy_provider_status.get('enabled')}"
+            f"{f' | components={component_names}' if component_names else ''}"
+        )
     print(f"  Top1   : {selection.get('top_ranked_image')}")
     print(f"  Window : top {selection.get('manual_review_window')}")
     print(f"  Gate   : {batch_gate.get('status')} | reasons={batch_gate.get('reasons') or []}")
+    if heavy_evidence:
+        heavy_summary = heavy_evidence.get("summary") or {}
+        component_names = ",".join(
+            str(node.get("provider_name"))
+            for node in heavy_summary.get("component_providers", [])
+            if isinstance(node, dict) and str(node.get("provider_name") or "").strip()
+        )
+        print(
+            "  Heavy  : "
+            f"provider={heavy_evidence.get('provider_name')} "
+            f"| available={heavy_evidence.get('available')} "
+            f"| conf={heavy_evidence.get('confidence')} "
+            f"| coverage={heavy_evidence.get('coverage')} "
+            f"| cache_hit={heavy_summary.get('cache_hit_count')} "
+            f"| cache_write={heavy_summary.get('cache_write_count')}"
+            f"{f' | components={component_names}' if component_names else ''}"
+        )
     print(
         "  Identity: "
         f"face={identity.get('batch_identity_cohesion')} "
@@ -294,7 +396,7 @@ def _select_winner_candidate_by_rank(entries: Sequence[Dict[str, Any]], rank_val
 
 
 def _select_winner_candidate_interactively(entries: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    print("[交互引导] 可晋升的候选 winner：")
+    print("[交互引导] 可晋升到 winner bank 的候选:")
     for index, entry in enumerate(entries, start=1):
         master = entry.get("master_consistency_card") or {}
         print(
@@ -315,7 +417,7 @@ def _select_winner_candidate_interactively(entries: Sequence[Dict[str, Any]]) ->
             index = int(choice)
             if 1 <= index <= len(entries):
                 return dict(entries[index - 1])
-        print(f"[交互引导] 无法识别的候选编号：{choice}")
+        print(f"[交互引导] 无法识别的候选编号: {choice}")
 
 
 def _maybe_enable_interactive_wizard(args: argparse.Namespace, raw_argv: Sequence[str]) -> None:
@@ -331,8 +433,8 @@ def _select_run_mode_interactively(default: str = "qa") -> str:
     return _select_choice(
         "请选择运行模式",
         [
-            ("qa", "运行当前 input 图集质检，适合日常候选筛选与人工初筛"),
-            ("benchmark", "回放已有 qa_report 与标签集，适合看规则效果、分组指标与回归表现"),
+            ("qa", "运行当前 input 图片集质检，适合日常候选筛选和人工初筛"),
+            ("benchmark", "回放现有 qa_report 与标签集，适合看规则效果、分组指标与回归表现"),
             ("optuna", "在冻结 benchmark 上做离线参数拟合，不会重跑视觉模型"),
             ("calibrate", "使用校准图集重算质量阈值，仅用于阈值标定场景"),
         ],
@@ -345,12 +447,12 @@ def _select_benchmark_action_interactively(default: str = "replay") -> str:
         "请选择 benchmark 子动作",
         [
             ("replay", "用标签文件回放已保存的 qa_report，输出评测指标"),
+            ("compare_heavy", "在同一批标签上对比 heavy provider 的可用率、置信度和覆盖率"),
             ("template", "根据当前 qa_report 导出标签模板，便于后续人工补标"),
             ("seal", "给已有标签文件补齐冻结元数据，供 Optuna 拟合前使用"),
         ],
         default=default,
     )
-
 
 def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
     workflow = str(args.workflow or "").strip()
@@ -366,6 +468,8 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         args.mode = "qa"
         if args.profile is None:
             args.profile = _select_review_profile_interactively(default=str(args.profile or "body_gold_fullbody"))
+        if getattr(args, "heavy_provider", None) is None:
+            args.heavy_provider = _select_heavy_provider_interactively(default="segformer_body_fusion")
         return
 
     if workflow in {"inspect_review_packet", "promote_winner", "winner_bank_status"}:
@@ -374,9 +478,16 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
     if args.mode is None:
         args.mode = _select_run_mode_interactively(default=effective_mode)
         effective_mode = str(args.mode)
+    if effective_mode == "qa" and getattr(args, "heavy_provider", None) is None:
+        args.heavy_provider = _select_heavy_provider_interactively(default="segformer_body_fusion")
 
     if effective_mode == "benchmark":
-        has_action = args.benchmark_template_out is not None or args.benchmark_seal_labels or args.benchmark_labels is not None
+        has_action = (
+            args.benchmark_template_out is not None
+            or args.benchmark_seal_labels
+            or args.benchmark_labels is not None
+            or bool(getattr(args, "benchmark_compare_heavy_providers", None))
+        )
         if not has_action:
             action = _select_benchmark_action_interactively(default="replay")
             if action == "template":
@@ -392,6 +503,20 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
                     "请输入需要封板的 benchmark 标签文件路径",
                     base_dir=base_dir,
                     default="outputs/benchmark_labels.interactive.json",
+                    must_exist=True,
+                )
+            elif action == "compare_heavy":
+                args.benchmark_labels = _prompt_path(
+                    "请输入 benchmark 标签文件路径",
+                    base_dir=base_dir,
+                    default="outputs/benchmark_labels_verify.json",
+                    must_exist=True,
+                )
+                args.benchmark_compare_heavy_providers = _prompt_heavy_provider_compare_targets()
+                args.benchmark_image_root = _prompt_path(
+                    "请输入重型证据回放使用的原图根目录",
+                    base_dir=base_dir,
+                    default="input",
                     must_exist=True,
                 )
             else:
@@ -505,10 +630,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             manual_note=manual_note,
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
-        print(
-            "[交互引导] 已写入 winner bank。建议下一次重新跑 shot review，"
-            "让系统用新的 curated bank 做跨批次漂移检查。"
-        )
+        print("[交互引导] 已写入 winner bank。建议下一次重新跑 shot review，让系统用新的 curated bank 做跨批次漂移检查。")
         return 0
 
     raise ValueError(f"unsupported workflow: {workflow}")
@@ -531,7 +653,7 @@ def _select_preset_interactively(
     if len(preset_rows) == 0:
         raise ValueError("当前没有可供交互选择的 Optuna 预设")
 
-    print("[交互引导] 可选预设：")
+    print("[交互引导] 可选预设:")
     for index, row in enumerate(preset_rows, start=1):
         profile = str(row.get("recommended_runtime_profile", "")).strip() or "-"
         fit_tag = "可拟合" if bool(row.get("fit_enabled", False)) else "仅评估"
@@ -568,7 +690,7 @@ def _select_preset_interactively(
                 preset_name=matched[0]["name"],
                 presets_path=presets_path,
             )
-        print(f"[交互引导] 无法识别的预设：{choice}")
+        print(f"[交互引导] 无法识别的预设: {choice}")
 
 
 def _resolve_optuna_preset_info(
@@ -640,6 +762,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Enable interactive preset selection and benchmark metadata prompts.",
     )
     parser.add_argument(
+        "--heavy-provider",
+        choices=["segformer_body_fusion", "segformer_parser", "body_measure_lite", "disabled"],
+        help="Override the heavy evidence provider for QA mode.",
+    )
+    parser.add_argument(
         "--winner-image",
         help="Image name or record_key promoted into outputs/winner_bank.json in promote_winner workflow.",
     )
@@ -666,6 +793,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--benchmark-output",
         type=Path,
         help="Optional output path for benchmark metrics JSON.",
+    )
+    parser.add_argument(
+        "--benchmark-compare-heavy-providers",
+        nargs="+",
+        help="Replay heavy evidence on the labeled benchmark set for one or more providers, for example segformer_body_fusion segformer_parser body_measure_lite.",
+    )
+    parser.add_argument(
+        "--benchmark-image-root",
+        type=Path,
+        help="Optional image root used to resolve report items back to source images during heavy evidence benchmark compare.",
     )
     parser.add_argument(
         "--benchmark-template-out",
@@ -741,12 +878,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def cli(argv: Optional[Sequence[str]] = None) -> int:
+    _configure_console_encoding()
     parser = build_arg_parser()
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     args = parser.parse_args(argv)
     _maybe_enable_interactive_wizard(args, raw_argv)
     base_dir = _resolve_cli_path(args.base_dir, BASE_DIR)
     _prepare_interactive_args(args, base_dir)
+    try:
+        args.benchmark_compare_heavy_providers = _parse_heavy_provider_compare_targets(
+            args.benchmark_compare_heavy_providers
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if str(args.workflow or "").strip() == "shot_review" and args.mode is None:
         args.mode = "qa"
     effective_mode = str(args.mode or "qa")
@@ -889,12 +1033,15 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
         base_dir=base_dir,
         profile_name=selected_profile,
         run_mode=args.mode,
+        heavy_evidence_provider=args.heavy_provider,
         auto_load_thresholds=True if args.auto_load_thresholds else None,
         threshold_override=threshold_override,
         benchmark_report_path=_resolve_cli_path(args.benchmark_report, base_dir) if args.benchmark_report else None,
         benchmark_labels_path=_resolve_cli_path(args.benchmark_labels, base_dir) if args.benchmark_labels else None,
         benchmark_output_path=_resolve_cli_path(args.benchmark_output, base_dir) if args.benchmark_output else None,
         benchmark_template_out=_resolve_cli_path(args.benchmark_template_out, base_dir) if args.benchmark_template_out else None,
+        benchmark_compare_heavy_providers=args.benchmark_compare_heavy_providers,
+        benchmark_image_root=_resolve_cli_path(args.benchmark_image_root, base_dir) if args.benchmark_image_root else None,
         benchmark_dataset_role=benchmark_dataset_role,
         benchmark_optuna_ready=benchmark_optuna_ready,
         benchmark_id=benchmark_id,
@@ -935,3 +1082,5 @@ __all__ = [
 
 if __name__ == "__main__":
     raise SystemExit(cli())
+
+

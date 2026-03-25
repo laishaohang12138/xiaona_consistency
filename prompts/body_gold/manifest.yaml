@@ -8,7 +8,6 @@ prompt_asset:
     - ref_1_face_master
     - ref_2_full_body_master
   refs_optional:
-    - ref_3_upper_support_94
     - ref_3_upper_support_97
   runtime_presets:
     flow_first_pass:
@@ -61,6 +60,8 @@ prompt_asset:
       - shot_plugin_bg09a_front_toe_heel_read_micro_open_v1_1F.txt
   notes:
     - BODY GOLD only
+    - A-Core_01 and Task-63987060-116-1 remain the only identity/body truth anchors
+    - Task-63987060-97-1 is the only active upper-body support anchor
     - flow runtime base plus one plugin family lane plus the matching negative stack
     - old BG numbering semantics are preserved and must not be rebound
     - BG-07 and BG-08 remain subtle three-quarter weight-bias plugins

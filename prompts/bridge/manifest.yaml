@@ -8,7 +8,6 @@ prompt_asset:
     - ref_1_face_master
     - ref_2_full_body_master
   refs_optional:
-    - ref_3_upper_support_94
     - ref_3_upper_support_97
   runtime_presets:
     bridge_first_pass:
@@ -34,6 +33,8 @@ prompt_asset:
       - shot_plugin_br08_three_quarter_right_coverage_comp_v0_3_1_nb2.txt
   notes:
     - BRIDGE only
+    - A-Core_01 and Task-63987060-116-1 remain the only identity/body truth anchors
+    - Task-63987060-97-1 is the only active upper-body support anchor
     - transition from calibration outfit to plain fitted basics
     - one shallow crew-round neckline family across the batch
     - BR-01~BR-04 stay front and BR-05~BR-08 stay mild three-quarter

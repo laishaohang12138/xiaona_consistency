@@ -331,6 +331,7 @@ class ProjectPaths:
     dir_anchors: Path
     dir_input: Path
     dir_output: Path
+    dir_heavy_cache: Path
     dir_calib: Path
     dir_out_pass: Path
     dir_out_warn: Path
@@ -759,6 +760,7 @@ def _default_provider_policy() -> Dict[str, str]:
     return {
         "subject_mask": "human_parsing",
         "skin_region": "human_parsing",
+        "heavy_evidence": "segformer_body_fusion",
         "anchor_source": "registry_then_directory_fallback",
     }
 
@@ -773,6 +775,7 @@ def create_project_paths(base_dir: Optional[Path] = None) -> ProjectPaths:
         dir_anchors=dir_anchors,
         dir_input=root / "input",
         dir_output=dir_output,
+        dir_heavy_cache=dir_output / "heavy_evidence_cache",
         dir_calib=root / "calib_pass",
         dir_out_pass=dir_output / "pass",
         dir_out_warn=dir_output / "warn",
@@ -787,7 +790,7 @@ def create_project_paths(base_dir: Optional[Path] = None) -> ProjectPaths:
 
 
 def ensure_output_dirs(paths: ProjectPaths) -> None:
-    for target in [paths.dir_out_pass, paths.dir_out_warn, paths.dir_out_fail]:
+    for target in [paths.dir_output, paths.dir_heavy_cache, paths.dir_out_pass, paths.dir_out_warn, paths.dir_out_fail]:
         target.mkdir(parents=True, exist_ok=True)
 
 
@@ -1300,11 +1303,15 @@ def apply_external_project_configs(config: RuntimeConfig) -> None:
                 skin_region = provider_defaults.get(
                     "skin_region", config.provider_policy["skin_region"]
                 )
+                heavy_evidence = provider_defaults.get(
+                    "heavy_evidence", config.provider_policy["heavy_evidence"]
+                )
                 anchor_source = provider_defaults.get(
                     "anchor_source", config.provider_policy["anchor_source"]
                 )
                 config.provider_policy["subject_mask"] = str(subject_mask)
                 config.provider_policy["skin_region"] = str(skin_region)
+                config.provider_policy["heavy_evidence"] = str(heavy_evidence)
                 config.provider_policy["anchor_source"] = str(anchor_source)
 
         config.external_config_status["consistency_thresholds"] = True
@@ -1435,8 +1442,10 @@ def anchor_registry_summary(config: RuntimeConfig) -> Dict[str, int]:
 
 def anchor_registry_snapshot(config: RuntimeConfig) -> Dict[str, Any]:
     anchors_node = config.anchor_registry.get("anchors", {})
+    rules_node = config.anchor_registry.get("rules", {})
     snapshot: Dict[str, Any] = {
         "anchor_source": str(config.provider_policy.get("anchor_source", "registry_then_directory_fallback")),
+        "rules": copy.deepcopy(rules_node) if isinstance(rules_node, dict) else {},
         "entries": {},
     }
     if not isinstance(anchors_node, dict):
@@ -1460,6 +1469,23 @@ def anchor_registry_snapshot(config: RuntimeConfig) -> Dict[str, Any]:
             "resolved_path": str(resolved_path) if resolved_path is not None else "",
             "exists": bool(resolved_path and resolved_path.exists()),
         }
+    if isinstance(snapshot.get("rules"), dict):
+        truth_map = {
+            "face_truth_anchor": "face_identity",
+            "body_truth_anchor": "body_master",
+            "upper_support_anchor": "upper_support",
+        }
+        truth_snapshot: Dict[str, Any] = {}
+        for rule_key, label in truth_map.items():
+            anchor_id = str(snapshot["rules"].get(rule_key, "")).strip()
+            anchor_node = snapshot["entries"].get(anchor_id, {}) if anchor_id else {}
+            truth_snapshot[label] = {
+                "anchor_id": anchor_id,
+                "resolved_path": str(anchor_node.get("resolved_path", "")),
+                "exists": bool(anchor_node.get("exists", False)),
+                "role": str(anchor_node.get("role", "")),
+            }
+        snapshot["truth_anchors"] = truth_snapshot
     return snapshot
 
 

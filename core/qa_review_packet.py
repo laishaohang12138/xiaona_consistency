@@ -135,6 +135,10 @@ def _build_batch_summary(report_payload: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "target_profile": report_meta.get("active_profile"),
         "input_count": report_meta.get("input_count"),
+        "anchor_truth": report_meta.get("anchor_governance") or {},
+        "master_truth_reference": report_meta.get("master_truth_reference") or {},
+        "heavy_provider_status": report_meta.get("heavy_provider_status") or {},
+        "heavy_evidence_summary": shot_selection.get("heavy_evidence_summary") or {},
         "group_count": shot_selection.get("group_count"),
         "status_counts": _status_counts(items, "status"),
         "module_status_counts": _module_status_counts(items),

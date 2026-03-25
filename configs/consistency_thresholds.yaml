@@ -840,4 +840,5 @@ algorithm_policy:
   provider_defaults:
     subject_mask: human_parsing
     skin_region: human_parsing
+    heavy_evidence: segformer_body_fusion
     anchor_source: registry_then_directory_fallback

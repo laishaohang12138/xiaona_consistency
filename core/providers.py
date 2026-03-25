@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 import cv2
@@ -72,8 +73,71 @@ class SkinRegionProvider(ABC):
         img_bgr: np.ndarray,
         face_feat: Optional[Any] = None,
         pose_feat: Optional[Any] = None,
-    ) -> Optional[np.ndarray]:
+        ) -> Optional[np.ndarray]:
         raise NotImplementedError
+
+
+class HeavyEvidenceProvider(ABC):
+    provider_name = "heavy_evidence_base"
+    provider_family = "heavy_evidence"
+    provider_version = "base"
+
+    def describe(self) -> Dict[str, Any]:
+        return {
+            "enabled": True,
+            "provider_name": self.provider_name,
+            "provider_family": self.provider_family,
+            "provider_version": self.provider_version,
+        }
+
+    @abstractmethod
+    def get_provider_status(self) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_heavy_evidence_metrics(
+        self,
+        runtime: Any,
+        image_path: Path,
+    ) -> Dict[str, Any]:
+        raise NotImplementedError
+
+
+class DisabledHeavyEvidenceProvider(HeavyEvidenceProvider):
+    provider_name = "disabled"
+    provider_family = "heavy_evidence"
+    provider_version = "disabled"
+
+    def __init__(self, reason: str = "disabled") -> None:
+        self.reason = str(reason).strip() or "disabled"
+
+    def get_provider_status(self) -> Dict[str, Any]:
+        return {
+            "enabled": False,
+            "provider_name": self.provider_name,
+            "provider_family": self.provider_family,
+            "provider_version": self.provider_version,
+            "model_id": None,
+            "device": None,
+            "reason": self.reason,
+        }
+
+    def get_heavy_evidence_metrics(
+        self,
+        runtime: Any,
+        image_path: Path,
+    ) -> Dict[str, Any]:
+        del runtime
+        return {
+            "ok": False,
+            "provider_name": self.provider_name,
+            "provider_family": self.provider_family,
+            "provider_version": self.provider_version,
+            "model_id": None,
+            "device": None,
+            "source_path": str(Path(image_path).resolve()),
+            "reasons": [f"HEAVY_REVIEW_UNAVAILABLE:{self.reason}"],
+        }
 
 
 class LegacyForegroundSubjectMaskProvider(SubjectMaskProvider):
@@ -247,8 +311,10 @@ class ProviderBundle:
     requested_policy: Dict[str, str]
     subject_mask_provider: SubjectMaskProvider
     skin_region_provider: SkinRegionProvider
+    heavy_evidence_provider: HeavyEvidenceProvider
     subject_mask_fallback: SubjectMaskProvider
     skin_region_fallback: SkinRegionProvider
+    heavy_evidence_fallback: HeavyEvidenceProvider
     warned_keys: set[str] = field(default_factory=set)
 
     def get_subject_mask(
@@ -314,14 +380,84 @@ class ProviderBundle:
             return normalized_fallback
         return np.zeros(img_bgr.shape[:2], dtype=np.uint8)
 
+    def get_heavy_evidence(
+        self,
+        runtime: Any,
+        image_path: Path,
+    ) -> Dict[str, Any]:
+        provider_name = getattr(self.heavy_evidence_provider, "provider_name", "unknown")
+        provider_failed = False
+        try:
+            metrics = self.heavy_evidence_provider.get_heavy_evidence_metrics(runtime, Path(image_path))
+        except Exception as exc:
+            metrics = None
+            provider_failed = True
+            _warn_once(
+                self.warned_keys,
+                f"heavy_evidence_provider_error::{provider_name}",
+                f"[警告] heavy_evidence provider={provider_name} 调用失败，已回退 disabled。原因: {exc}",
+            )
+        if isinstance(metrics, dict):
+            normalized = dict(metrics)
+            normalized.setdefault("provider_name", getattr(self.heavy_evidence_provider, "provider_name", "unknown"))
+            normalized.setdefault("provider_family", getattr(self.heavy_evidence_provider, "provider_family", "heavy_evidence"))
+            normalized.setdefault("provider_version", getattr(self.heavy_evidence_provider, "provider_version", "unknown"))
+            return normalized
+        if provider_name != self.heavy_evidence_fallback.provider_name and not provider_failed:
+            _warn_once(
+                self.warned_keys,
+                f"heavy_evidence_provider_fallback::{provider_name}",
+                f"[警告] heavy_evidence provider={provider_name} 未产出有效证据，已回退 disabled。",
+            )
+        fallback_metrics = self.heavy_evidence_fallback.get_heavy_evidence_metrics(runtime, Path(image_path))
+        normalized_fallback = dict(fallback_metrics) if isinstance(fallback_metrics, dict) else {}
+        normalized_fallback.setdefault("provider_name", getattr(self.heavy_evidence_fallback, "provider_name", "disabled"))
+        normalized_fallback.setdefault("provider_family", getattr(self.heavy_evidence_fallback, "provider_family", "heavy_evidence"))
+        normalized_fallback.setdefault("provider_version", getattr(self.heavy_evidence_fallback, "provider_version", "disabled"))
+        return normalized_fallback
+
+    def describe_heavy_evidence(self) -> Dict[str, Any]:
+        provider_name = getattr(self.heavy_evidence_provider, "provider_name", "unknown")
+        try:
+            status = self.heavy_evidence_provider.get_provider_status()
+        except Exception as exc:
+            status = {}
+            _warn_once(
+                self.warned_keys,
+                f"heavy_evidence_provider_status_error::{provider_name}",
+                f"[警告] heavy_evidence provider={provider_name} 状态探测失败，已回退 disabled。原因: {exc}",
+            )
+        if isinstance(status, dict) and len(status) > 0:
+            return {
+                **status,
+                "requested_heavy_evidence": str(self.requested_policy.get("heavy_evidence", "")),
+            }
+        fallback_status = self.heavy_evidence_fallback.get_provider_status()
+        if isinstance(fallback_status, dict):
+            return {
+                **fallback_status,
+                "requested_heavy_evidence": str(self.requested_policy.get("heavy_evidence", "")),
+            }
+        return {
+            "enabled": False,
+            "provider_name": getattr(self.heavy_evidence_fallback, "provider_name", "disabled"),
+            "provider_family": getattr(self.heavy_evidence_fallback, "provider_family", "heavy_evidence"),
+            "provider_version": getattr(self.heavy_evidence_fallback, "provider_version", "disabled"),
+            "reason": "status_unavailable",
+            "requested_heavy_evidence": str(self.requested_policy.get("heavy_evidence", "")),
+        }
+
     def describe(self) -> Dict[str, str]:
         return {
             "requested_subject_mask": str(self.requested_policy.get("subject_mask", "")),
             "requested_skin_region": str(self.requested_policy.get("skin_region", "")),
+            "requested_heavy_evidence": str(self.requested_policy.get("heavy_evidence", "")),
             "active_subject_mask": getattr(self.subject_mask_provider, "provider_name", "unknown"),
             "active_skin_region": getattr(self.skin_region_provider, "provider_name", "unknown"),
+            "active_heavy_evidence": getattr(self.heavy_evidence_provider, "provider_name", "unknown"),
             "subject_fallback": getattr(self.subject_mask_fallback, "provider_name", "unknown"),
             "skin_fallback": getattr(self.skin_region_fallback, "provider_name", "unknown"),
+            "heavy_fallback": getattr(self.heavy_evidence_fallback, "provider_name", "unknown"),
         }
 
 
@@ -329,11 +465,13 @@ def build_provider_bundle(provider_policy: Dict[str, str]) -> ProviderBundle:
     requested_policy = {
         "subject_mask": str(provider_policy.get("subject_mask", "human_parsing")),
         "skin_region": str(provider_policy.get("skin_region", "human_parsing")),
+        "heavy_evidence": str(provider_policy.get("heavy_evidence", "segformer_body_fusion")),
     }
 
     legacy_subject = LegacyForegroundSubjectMaskProvider()
     legacy_skin = LegacyYCrCbSkinRegionProvider()
     human_provider = HumanParsingProvider()
+    heavy_disabled = DisabledHeavyEvidenceProvider()
 
     subject_provider_map: Dict[str, SubjectMaskProvider] = {
         "human_parsing": human_provider,
@@ -343,21 +481,53 @@ def build_provider_bundle(provider_policy: Dict[str, str]) -> ProviderBundle:
         "human_parsing": human_provider,
         "legacy_ycrcb": legacy_skin,
     }
+    heavy_provider_map: Dict[str, HeavyEvidenceProvider] = {
+        "disabled": heavy_disabled,
+    }
+    heavy_import_errors: Dict[str, str] = {}
+    try:
+        from .qa_heavy_body_measure import BodyMeasureHeavyEvidenceProvider
+
+        heavy_provider_map["body_measure_lite"] = BodyMeasureHeavyEvidenceProvider()
+    except Exception as exc:
+        heavy_import_errors["body_measure_lite"] = str(exc)
+    try:
+        from .qa_heavy_review import SegformerHeavyEvidenceProvider
+
+        heavy_provider_map["segformer_parser"] = SegformerHeavyEvidenceProvider()
+    except Exception as exc:
+        heavy_import_errors["segformer_parser"] = str(exc)
+    try:
+        from .qa_heavy_fusion import SegformerBodyFusionHeavyEvidenceProvider
+
+        heavy_provider_map["segformer_body_fusion"] = SegformerBodyFusionHeavyEvidenceProvider()
+    except Exception as exc:
+        heavy_import_errors["segformer_body_fusion"] = str(exc)
 
     subject_name = requested_policy["subject_mask"]
     skin_name = requested_policy["skin_region"]
+    heavy_name = requested_policy["heavy_evidence"]
     subject_provider = subject_provider_map.get(subject_name, legacy_subject)
     skin_provider = skin_provider_map.get(skin_name, legacy_skin)
+    heavy_provider = heavy_provider_map.get(heavy_name, heavy_disabled)
 
     if subject_name not in subject_provider_map:
         print(f"[警告] 未知 subject_mask provider={subject_name}，已改用 legacy_foreground。")
     if skin_name not in skin_provider_map:
         print(f"[警告] 未知 skin_region provider={skin_name}，已改用 legacy_ycrcb。")
+    if heavy_name not in heavy_provider_map:
+        import_error = heavy_import_errors.get(heavy_name)
+        if import_error is not None:
+            print(f"[警告] heavy_evidence provider={heavy_name} 初始化失败，已改用 disabled。原因: {import_error}")
+        else:
+            print(f"[警告] 未知 heavy_evidence provider={heavy_name}，已改用 disabled。")
 
     return ProviderBundle(
         requested_policy=requested_policy,
         subject_mask_provider=subject_provider,
         skin_region_provider=skin_provider,
+        heavy_evidence_provider=heavy_provider,
         subject_mask_fallback=legacy_subject,
         skin_region_fallback=legacy_skin,
+        heavy_evidence_fallback=heavy_disabled,
     )

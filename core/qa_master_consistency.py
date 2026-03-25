@@ -5,8 +5,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from .qa_consistency import extract_depth_3d_lite_metrics
+from .qa_consistency import extract_body_constitution_metrics, extract_depth_3d_lite_metrics
 from .qa_runtime import AnchorSet, FaceFeat, PoseFeat, RuntimeContext
+from .qa_utils import image_read_bgr
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -119,7 +120,142 @@ def _match_pose_anchor_by_path(anchors: AnchorSet, target_path: Optional[Path]) 
     return None
 
 
-def _build_body_identity_signature(
+def _match_face_anchor_by_path(anchors: AnchorSet, target_path: Optional[Path]) -> Optional[FaceFeat]:
+    if target_path is None:
+        return None
+    full_paths = list(anchors.meta.get("full_paths") or [])
+    for index, raw_path in enumerate(full_paths):
+        try:
+            resolved = Path(str(raw_path)).resolve()
+        except Exception:
+            continue
+        if resolved == target_path and index < len(anchors.full_face_feats):
+            return anchors.full_face_feats[index]
+    return None
+
+
+def _round_numeric_mapping(values: Dict[str, Any], digits: int = 4) -> Dict[str, Optional[float]]:
+    rounded: Dict[str, Optional[float]] = {}
+    for key, value in values.items():
+        rounded[str(key)] = _round_or_none(_float_or_none(value), digits=digits)
+    return rounded
+
+
+def _build_feature_identity_payload(
+    feature_specs: Sequence[tuple[str, Any, float, float]],
+    *,
+    min_ready: int,
+    weight: Optional[float] = None,
+) -> Dict[str, Any]:
+    values: List[float] = []
+    ready = 0
+    feature_values: Dict[str, Optional[float]] = {}
+    feature_centers: Dict[str, float] = {}
+    feature_scales: Dict[str, float] = {}
+    for name, raw_value, center, scale in feature_specs:
+        numeric = _float_or_none(raw_value)
+        feature_values[name] = numeric
+        feature_centers[name] = float(center)
+        feature_scales[name] = float(scale)
+        if numeric is None:
+            values.append(0.0)
+            continue
+        values.append((numeric - float(center)) / max(1e-6, float(scale)))
+        ready += 1
+    signature = _normalize_vector(values) if ready >= int(min_ready) else None
+    feature_count = len(feature_specs)
+    return {
+        "signature": signature,
+        "ready_features": ready,
+        "feature_count": feature_count,
+        "coverage": float(ready / max(1, feature_count)),
+        "weight": 0.0 if signature is None or weight is None else float(weight),
+        "feature_values": feature_values,
+        "feature_centers": feature_centers,
+        "feature_scales": feature_scales,
+    }
+
+
+def _build_truth_vector(identity_payload: Dict[str, Any]) -> Dict[str, Any]:
+    truth_values = {
+        str(name): float(value)
+        for name, value in dict(identity_payload.get("feature_values") or {}).items()
+        if value is not None
+    }
+    feature_scales = {
+        str(name): float(value)
+        for name, value in dict(identity_payload.get("feature_scales") or {}).items()
+        if name in truth_values
+    }
+    return {
+        "truth_values": truth_values,
+        "feature_scales": feature_scales,
+        "ready_features": int(identity_payload.get("ready_features") or 0),
+        "feature_count": int(identity_payload.get("feature_count") or 0),
+        "coverage": float(identity_payload.get("coverage") or 0.0),
+        "weight": float(identity_payload.get("weight") or 0.0),
+        "signature_available": identity_payload.get("signature") is not None,
+    }
+
+
+def _feature_alignment_diagnostics(
+    candidate_values: Dict[str, Any],
+    truth_vector: Dict[str, Any],
+) -> Dict[str, Any]:
+    truth_values = dict(truth_vector.get("truth_values") or {})
+    scales = dict(truth_vector.get("feature_scales") or {})
+    if len(truth_values) == 0:
+        return {
+            "score": None,
+            "coverage": 0.0,
+            "matched_features": 0,
+            "truth_feature_count": 0,
+            "missing_features": [],
+            "top_drifts": [],
+        }
+
+    candidate_node = candidate_values or {}
+    matched = 0
+    contributions: List[float] = []
+    drifts: List[Dict[str, Any]] = []
+    missing: List[str] = []
+    for feature_name, truth_value_raw in truth_values.items():
+        truth_value = _float_or_none(truth_value_raw)
+        candidate_value = _float_or_none(candidate_node.get(feature_name))
+        scale = max(1e-6, float(scales.get(feature_name, 1.0) or 1.0))
+        if truth_value is None or candidate_value is None:
+            missing.append(feature_name)
+            continue
+        delta = float(candidate_value - truth_value)
+        normalized_delta = abs(delta) / scale
+        contributions.append(float(1.0 / (1.0 + normalized_delta)))
+        drifts.append(
+            {
+                "feature": feature_name,
+                "candidate_value": _round_or_none(candidate_value),
+                "truth_value": _round_or_none(truth_value),
+                "delta": _round_or_none(delta),
+                "normalized_delta": _round_or_none(normalized_delta),
+                "scale": _round_or_none(scale),
+            }
+        )
+        matched += 1
+
+    score = None
+    if len(contributions) > 0:
+        score = float(sum(contributions) / max(1, len(contributions)))
+    drifts.sort(key=lambda item: float(item.get("normalized_delta") or 0.0), reverse=True)
+    return {
+        "score": score,
+        "coverage": float(matched / max(1, len(truth_values))),
+        "matched_features": matched,
+        "truth_feature_count": len(truth_values),
+        "missing_features": missing[:6],
+        "top_drifts": drifts[:5],
+    }
+
+
+def build_body_identity_signature(
     pose: PoseFeat,
     constitution_metrics: Dict[str, Any],
     depth_3d_metrics: Dict[str, Any],
@@ -138,24 +274,14 @@ def _build_body_identity_signature(
         ("waist_to_torso_ratio", constitution_metrics.get("waist_to_torso_ratio"), 0.80, 0.22),
         ("hip_to_torso_ratio", constitution_metrics.get("hip_to_torso_ratio"), 1.00, 0.24),
     ]
-    values: List[float] = []
-    ready = 0
-    for _, raw_value, center, scale in feature_specs:
-        if raw_value is None:
-            values.append(0.0)
-            continue
-        try:
-            numeric = float(raw_value)
-        except Exception:
-            values.append(0.0)
-            continue
-        values.append((numeric - float(center)) / max(1e-6, float(scale)))
-        ready += 1
-    signature = _normalize_vector(values) if ready >= 4 else None
-    return {"signature": signature, "ready_features": ready, "feature_count": len(feature_specs)}
+    pose_weight = float(getattr(pose, "confidence_full", 0.0) or 0.0)
+    constitution_conf = float(constitution_metrics.get("confidence", 0.0) or 0.0)
+    depth_conf = float(depth_3d_metrics.get("confidence", 0.0) or 0.0)
+    weight = float(0.40 * pose_weight + 0.35 * constitution_conf + 0.25 * depth_conf)
+    return _build_feature_identity_payload(feature_specs, min_ready=4, weight=weight)
 
 
-def _build_depth_identity_signature(
+def build_depth_identity_signature(
     pose: PoseFeat,
     depth_3d_metrics: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -181,28 +307,18 @@ def _build_depth_identity_signature(
         ("posterior_score", depth_3d_metrics.get("posterior_score"), 0.84, 0.14),
         ("torso_compactness_score", depth_3d_metrics.get("torso_compactness_score"), 0.80, 0.16),
     ]
-    values: List[float] = []
-    ready = 0
-    for _, raw_value, center, scale in feature_specs:
-        if raw_value is None:
-            values.append(0.0)
-            continue
-        try:
-            numeric = float(raw_value)
-        except Exception:
-            values.append(0.0)
-            continue
-        values.append((numeric - float(center)) / max(1e-6, float(scale)))
-        ready += 1
-    signature = _normalize_vector(values) if ready >= 6 else None
-    return {"signature": signature, "ready_features": ready, "feature_count": len(feature_specs)}
+    pose_weight = float(getattr(pose, "confidence_full", 0.0) or 0.0)
+    depth_conf = float(depth_3d_metrics.get("confidence", 0.0) or 0.0)
+    depth_score = float(depth_3d_metrics.get("depth_3d_score", 0.0) or 0.0)
+    weight = float(0.45 * depth_conf + 0.35 * pose_weight + 0.20 * depth_score)
+    return _build_feature_identity_payload(feature_specs, min_ready=6, weight=weight)
 
 
-def _build_world3d_identity_signature(pose: PoseFeat) -> Dict[str, Any]:
+def build_world3d_identity_signature(pose: PoseFeat) -> Dict[str, Any]:
     xyz = getattr(pose, "lm_world", None)
     vis = getattr(pose, "lm_vis", None)
     if xyz is None or vis is None:
-        return {"signature": None, "ready_features": 0, "feature_count": 0}
+        return {"signature": None, "ready_features": 0, "feature_count": 0, "coverage": 0.0, "weight": 0.0, "feature_values": {}, "feature_centers": {}, "feature_scales": {}}
 
     def _dist(i: int, j: int) -> Optional[float]:
         if vis[i] <= 0.35 or vis[j] <= 0.35:
@@ -288,52 +404,104 @@ def _build_world3d_identity_signature(pose: PoseFeat) -> Dict[str, Any]:
         ("hip_depth_world", hip_depth, 0.08, 0.08),
         ("torso_twist_world", torso_twist, 0.10, 0.10),
     ]
-    values: List[float] = []
-    ready = 0
-    for _, raw_value, center, scale in feature_specs:
-        if raw_value is None:
-            values.append(0.0)
-            continue
-        values.append((float(raw_value) - float(center)) / max(1e-6, float(scale)))
-        ready += 1
-    signature = _normalize_vector(values) if ready >= 6 else None
-    return {"signature": signature, "ready_features": ready, "feature_count": len(feature_specs)}
+    weight = float(
+        0.65 * float(getattr(pose, "confidence_full", 0.0) or 0.0)
+        + 0.35 * min(1.0, sum(1 for _, raw_value, _, _ in feature_specs if raw_value is not None) / max(1, len(feature_specs)))
+    )
+    return _build_feature_identity_payload(feature_specs, min_ready=6, weight=weight)
 
 
 def build_absolute_master_reference(runtime: RuntimeContext, anchors: AnchorSet) -> Dict[str, Any]:
     full_master_path = _registry_ref_path(runtime, "FULL_BODY_MASTER")
     pose = _match_pose_anchor_by_path(anchors, full_master_path)
+    face = _match_face_anchor_by_path(anchors, full_master_path)
     if pose is None:
         return {
             "full_master_path": str(full_master_path) if full_master_path else None,
             "body_signature": None,
             "depth_signature": None,
             "world3d_signature": None,
+            "body_truth_vector": {},
+            "depth_truth_vector": {},
+            "world3d_truth_vector": {},
+            "summary": {},
             "available": False,
         }
 
+    master_img = None
+    if full_master_path is not None and full_master_path.exists():
+        master_img = image_read_bgr(full_master_path, runtime.config.standardization)
     constitution_metrics = {
         "waist_to_torso_ratio": None,
         "hip_to_torso_ratio": None,
+        "body_constitution_score": None,
         "confidence": float(getattr(pose, "confidence_full", 0.0) or 0.0),
     }
-    empty_face = FaceFeat(ok=False)
+    if master_img is not None:
+        constitution_metrics = extract_body_constitution_metrics(
+            runtime,
+            master_img,
+            face if face is not None else FaceFeat(ok=False),
+            pose,
+            view_bucket="front",
+            view_lane_detail="front",
+        )
+    master_face = face if face is not None else FaceFeat(ok=False)
     depth_3d_metrics = extract_depth_3d_lite_metrics(
-        empty_face,
+        master_face,
         pose,
         view_bucket="front",
         yaw_proxy=0.0,
         body_yaw_deg=0.0,
         view_lane_detail="front",
     )
-    body_identity = _build_body_identity_signature(pose, constitution_metrics, depth_3d_metrics)
-    depth_identity = _build_depth_identity_signature(pose, depth_3d_metrics)
-    world3d_identity = _build_world3d_identity_signature(pose)
+    body_identity = build_body_identity_signature(pose, constitution_metrics, depth_3d_metrics)
+    depth_identity = build_depth_identity_signature(pose, depth_3d_metrics)
+    world3d_identity = build_world3d_identity_signature(pose)
+    body_truth_vector = _build_truth_vector(body_identity)
+    depth_truth_vector = _build_truth_vector(depth_identity)
+    world3d_truth_vector = _build_truth_vector(world3d_identity)
+    summary = {
+        "full_master_path": str(full_master_path) if full_master_path else None,
+        "body_truth_vector": {
+            **body_truth_vector,
+            "truth_values": _round_numeric_mapping(dict(body_truth_vector.get("truth_values") or {}), digits=4),
+            "feature_scales": _round_numeric_mapping(dict(body_truth_vector.get("feature_scales") or {}), digits=4),
+        },
+        "depth_truth_vector": {
+            **depth_truth_vector,
+            "truth_values": _round_numeric_mapping(dict(depth_truth_vector.get("truth_values") or {}), digits=4),
+            "feature_scales": _round_numeric_mapping(dict(depth_truth_vector.get("feature_scales") or {}), digits=4),
+        },
+        "world3d_truth_vector": {
+            **world3d_truth_vector,
+            "truth_values": _round_numeric_mapping(dict(world3d_truth_vector.get("truth_values") or {}), digits=4),
+            "feature_scales": _round_numeric_mapping(dict(world3d_truth_vector.get("feature_scales") or {}), digits=4),
+        },
+        "constitution_metrics": {
+            "waist_to_torso_ratio": _round_or_none(constitution_metrics.get("waist_to_torso_ratio")),
+            "hip_to_torso_ratio": _round_or_none(constitution_metrics.get("hip_to_torso_ratio")),
+            "body_constitution_score": _round_or_none(constitution_metrics.get("body_constitution_score")),
+            "confidence": _round_or_none(constitution_metrics.get("confidence")),
+        },
+        "depth_3d_metrics": {
+            "depth_3d_score": _round_or_none(depth_3d_metrics.get("depth_3d_score")),
+            "turn_signal_score": _round_or_none(depth_3d_metrics.get("turn_signal_score")),
+            "torso_volume_score": _round_or_none(depth_3d_metrics.get("torso_volume_score")),
+            "side_profile_score": _round_or_none(depth_3d_metrics.get("side_profile_score")),
+            "posterior_score": _round_or_none(depth_3d_metrics.get("posterior_score")),
+            "confidence": _round_or_none(depth_3d_metrics.get("confidence")),
+        },
+    }
     return {
         "full_master_path": str(full_master_path) if full_master_path else None,
         "body_signature": body_identity.get("signature"),
         "depth_signature": depth_identity.get("signature"),
         "world3d_signature": world3d_identity.get("signature"),
+        "body_truth_vector": body_truth_vector,
+        "depth_truth_vector": depth_truth_vector,
+        "world3d_truth_vector": world3d_truth_vector,
+        "summary": summary,
         "available": any(
             ref is not None
             for ref in [
@@ -341,6 +509,9 @@ def build_absolute_master_reference(runtime: RuntimeContext, anchors: AnchorSet)
                 depth_identity.get("signature"),
                 world3d_identity.get("signature"),
             ]
+        ) or any(
+            len(dict(vector.get("truth_values") or {})) > 0
+            for vector in [body_truth_vector, depth_truth_vector, world3d_truth_vector]
         ),
     }
 
@@ -553,6 +724,18 @@ def build_master_consistency_card(
     body_signature_alignment = _cosine(_normalize_vector(body_identity.get("signature")), master_reference.get("body_signature"))
     depth_signature_alignment = _cosine(_normalize_vector(depth_identity.get("signature")), master_reference.get("depth_signature"))
     world3d_signature_alignment = _cosine(_normalize_vector(world3d_identity.get("signature")), master_reference.get("world3d_signature"))
+    body_truth_alignment = _feature_alignment_diagnostics(
+        dict(body_identity.get("feature_values") or {}),
+        dict(master_reference.get("body_truth_vector") or {}),
+    )
+    depth_truth_alignment = _feature_alignment_diagnostics(
+        dict(depth_identity.get("feature_values") or {}),
+        dict(master_reference.get("depth_truth_vector") or {}),
+    )
+    world3d_truth_alignment = _feature_alignment_diagnostics(
+        dict(world3d_identity.get("feature_values") or {}),
+        dict(master_reference.get("world3d_truth_vector") or {}),
+    )
 
     if lane_family == "front":
         body_direct = _weighted_mean([(scores.get("full"), 0.55), (scores.get("constitution"), 0.30), (scores.get("upper"), 0.15)])
@@ -569,16 +752,20 @@ def build_master_consistency_card(
 
     body_master_alignment = _weighted_mean(
         [
-            (body_direct, 0.55),
-            (body_signature_alignment, 0.30),
-            (depth_signature_alignment, 0.15),
+            (body_direct, 0.40),
+            (body_truth_alignment.get("score"), 0.30),
+            (depth_truth_alignment.get("score"), 0.15),
+            (body_signature_alignment, 0.10),
+            (depth_signature_alignment, 0.05),
         ]
     )
     world3d_master_alignment = _weighted_mean(
         [
-            (world3d_signature_alignment, 0.72),
-            (depth_signature_alignment, 0.12),
-            (scores.get("depth_3d"), 0.16),
+            (world3d_truth_alignment.get("score"), 0.56),
+            (world3d_signature_alignment, 0.16),
+            (depth_truth_alignment.get("score"), 0.12),
+            (depth_signature_alignment, 0.06),
+            (scores.get("depth_3d"), 0.10),
         ]
     )
     surface_requested = str(face_debug.get("view_surface_requested") or "").strip()
@@ -610,6 +797,8 @@ def build_master_consistency_card(
         highlights.append("face stays close to the absolute master")
     if isinstance(lane_validity, (int, float)) and float(lane_validity) >= 0.80:
         highlights.append("current lane geometry is clean enough")
+    if isinstance(body_truth_alignment.get("score"), (int, float)) and float(body_truth_alignment.get("score")) >= 0.82:
+        highlights.append("body truth vector stays close to the 116-1 master")
 
     if face_drift.get("primary_bottleneck") != "stable":
         cautions.append(f"face drift bottleneck: {face_drift.get('primary_bottleneck')}")
@@ -619,6 +808,38 @@ def build_master_consistency_card(
         cautions.append("lane strictness is still below the review-safe range")
     if isinstance(hybrid_master_alignment, (int, float)) and float(hybrid_master_alignment) < 0.76:
         cautions.append("hybrid master consistency is still weak")
+    if isinstance(body_truth_alignment.get("score"), (int, float)) and float(body_truth_alignment.get("score")) < 0.72:
+        cautions.append("116-1 body truth vector drift is visible")
+    if isinstance(world3d_truth_alignment.get("score"), (int, float)) and float(world3d_truth_alignment.get("score")) < 0.72:
+        cautions.append("world3d truth vector drift is visible")
+
+    truth_focus_map = {
+        "waist_to_torso_ratio": "check waist pinch and torso taper against 116-1",
+        "hip_to_torso_ratio": "check hip volume and lower torso transition against 116-1",
+        "leg_ratio": "check upper/lower body proportion against 116-1",
+        "head_body_ratio": "check head-to-body proportion against 116-1",
+        "torso_len_norm": "check torso length impression against 116-1",
+        "torso_compactness": "check torso compactness and waist containment against 116-1",
+        "shoulder_hip_center_offset_norm": "check shoulder-hip axis centering against 116-1",
+        "foot_length_balance": "check foot scale and symmetry before admitting this frame",
+        "shoulder_span_world": "check shoulder span in 3D structure against 116-1",
+        "hip_span_world": "check pelvis span in 3D structure against 116-1",
+        "torso_len_world": "check torso depth/length relation against 116-1",
+        "leg_ratio_world": "check 3D leg ratio against 116-1",
+        "torso_twist_world": "check torso twist and stance neutrality against 116-1",
+    }
+    truth_top_drifts = list(body_truth_alignment.get("top_drifts") or [])[:2] + list(world3d_truth_alignment.get("top_drifts") or [])[:2]
+    for drift in truth_top_drifts:
+        feature_name = str(drift.get("feature") or "").strip()
+        prompt = truth_focus_map.get(feature_name)
+        if prompt:
+            manual_focus.append(prompt)
+    if truth_top_drifts:
+        drift_labels = [str(drift.get("feature") or "").strip() for drift in truth_top_drifts if str(drift.get("feature") or "").strip()]
+        if len(drift_labels) > 0:
+            manual_review_prompts.append(
+                "116-1 truth vector drift hotspots: " + ", ".join(drift_labels[:3]) + ". Confirm these body proportions before final admission."
+            )
 
     if lane_family == "front":
         manual_focus.extend(
@@ -673,11 +894,22 @@ def build_master_consistency_card(
 
     return {
         "lane_family": lane_family,
+        "truth_reference_available": bool(master_reference.get("available")),
+        "truth_reference_path": master_reference.get("full_master_path"),
         "face_master_alignment": _round_or_none(scores.get("face")),
         "face_master_confidence": _round_or_none(confidences.get("face")),
         "body_master_alignment": _round_or_none(body_master_alignment),
         "world3d_master_alignment": _round_or_none(world3d_master_alignment),
         "hybrid_master_alignment": _round_or_none(hybrid_master_alignment),
+        "body_truth_alignment": _round_or_none(body_truth_alignment.get("score")),
+        "body_truth_coverage": _round_or_none(body_truth_alignment.get("coverage")),
+        "depth_truth_alignment": _round_or_none(depth_truth_alignment.get("score")),
+        "depth_truth_coverage": _round_or_none(depth_truth_alignment.get("coverage")),
+        "world3d_truth_alignment": _round_or_none(world3d_truth_alignment.get("score")),
+        "world3d_truth_coverage": _round_or_none(world3d_truth_alignment.get("coverage")),
+        "body_truth_top_drifts": list(body_truth_alignment.get("top_drifts") or [])[:3],
+        "depth_truth_top_drifts": list(depth_truth_alignment.get("top_drifts") or [])[:3],
+        "world3d_truth_top_drifts": list(world3d_truth_alignment.get("top_drifts") or [])[:3],
         "lane_validity": _round_or_none(lane_validity),
         "view_surface_requested": surface_requested,
         "view_surface_used": surface_used,
