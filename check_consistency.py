@@ -256,15 +256,28 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
     batch = packet.get("batch_summary") or {}
     selection = batch.get("selection") or {}
     batch_gate = batch.get("batch_gate") or {}
+    engine_status = batch.get("engine_status") or {}
     anchor_truth = batch.get("anchor_truth") or {}
     heavy_provider_status = batch.get("heavy_provider_status") or {}
+    view_classifier_status = batch.get("view_classifier_status") or {}
     heavy_evidence = batch.get("heavy_evidence_summary") or {}
     identity = batch.get("identity_summary") or {}
     geometry = batch.get("geometry_summary") or {}
     admission = batch.get("admission_advice") or {}
     print("\n[Review Packet]")
     print(f"  Profile: {batch.get('target_profile')}")
+    print(f"  Status : {batch.get('run_status')}")
     print(f"  Images : {batch.get('input_count')}")
+    if engine_status:
+        print(
+            "  Engine : "
+            f"face={engine_status.get('face_mode')} "
+            f"| pose={engine_status.get('pose_mode')} "
+            f"| fatal={engine_status.get('fatal')} "
+            f"| classic_cv={engine_status.get('classic_cv_fallback_active')}"
+        )
+        if engine_status.get("fatal_reasons"):
+            print(f"  Fatal  : {engine_status.get('fatal_reasons')}")
     if anchor_truth:
         print(
             "  Truth  : "
@@ -284,6 +297,13 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
             f"| active={heavy_provider_status.get('provider_name')} "
             f"| enabled={heavy_provider_status.get('enabled')}"
             f"{f' | components={component_names}' if component_names else ''}"
+        )
+    if view_classifier_status:
+        print(
+            "  ViewClf: "
+            f"requested={view_classifier_status.get('requested_view_classifier')} "
+            f"| active={view_classifier_status.get('provider_name')} "
+            f"| enabled={view_classifier_status.get('enabled')}"
         )
     print(f"  Top1   : {selection.get('top_ranked_image')}")
     print(f"  Window : top {selection.get('manual_review_window')}")

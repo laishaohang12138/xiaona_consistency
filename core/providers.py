@@ -51,6 +51,43 @@ def _normalize_mask(mask: Optional[np.ndarray]) -> Optional[np.ndarray]:
     return np.where(mask > 0, 255, 0).astype(np.uint8)
 
 
+def _normalize_view_classifier_result(node: Any) -> Dict[str, Any]:
+    raw = dict(node) if isinstance(node, dict) else {}
+    lane_probs_raw = raw.get("lane_probs") if isinstance(raw.get("lane_probs"), dict) else {}
+    lane_probs = {
+        lane: float(lane_probs_raw.get(lane, 0.0) or 0.0)
+        for lane in ["front", "three_quarter", "side_90", "back_180"]
+    }
+    return {
+        "enabled": bool(raw.get("enabled", True)),
+        "provider_name": str(raw.get("provider_name") or "unknown"),
+        "provider_family": str(raw.get("provider_family") or "view_classifier"),
+        "provider_version": str(raw.get("provider_version") or "unknown"),
+        "model_id": raw.get("model_id"),
+        "device": raw.get("device"),
+        "mode": str(raw.get("mode") or "shadow_only"),
+        "lane": str(raw.get("lane") or "unknown"),
+        "lane_detail": str(raw.get("lane_detail") or "unknown"),
+        "confidence": float(raw.get("confidence", 0.0) or 0.0),
+        "lane_detail_confidence": float(raw.get("lane_detail_confidence", 0.0) or 0.0),
+        "lane_strictness_score": float(raw.get("lane_strictness_score", 0.0) or 0.0),
+        "decision_margin": float(raw.get("decision_margin", 0.0) or 0.0),
+        "evidence_coverage": float(raw.get("evidence_coverage", 0.0) or 0.0),
+        "body_yaw_deg": float(raw.get("body_yaw_deg", 0.0) or 0.0),
+        "face_bucket": str(raw.get("face_bucket") or "unknown"),
+        "face_side": str(raw.get("face_side") or "unknown"),
+        "face_yaw_proxy": float(raw.get("face_yaw_proxy", 0.0) or 0.0),
+        "pose_bucket": str(raw.get("pose_bucket") or "unknown"),
+        "pose_profile_strength": float(raw.get("pose_profile_strength", 0.0) or 0.0),
+        "pose_frontal_strength": float(raw.get("pose_frontal_strength", 0.0) or 0.0),
+        "mask_symmetry": raw.get("mask_symmetry"),
+        "head_skin_ratio": raw.get("head_skin_ratio"),
+        "silhouette_aspect_ratio": raw.get("silhouette_aspect_ratio"),
+        "lane_probs": lane_probs,
+        "reasons": [str(reason) for reason in raw.get("reasons", []) if str(reason).strip()],
+    }
+
+
 class SubjectMaskProvider(ABC):
     provider_name = "subject_mask_base"
 
@@ -103,6 +140,37 @@ class HeavyEvidenceProvider(ABC):
         raise NotImplementedError
 
 
+class ViewClassifierProvider(ABC):
+    provider_name = "view_classifier_base"
+    provider_family = "view_classifier"
+    provider_version = "base"
+
+    def describe(self) -> Dict[str, Any]:
+        return {
+            "enabled": True,
+            "provider_name": self.provider_name,
+            "provider_family": self.provider_family,
+            "provider_version": self.provider_version,
+            "mode": "shadow_only",
+        }
+
+    @abstractmethod
+    def get_provider_status(self) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def classify_view_lane(
+        self,
+        img_bgr: Optional[np.ndarray],
+        *,
+        face_feat: Optional[Any] = None,
+        pose_feat: Optional[Any] = None,
+        subject_mask: Optional[np.ndarray] = None,
+        skin_mask: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        raise NotImplementedError
+
+
 class DisabledHeavyEvidenceProvider(HeavyEvidenceProvider):
     provider_name = "disabled"
     provider_family = "heavy_evidence"
@@ -137,6 +205,71 @@ class DisabledHeavyEvidenceProvider(HeavyEvidenceProvider):
             "device": None,
             "source_path": str(Path(image_path).resolve()),
             "reasons": [f"HEAVY_REVIEW_UNAVAILABLE:{self.reason}"],
+        }
+
+
+class DisabledViewClassifierProvider(ViewClassifierProvider):
+    provider_name = "disabled"
+    provider_family = "view_classifier"
+    provider_version = "disabled"
+
+    def __init__(self, reason: str = "disabled") -> None:
+        self.reason = str(reason).strip() or "disabled"
+
+    def get_provider_status(self) -> Dict[str, Any]:
+        return {
+            "enabled": False,
+            "provider_name": self.provider_name,
+            "provider_family": self.provider_family,
+            "provider_version": self.provider_version,
+            "model_id": None,
+            "device": None,
+            "mode": "shadow_only",
+            "reason": self.reason,
+        }
+
+    def classify_view_lane(
+        self,
+        img_bgr: Optional[np.ndarray],
+        *,
+        face_feat: Optional[Any] = None,
+        pose_feat: Optional[Any] = None,
+        subject_mask: Optional[np.ndarray] = None,
+        skin_mask: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        del img_bgr, face_feat, pose_feat, subject_mask, skin_mask
+        return {
+            "enabled": False,
+            "provider_name": self.provider_name,
+            "provider_family": self.provider_family,
+            "provider_version": self.provider_version,
+            "model_id": None,
+            "device": None,
+            "mode": "shadow_only",
+            "lane": "unknown",
+            "lane_detail": "unknown",
+            "confidence": 0.0,
+            "lane_detail_confidence": 0.0,
+            "lane_strictness_score": 0.0,
+            "decision_margin": 0.0,
+            "evidence_coverage": 0.0,
+            "body_yaw_deg": 0.0,
+            "face_bucket": "unknown",
+            "face_side": "unknown",
+            "face_yaw_proxy": 0.0,
+            "pose_bucket": "unknown",
+            "pose_profile_strength": 0.0,
+            "pose_frontal_strength": 0.0,
+            "mask_symmetry": None,
+            "head_skin_ratio": None,
+            "silhouette_aspect_ratio": None,
+            "lane_probs": {
+                "front": 0.0,
+                "three_quarter": 0.0,
+                "side_90": 0.0,
+                "back_180": 0.0,
+            },
+            "reasons": [f"VIEW_CLASSIFIER_UNAVAILABLE:{self.reason}"],
         }
 
 
@@ -312,9 +445,11 @@ class ProviderBundle:
     subject_mask_provider: SubjectMaskProvider
     skin_region_provider: SkinRegionProvider
     heavy_evidence_provider: HeavyEvidenceProvider
+    view_classifier_provider: ViewClassifierProvider
     subject_mask_fallback: SubjectMaskProvider
     skin_region_fallback: SkinRegionProvider
     heavy_evidence_fallback: HeavyEvidenceProvider
+    view_classifier_fallback: ViewClassifierProvider
     warned_keys: set[str] = field(default_factory=set)
 
     def get_subject_mask(
@@ -447,17 +582,103 @@ class ProviderBundle:
             "requested_heavy_evidence": str(self.requested_policy.get("heavy_evidence", "")),
         }
 
+    def classify_view_lane(
+        self,
+        img_bgr: Optional[np.ndarray],
+        *,
+        face_feat: Optional[Any] = None,
+        pose_feat: Optional[Any] = None,
+        subject_mask: Optional[np.ndarray] = None,
+        skin_mask: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        provider_name = getattr(self.view_classifier_provider, "provider_name", "unknown")
+        provider_failed = False
+        try:
+            result = self.view_classifier_provider.classify_view_lane(
+                img_bgr,
+                face_feat=face_feat,
+                pose_feat=pose_feat,
+                subject_mask=subject_mask,
+                skin_mask=skin_mask,
+            )
+        except Exception as exc:
+            result = None
+            provider_failed = True
+            _warn_once(
+                self.warned_keys,
+                f"view_classifier_provider_error::{provider_name}",
+                f"[警告] view_classifier provider={provider_name} 调用失败，已回退 disabled。原因: {exc}",
+            )
+        if isinstance(result, dict):
+            normalized = _normalize_view_classifier_result(result)
+            normalized.setdefault("provider_name", getattr(self.view_classifier_provider, "provider_name", "unknown"))
+            normalized.setdefault("provider_family", getattr(self.view_classifier_provider, "provider_family", "view_classifier"))
+            normalized.setdefault("provider_version", getattr(self.view_classifier_provider, "provider_version", "unknown"))
+            return normalized
+        if provider_name != self.view_classifier_fallback.provider_name and not provider_failed:
+            _warn_once(
+                self.warned_keys,
+                f"view_classifier_provider_fallback::{provider_name}",
+                f"[警告] view_classifier provider={provider_name} 未产出有效结果，已回退 disabled。",
+            )
+        fallback_result = self.view_classifier_fallback.classify_view_lane(
+            img_bgr,
+            face_feat=face_feat,
+            pose_feat=pose_feat,
+            subject_mask=subject_mask,
+            skin_mask=skin_mask,
+        )
+        normalized_fallback = _normalize_view_classifier_result(fallback_result)
+        normalized_fallback.setdefault("provider_name", getattr(self.view_classifier_fallback, "provider_name", "disabled"))
+        normalized_fallback.setdefault("provider_family", getattr(self.view_classifier_fallback, "provider_family", "view_classifier"))
+        normalized_fallback.setdefault("provider_version", getattr(self.view_classifier_fallback, "provider_version", "disabled"))
+        return normalized_fallback
+
+    def describe_view_classifier(self) -> Dict[str, Any]:
+        provider_name = getattr(self.view_classifier_provider, "provider_name", "unknown")
+        try:
+            status = self.view_classifier_provider.get_provider_status()
+        except Exception as exc:
+            status = {}
+            _warn_once(
+                self.warned_keys,
+                f"view_classifier_provider_status_error::{provider_name}",
+                f"[警告] view_classifier provider={provider_name} 状态探测失败，已回退 disabled。原因: {exc}",
+            )
+        if isinstance(status, dict) and len(status) > 0:
+            return {
+                **status,
+                "requested_view_classifier": str(self.requested_policy.get("view_classifier", "")),
+            }
+        fallback_status = self.view_classifier_fallback.get_provider_status()
+        if isinstance(fallback_status, dict):
+            return {
+                **fallback_status,
+                "requested_view_classifier": str(self.requested_policy.get("view_classifier", "")),
+            }
+        return {
+            "enabled": False,
+            "provider_name": getattr(self.view_classifier_fallback, "provider_name", "disabled"),
+            "provider_family": getattr(self.view_classifier_fallback, "provider_family", "view_classifier"),
+            "provider_version": getattr(self.view_classifier_fallback, "provider_version", "disabled"),
+            "reason": "status_unavailable",
+            "requested_view_classifier": str(self.requested_policy.get("view_classifier", "")),
+        }
+
     def describe(self) -> Dict[str, str]:
         return {
             "requested_subject_mask": str(self.requested_policy.get("subject_mask", "")),
             "requested_skin_region": str(self.requested_policy.get("skin_region", "")),
             "requested_heavy_evidence": str(self.requested_policy.get("heavy_evidence", "")),
+            "requested_view_classifier": str(self.requested_policy.get("view_classifier", "")),
             "active_subject_mask": getattr(self.subject_mask_provider, "provider_name", "unknown"),
             "active_skin_region": getattr(self.skin_region_provider, "provider_name", "unknown"),
             "active_heavy_evidence": getattr(self.heavy_evidence_provider, "provider_name", "unknown"),
+            "active_view_classifier": getattr(self.view_classifier_provider, "provider_name", "unknown"),
             "subject_fallback": getattr(self.subject_mask_fallback, "provider_name", "unknown"),
             "skin_fallback": getattr(self.skin_region_fallback, "provider_name", "unknown"),
             "heavy_fallback": getattr(self.heavy_evidence_fallback, "provider_name", "unknown"),
+            "view_classifier_fallback": getattr(self.view_classifier_fallback, "provider_name", "unknown"),
         }
 
 
@@ -466,12 +687,14 @@ def build_provider_bundle(provider_policy: Dict[str, str]) -> ProviderBundle:
         "subject_mask": str(provider_policy.get("subject_mask", "human_parsing")),
         "skin_region": str(provider_policy.get("skin_region", "human_parsing")),
         "heavy_evidence": str(provider_policy.get("heavy_evidence", "segformer_body_fusion")),
+        "view_classifier": str(provider_policy.get("view_classifier", "view_classifier_lite")),
     }
 
     legacy_subject = LegacyForegroundSubjectMaskProvider()
     legacy_skin = LegacyYCrCbSkinRegionProvider()
     human_provider = HumanParsingProvider()
     heavy_disabled = DisabledHeavyEvidenceProvider()
+    view_classifier_disabled = DisabledViewClassifierProvider()
 
     subject_provider_map: Dict[str, SubjectMaskProvider] = {
         "human_parsing": human_provider,
@@ -485,6 +708,10 @@ def build_provider_bundle(provider_policy: Dict[str, str]) -> ProviderBundle:
         "disabled": heavy_disabled,
     }
     heavy_import_errors: Dict[str, str] = {}
+    view_classifier_provider_map: Dict[str, ViewClassifierProvider] = {
+        "disabled": view_classifier_disabled,
+    }
+    view_classifier_import_errors: Dict[str, str] = {}
     try:
         from .qa_heavy_body_measure import BodyMeasureHeavyEvidenceProvider
 
@@ -503,13 +730,21 @@ def build_provider_bundle(provider_policy: Dict[str, str]) -> ProviderBundle:
         heavy_provider_map["segformer_body_fusion"] = SegformerBodyFusionHeavyEvidenceProvider()
     except Exception as exc:
         heavy_import_errors["segformer_body_fusion"] = str(exc)
+    try:
+        from .qa_view_classifier_lite import ViewClassifierLiteProvider
+
+        view_classifier_provider_map["view_classifier_lite"] = ViewClassifierLiteProvider()
+    except Exception as exc:
+        view_classifier_import_errors["view_classifier_lite"] = str(exc)
 
     subject_name = requested_policy["subject_mask"]
     skin_name = requested_policy["skin_region"]
     heavy_name = requested_policy["heavy_evidence"]
+    view_classifier_name = requested_policy["view_classifier"]
     subject_provider = subject_provider_map.get(subject_name, legacy_subject)
     skin_provider = skin_provider_map.get(skin_name, legacy_skin)
     heavy_provider = heavy_provider_map.get(heavy_name, heavy_disabled)
+    view_classifier_provider = view_classifier_provider_map.get(view_classifier_name, view_classifier_disabled)
 
     if subject_name not in subject_provider_map:
         print(f"[警告] 未知 subject_mask provider={subject_name}，已改用 legacy_foreground。")
@@ -521,13 +756,21 @@ def build_provider_bundle(provider_policy: Dict[str, str]) -> ProviderBundle:
             print(f"[警告] heavy_evidence provider={heavy_name} 初始化失败，已改用 disabled。原因: {import_error}")
         else:
             print(f"[警告] 未知 heavy_evidence provider={heavy_name}，已改用 disabled。")
+    if view_classifier_name not in view_classifier_provider_map:
+        import_error = view_classifier_import_errors.get(view_classifier_name)
+        if import_error is not None:
+            print(f"[警告] view_classifier provider={view_classifier_name} 初始化失败，已改用 disabled。原因: {import_error}")
+        else:
+            print(f"[警告] 未知 view_classifier provider={view_classifier_name}，已改用 disabled。")
 
     return ProviderBundle(
         requested_policy=requested_policy,
         subject_mask_provider=subject_provider,
         skin_region_provider=skin_provider,
         heavy_evidence_provider=heavy_provider,
+        view_classifier_provider=view_classifier_provider,
         subject_mask_fallback=legacy_subject,
         skin_region_fallback=legacy_skin,
         heavy_evidence_fallback=heavy_disabled,
+        view_classifier_fallback=view_classifier_disabled,
     )

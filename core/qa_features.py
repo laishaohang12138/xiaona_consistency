@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .qa_runtime import EngineState, FaceFeat, PoseFeat, RuntimeContext
+from .qa_runtime import EngineState, FaceFeat, PoseFeat, ReviewPolicy, RuntimeContext
 from .qa_utils import (
     bbox_area_ratio_xyxy,
     bbox_xywh_to_xyxy,
@@ -25,7 +25,7 @@ from .qa_utils import (
 )
 
 
-def _try_init_insightface() -> Tuple[str, object]:
+def _try_init_insightface(allow_classic_fallback: bool) -> Tuple[str, object, Optional[str]]:
     try:
         import onnxruntime as ort
         from insightface.app import FaceAnalysis
@@ -54,17 +54,25 @@ def _try_init_insightface() -> Tuple[str, object]:
             app.prepare(ctx_id=-1, det_size=(640, 640))
             print("[系统] InsightFace 已启用：CPU（未检测到 CUDAExecutionProvider）")
 
-        return "insightface", app
+        return "insightface", app, None
 
     except ModuleNotFoundError as exc:
-        print(f"[警告] InsightFace 不可用（缺依赖: {exc.name}），回退 OpenCV。")
-        return "opencv", None
+        reason = f"INSIGHTFACE_MODULE_MISSING:{exc.name}"
+        if allow_classic_fallback:
+            print(f"[警告] InsightFace 不可用（缺依赖: {exc.name}），回退 OpenCV。")
+            return "opencv", None, reason
+        print(f"[致命] InsightFace 不可用（缺依赖: {exc.name}），禁止回退 OpenCV。")
+        return "disabled", None, reason
     except Exception as exc:
-        print(f"[警告] InsightFace 初始化失败（{exc}），回退 OpenCV。")
-        return "opencv", None
+        reason = f"INSIGHTFACE_INIT_FAILED:{exc}"
+        if allow_classic_fallback:
+            print(f"[警告] InsightFace 初始化失败（{exc}），回退 OpenCV。")
+            return "opencv", None, reason
+        print(f"[致命] InsightFace 初始化失败（{exc}），禁止回退 OpenCV。")
+        return "disabled", None, reason
 
 
-def _try_init_mediapipe_pose() -> Tuple[str, object, object]:
+def _try_init_mediapipe_pose(allow_classic_fallback: bool) -> Tuple[str, object, object, Optional[str]]:
     try:
         import mediapipe as mp
 
@@ -102,19 +110,46 @@ def _try_init_mediapipe_pose() -> Tuple[str, object, object]:
             min_detection_confidence=0.5,
             model_complexity=1,
         )
-        return "mediapipe", pose_engine, mp_pose
+        return "mediapipe", pose_engine, mp_pose, None
 
     except ModuleNotFoundError as exc:
-        print(f"[警告] MediaPipe 不可用（缺依赖: {exc.name}），回退 OpenCV HOG。")
-        return "opencv", None, None
+        reason = f"MEDIAPIPE_MODULE_MISSING:{exc.name}"
+        if allow_classic_fallback:
+            print(f"[警告] MediaPipe 不可用（缺依赖: {exc.name}），回退 OpenCV HOG。")
+            return "opencv", None, None, reason
+        print(f"[致命] MediaPipe 不可用（缺依赖: {exc.name}），禁止回退 OpenCV HOG。")
+        return "disabled", None, None, reason
     except Exception as exc:
-        print(f"[警告] MediaPipe 初始化失败（{exc}），回退 OpenCV HOG。")
-        return "opencv", None, None
+        reason = f"MEDIAPIPE_INIT_FAILED:{exc}"
+        if allow_classic_fallback:
+            print(f"[警告] MediaPipe 初始化失败（{exc}），回退 OpenCV HOG。")
+            return "opencv", None, None, reason
+        print(f"[致命] MediaPipe 初始化失败（{exc}），禁止回退 OpenCV HOG。")
+        return "disabled", None, None, reason
 
 
-def init_engines() -> EngineState:
-    face_mode, face_app = _try_init_insightface()
-    pose_mode, pose_engine, mp_pose = _try_init_mediapipe_pose()
+def _engine_fatal_reasons(
+    review: ReviewPolicy,
+    *,
+    face_mode: str,
+    pose_mode: str,
+    face_reason: Optional[str],
+    pose_reason: Optional[str],
+) -> List[str]:
+    if not review.fatal_on_engine_unavailable:
+        return []
+    reasons: List[str] = []
+    if face_mode != "insightface" and face_reason:
+        reasons.append(face_reason)
+    if pose_mode != "mediapipe" and pose_reason:
+        reasons.append(pose_reason)
+    return reasons
+
+
+def init_engines(review: Optional[ReviewPolicy] = None) -> EngineState:
+    review = review or ReviewPolicy()
+    face_mode, face_app, face_reason = _try_init_insightface(review.allow_classic_cv_fallback)
+    pose_mode, pose_engine, mp_pose, pose_reason = _try_init_mediapipe_pose(review.allow_classic_cv_fallback)
 
     hog_people = None
     if pose_mode == "opencv":
@@ -123,6 +158,17 @@ def init_engines() -> EngineState:
         hog_people.setSVMDetector(detector)
         print("[系统] OpenCV HOG 人体检测器已启用（兜底）")
 
+    fatal_reasons = _engine_fatal_reasons(
+        review,
+        face_mode=face_mode,
+        pose_mode=pose_mode,
+        face_reason=face_reason,
+        pose_reason=pose_reason,
+    )
+    classic_cv_fallback_active = face_mode == "opencv" or pose_mode == "opencv"
+    if fatal_reasons:
+        print("[致命] 核心视觉引擎不可用，本次运行将标记为 engine_fatal。")
+
     return EngineState(
         face_mode=face_mode,
         pose_mode=pose_mode,
@@ -130,6 +176,13 @@ def init_engines() -> EngineState:
         pose_engine=pose_engine,
         mp_pose=mp_pose,
         hog_people=hog_people,
+        face_reason=face_reason,
+        pose_reason=pose_reason,
+        classic_cv_fallback_active=classic_cv_fallback_active,
+        fatal=len(fatal_reasons) > 0,
+        fatal_reasons=fatal_reasons,
+        policy_allow_classic_cv_fallback=review.allow_classic_cv_fallback,
+        policy_fatal_on_engine_unavailable=review.fatal_on_engine_unavailable,
     )
 
 
@@ -233,6 +286,12 @@ def extract_face_feat(
         feat.reasons.append("IMAGE_READ_ERROR")
         return feat
 
+    if runtime.engines.face_mode == "disabled":
+        feat.reasons.append("FACE_ENGINE_UNAVAILABLE_FATAL")
+        if runtime.engines.face_reason:
+            feat.reasons.append(str(runtime.engines.face_reason))
+        return feat
+
     face_xyxy = None
     embedding = None
     kps5 = None
@@ -299,6 +358,12 @@ def extract_pose_feat(runtime: RuntimeContext, img_bgr: np.ndarray) -> PoseFeat:
     feat = PoseFeat(ok=False, mode=runtime.engines.pose_mode)
     if img_bgr is None:
         feat.reasons.append("IMAGE_READ_ERROR")
+        return feat
+
+    if runtime.engines.pose_mode == "disabled":
+        feat.reasons.append("POSE_ENGINE_UNAVAILABLE_FATAL")
+        if runtime.engines.pose_reason:
+            feat.reasons.append(str(runtime.engines.pose_reason))
         return feat
 
     if runtime.engines.pose_mode == "mediapipe":
@@ -494,6 +559,12 @@ def extract_pose_feat(runtime: RuntimeContext, img_bgr: np.ndarray) -> PoseFeat:
             (int(w0 * scale), int(h0 * scale)),
             interpolation=cv2.INTER_AREA,
         )
+
+    if runtime.engines.hog_people is None:
+        feat.reasons.append("POSE_ENGINE_UNAVAILABLE_FATAL")
+        if runtime.engines.pose_reason:
+            feat.reasons.append(str(runtime.engines.pose_reason))
+        return feat
 
     rects, weights = runtime.engines.hog_people.detectMultiScale(
         img_small,

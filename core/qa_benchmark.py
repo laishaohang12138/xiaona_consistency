@@ -65,6 +65,11 @@ def export_benchmark_template(
             continue
         debug = item.get("debug", {}) if isinstance(item.get("debug", {}), dict) else {}
         shadow = debug.get("view_router_v2", {}) if isinstance(debug.get("view_router_v2", {}), dict) else {}
+        shadow_classifier = (
+            debug.get("view_classifier_shadow", {})
+            if isinstance(debug.get("view_classifier_shadow", {}), dict)
+            else {}
+        )
         template["items"][image_name] = {
             "expected_status": "",
             "current_status": str(item.get("status", "")),
@@ -84,6 +89,9 @@ def export_benchmark_template(
                 debug.get("view_lane_strictness_score", shadow.get("lane_strictness_score", 0.0)),
                 0.0,
             ),
+            "current_shadow_view_lane": str(shadow_classifier.get("lane", "")),
+            "current_shadow_view_lane_detail": str(shadow_classifier.get("lane_detail", "")),
+            "current_shadow_view_confidence": _safe_float(shadow_classifier.get("confidence", 0.0), 0.0),
             "must_have_reasons": [],
             "must_not_have_reasons": [],
             "weight": 1.0,
@@ -350,10 +358,22 @@ def _recompute_depth_metrics(
     view_lane_detail: str = "",
 ) -> Dict[str, Any]:
     debug = item.get("debug", {}) if isinstance(item.get("debug", {}), dict) else {}
+    router_debug = debug.get("view_router_v2", {}) if isinstance(debug.get("view_router_v2", {}), dict) else {}
     raw_metrics = debug.get("depth_3d_metrics", {}) if isinstance(debug.get("depth_3d_metrics", {}), dict) else {}
     upper_geom = debug.get("candidate_upper_geom", {}) if isinstance(debug.get("candidate_upper_geom", {}), dict) else {}
     full_geom = debug.get("candidate_full_geom", {}) if isinstance(debug.get("candidate_full_geom", {}), dict) else {}
     yaw_proxy = _safe_float(debug.get("yaw_proxy", 0.0), 0.0)
+    body_yaw_deg = _safe_float(router_debug.get("body_yaw_deg", debug.get("body_yaw_deg", 0.0)), 0.0)
+    pose_frontal_strength = _safe_float(
+        router_debug.get("pose_frontal_strength", debug.get("pose_frontal_strength", 0.0)),
+        0.0,
+    )
+    lane_strictness_score = _safe_float(
+        debug.get("view_lane_strictness_score", router_debug.get("lane_strictness_score", 0.0)),
+        0.0,
+    )
+    mask_symmetry = router_debug.get("mask_symmetry", debug.get("mask_symmetry", None))
+    head_skin_ratio = router_debug.get("head_skin_ratio", debug.get("head_skin_ratio", None))
 
     metrics = copy.deepcopy(raw_metrics)
     metrics.update(
@@ -362,6 +382,11 @@ def _recompute_depth_metrics(
             full_geom,
             view_bucket=view_lane,
             yaw_proxy=yaw_proxy,
+            body_yaw_deg=body_yaw_deg,
+            pose_frontal_strength=pose_frontal_strength,
+            lane_strictness_score=lane_strictness_score,
+            mask_symmetry=None if mask_symmetry is None else _safe_float(mask_symmetry, 0.0),
+            head_skin_ratio=None if head_skin_ratio is None else _safe_float(head_skin_ratio, 0.0),
             scoring=runtime.config.consistency.depth3d_scoring,
             view_lane_detail=view_lane_detail,
         )
@@ -425,6 +450,43 @@ def _extract_heavy_evidence(debug: Dict[str, Any]) -> Dict[str, Any]:
     return normalize_heavy_evidence_bundle({"ok": False, "reasons": ["HEAVY_EVIDENCE_MISSING"]})
 
 
+def _extract_shadow_classifier(debug: Dict[str, Any]) -> Dict[str, Any]:
+    shadow: Dict[str, Any] = {}
+    if isinstance(debug.get("view_classifier_shadow", {}), dict):
+        shadow = copy.deepcopy(debug.get("view_classifier_shadow", {}))
+    elif isinstance(debug.get("view_router_v2", {}), dict):
+        router_payload = debug.get("view_router_v2", {})
+        if isinstance(router_payload.get("shadow_classifier", {}), dict):
+            shadow = copy.deepcopy(router_payload.get("shadow_classifier", {}))
+
+    if not shadow:
+        shadow = {}
+
+    flat_lane = str(debug.get("view_classifier_shadow_lane", "")).strip()
+    flat_confidence = debug.get("view_classifier_shadow_confidence", None)
+    flat_disagrees = debug.get("view_classifier_shadow_disagrees", None)
+    flat_available = debug.get("view_classifier_shadow_available", None)
+
+    if flat_lane and not str(shadow.get("lane", "")).strip():
+        shadow["lane"] = flat_lane
+    if flat_confidence is not None and not isinstance(shadow.get("confidence", None), (int, float)):
+        shadow["confidence"] = _safe_float(flat_confidence, 0.0)
+    if flat_disagrees is not None and "disagrees" not in shadow:
+        shadow["disagrees"] = bool(flat_disagrees)
+    if flat_available is not None and "enabled" not in shadow:
+        shadow["enabled"] = bool(flat_available)
+
+    if "lane_detail" not in shadow:
+        shadow["lane_detail"] = ""
+    if "provider_name" not in shadow:
+        shadow["provider_name"] = ""
+    if "provider_version" not in shadow:
+        shadow["provider_version"] = ""
+    if "enabled" not in shadow:
+        shadow["enabled"] = False
+    return shadow
+
+
 def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[str, Any]:
     target_profile = str(item.get("task_profile", runtime.config.review.active_profile))
     if target_profile not in runtime.config.task_profiles:
@@ -451,6 +513,10 @@ def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[st
     view_lane_detail_confidence = _safe_float(debug.get("view_lane_detail_confidence", 0.0), 0.0)
     view_lane_strictness_score = _safe_float(debug.get("view_lane_strictness_score", 0.0), 0.0)
     heavy_evidence = _extract_heavy_evidence(debug)
+    shadow_classifier = _extract_shadow_classifier(debug)
+    shadow_classifier_lane = str(shadow_classifier.get("lane", "")).strip()
+    shadow_classifier_enabled = bool(shadow_classifier.get("enabled"))
+    shadow_classifier_confidence = _safe_float(shadow_classifier.get("confidence", 0.0), 0.0)
 
     face_state, face_state_reasons = classify_module(
         runtime, face_score, face_conf, th["face_pass"], th["face_warn"], "face"
@@ -620,6 +686,11 @@ def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[st
             "view_lane_detail": view_lane_detail,
             "view_lane_detail_confidence": round(view_lane_detail_confidence, 6),
             "view_lane_strictness_score": round(view_lane_strictness_score, 6),
+            "view_classifier_shadow": shadow_classifier,
+            "view_classifier_shadow_available": shadow_classifier_enabled,
+            "view_classifier_shadow_lane": shadow_classifier_lane,
+            "view_classifier_shadow_confidence": round(shadow_classifier_confidence, 6),
+            "view_classifier_shadow_disagrees": shadow_classifier_enabled and shadow_classifier_lane != view_lane,
             "heavy_evidence": heavy_evidence,
             "quality_flags": quality_flags,
             "quality_debug": quality_debug,
@@ -1178,6 +1249,12 @@ def _new_aggregate_state() -> Dict[str, Any]:
         "view_lane_matched_weight": 0.0,
         "view_lane_detail_checked_weight": 0.0,
         "view_lane_detail_matched_weight": 0.0,
+        "shadow_view_lane_checked_weight": 0.0,
+        "shadow_view_lane_matched_weight": 0.0,
+        "shadow_view_lane_detail_checked_weight": 0.0,
+        "shadow_view_lane_detail_matched_weight": 0.0,
+        "shadow_primary_lane_agreement_checked_weight": 0.0,
+        "shadow_primary_lane_agreement_matched_weight": 0.0,
         "reason_constraint_checked_weight": 0.0,
         "reason_constraint_matched_weight": 0.0,
     }
@@ -1192,6 +1269,9 @@ def _update_aggregate_state(
     task_profile_match: Optional[bool],
     view_lane_match: Optional[bool],
     view_lane_detail_match: Optional[bool],
+    shadow_view_lane_match: Optional[bool],
+    shadow_view_lane_detail_match: Optional[bool],
+    shadow_primary_lane_agreement: Optional[bool],
     reason_constraint_match: Optional[bool],
 ) -> None:
     confusion = state["confusion"]
@@ -1218,6 +1298,18 @@ def _update_aggregate_state(
         state["view_lane_detail_checked_weight"] += weight
         if view_lane_detail_match:
             state["view_lane_detail_matched_weight"] += weight
+    if shadow_view_lane_match is not None:
+        state["shadow_view_lane_checked_weight"] += weight
+        if shadow_view_lane_match:
+            state["shadow_view_lane_matched_weight"] += weight
+    if shadow_view_lane_detail_match is not None:
+        state["shadow_view_lane_detail_checked_weight"] += weight
+        if shadow_view_lane_detail_match:
+            state["shadow_view_lane_detail_matched_weight"] += weight
+    if shadow_primary_lane_agreement is not None:
+        state["shadow_primary_lane_agreement_checked_weight"] += weight
+        if shadow_primary_lane_agreement:
+            state["shadow_primary_lane_agreement_matched_weight"] += weight
     if reason_constraint_match is not None:
         state["reason_constraint_checked_weight"] += weight
         if reason_constraint_match:
@@ -1270,6 +1362,18 @@ def _finalize_aggregate_state(state: Dict[str, Any]) -> Dict[str, Any]:
                 state["view_lane_detail_matched_weight"],
                 state["view_lane_detail_checked_weight"],
             ),
+            "shadow_view_lane_accuracy": _optional_accuracy(
+                state["shadow_view_lane_matched_weight"],
+                state["shadow_view_lane_checked_weight"],
+            ),
+            "shadow_view_lane_detail_accuracy": _optional_accuracy(
+                state["shadow_view_lane_detail_matched_weight"],
+                state["shadow_view_lane_detail_checked_weight"],
+            ),
+            "shadow_primary_lane_agreement": _optional_accuracy(
+                state["shadow_primary_lane_agreement_matched_weight"],
+                state["shadow_primary_lane_agreement_checked_weight"],
+            ),
             "reason_constraint_accuracy": _optional_accuracy(
                 state["reason_constraint_matched_weight"],
                 state["reason_constraint_checked_weight"],
@@ -1277,6 +1381,11 @@ def _finalize_aggregate_state(state: Dict[str, Any]) -> Dict[str, Any]:
             "task_profile_checked_weight": round(state["task_profile_checked_weight"], 6),
             "view_lane_checked_weight": round(state["view_lane_checked_weight"], 6),
             "view_lane_detail_checked_weight": round(state["view_lane_detail_checked_weight"], 6),
+            "shadow_view_lane_checked_weight": round(state["shadow_view_lane_checked_weight"], 6),
+            "shadow_view_lane_detail_checked_weight": round(state["shadow_view_lane_detail_checked_weight"], 6),
+            "shadow_primary_lane_agreement_checked_weight": round(
+                state["shadow_primary_lane_agreement_checked_weight"], 6
+            ),
             "reason_constraint_checked_weight": round(state["reason_constraint_checked_weight"], 6),
         },
         "class_metrics": {
@@ -1318,6 +1427,12 @@ def benchmark_report(
     view_lane_matched_weight = 0.0
     view_lane_detail_checked_weight = 0.0
     view_lane_detail_matched_weight = 0.0
+    shadow_view_lane_checked_weight = 0.0
+    shadow_view_lane_matched_weight = 0.0
+    shadow_view_lane_detail_checked_weight = 0.0
+    shadow_view_lane_detail_matched_weight = 0.0
+    shadow_primary_lane_agreement_checked_weight = 0.0
+    shadow_primary_lane_agreement_matched_weight = 0.0
     reason_constraint_checked_weight = 0.0
     reason_constraint_matched_weight = 0.0
     heavy_evidence_available_weight = 0.0
@@ -1326,6 +1441,10 @@ def benchmark_report(
     heavy_evidence_coverage_weighted_sum = 0.0
     heavy_evidence_coverage_weight = 0.0
     heavy_evidence_providers: set[str] = set()
+    shadow_classifier_available_weight = 0.0
+    shadow_classifier_confidence_weighted_sum = 0.0
+    shadow_classifier_confidence_weight = 0.0
+    shadow_classifier_providers: set[str] = set()
     aggregate_by_view_lane: Dict[str, Dict[str, Any]] = {}
     aggregate_by_view_lane_detail: Dict[str, Dict[str, Any]] = {}
     aggregate_by_task_profile: Dict[str, Dict[str, Any]] = {}
@@ -1360,8 +1479,11 @@ def benchmark_report(
 
         replay_debug = replayed.get("debug", {}) if isinstance(replayed.get("debug", {}), dict) else {}
         heavy_evidence = _extract_heavy_evidence(replay_debug)
+        shadow_classifier = _extract_shadow_classifier(replay_debug)
         predicted_view_lane = str(replay_debug.get("view_lane", ""))
         predicted_view_lane_detail = str(replay_debug.get("view_lane_detail", ""))
+        predicted_shadow_view_lane = str(shadow_classifier.get("lane", "")).strip()
+        predicted_shadow_view_lane_detail = str(shadow_classifier.get("lane_detail", "")).strip()
         predicted_reasons = set(str(reason) for reason in replayed.get("reasons", []))
         expected_task_profile = str(label.get("expected_task_profile", "")).strip()
         expected_view_lane = str(label.get("expected_view_lane", "")).strip()
@@ -1389,6 +1511,39 @@ def benchmark_report(
             view_lane_detail_match = predicted_view_lane_detail == expected_view_lane_detail
             if view_lane_detail_match:
                 view_lane_detail_matched_weight += weight
+
+        shadow_enabled = bool(shadow_classifier.get("enabled"))
+        shadow_available = shadow_enabled and bool(predicted_shadow_view_lane)
+        if shadow_available:
+            shadow_classifier_available_weight += weight
+        shadow_provider = str(shadow_classifier.get("provider_name", "")).strip()
+        if shadow_provider:
+            shadow_classifier_providers.add(shadow_provider)
+        shadow_confidence = shadow_classifier.get("confidence", None)
+        if shadow_available and isinstance(shadow_confidence, (int, float)):
+            shadow_classifier_confidence_weighted_sum += float(shadow_confidence) * weight
+            shadow_classifier_confidence_weight += weight
+
+        shadow_view_lane_match: Optional[bool] = None
+        if expected_view_lane and shadow_available:
+            shadow_view_lane_checked_weight += weight
+            shadow_view_lane_match = predicted_shadow_view_lane == expected_view_lane
+            if shadow_view_lane_match:
+                shadow_view_lane_matched_weight += weight
+
+        shadow_view_lane_detail_match: Optional[bool] = None
+        if expected_view_lane_detail and shadow_available and predicted_shadow_view_lane_detail:
+            shadow_view_lane_detail_checked_weight += weight
+            shadow_view_lane_detail_match = predicted_shadow_view_lane_detail == expected_view_lane_detail
+            if shadow_view_lane_detail_match:
+                shadow_view_lane_detail_matched_weight += weight
+
+        shadow_primary_lane_agreement: Optional[bool] = None
+        if shadow_available:
+            shadow_primary_lane_agreement_checked_weight += weight
+            shadow_primary_lane_agreement = predicted_shadow_view_lane == predicted_view_lane
+            if shadow_primary_lane_agreement:
+                shadow_primary_lane_agreement_matched_weight += weight
 
         missing_reasons = [reason for reason in must_have_reasons if reason not in predicted_reasons]
         unexpected_reasons = [reason for reason in must_not_have_reasons if reason in predicted_reasons]
@@ -1435,6 +1590,9 @@ def benchmark_report(
                 task_profile_match=task_profile_match,
                 view_lane_match=view_lane_match,
                 view_lane_detail_match=view_lane_detail_match,
+                shadow_view_lane_match=shadow_view_lane_match,
+                shadow_view_lane_detail_match=shadow_view_lane_detail_match,
+                shadow_primary_lane_agreement=shadow_primary_lane_agreement,
                 reason_constraint_match=reason_constraint_match,
             )
 
@@ -1445,6 +1603,8 @@ def benchmark_report(
                 "predicted_status": predicted,
                 "view_lane": view_lane_key,
                 "view_lane_detail": view_lane_detail_key,
+                "shadow_view_lane": predicted_shadow_view_lane or "unknown",
+                "shadow_view_lane_detail": predicted_shadow_view_lane_detail or "unknown",
                 "weight": weight,
                 "match": expected == predicted,
                 "scores": replayed["scores"],
@@ -1459,10 +1619,23 @@ def benchmark_report(
                     "failure_reason": heavy_evidence.get("failure_reason"),
                     "summary": heavy_evidence.get("summary", {}),
                 },
+                "shadow_classifier": {
+                    "available": shadow_available,
+                    "provider_name": shadow_classifier.get("provider_name"),
+                    "provider_version": shadow_classifier.get("provider_version"),
+                    "lane": predicted_shadow_view_lane,
+                    "lane_detail": predicted_shadow_view_lane_detail,
+                    "confidence": shadow_classifier.get("confidence"),
+                    "decision_margin": shadow_classifier.get("decision_margin"),
+                    "disagrees": shadow_primary_lane_agreement is False,
+                },
                 "agreement": {
                     "task_profile_match": task_profile_match,
                     "view_lane_match": view_lane_match,
                     "view_lane_detail_match": view_lane_detail_match,
+                    "shadow_view_lane_match": shadow_view_lane_match,
+                    "shadow_view_lane_detail_match": shadow_view_lane_detail_match,
+                    "shadow_primary_lane_agreement": shadow_primary_lane_agreement,
                     "missing_reasons": missing_reasons,
                     "unexpected_reasons": unexpected_reasons,
                     "reason_constraints_match": reason_constraint_match,
@@ -1535,6 +1708,18 @@ def benchmark_report(
                 view_lane_detail_matched_weight,
                 view_lane_detail_checked_weight,
             ),
+            "shadow_view_lane_accuracy": _optional_accuracy(
+                shadow_view_lane_matched_weight,
+                shadow_view_lane_checked_weight,
+            ),
+            "shadow_view_lane_detail_accuracy": _optional_accuracy(
+                shadow_view_lane_detail_matched_weight,
+                shadow_view_lane_detail_checked_weight,
+            ),
+            "shadow_primary_lane_agreement": _optional_accuracy(
+                shadow_primary_lane_agreement_matched_weight,
+                shadow_primary_lane_agreement_checked_weight,
+            ),
             "reason_constraint_accuracy": _optional_accuracy(
                 reason_constraint_matched_weight,
                 reason_constraint_checked_weight,
@@ -1542,7 +1727,37 @@ def benchmark_report(
             "task_profile_checked_weight": round(task_profile_checked_weight, 6),
             "view_lane_checked_weight": round(view_lane_checked_weight, 6),
             "view_lane_detail_checked_weight": round(view_lane_detail_checked_weight, 6),
+            "shadow_view_lane_checked_weight": round(shadow_view_lane_checked_weight, 6),
+            "shadow_view_lane_detail_checked_weight": round(shadow_view_lane_detail_checked_weight, 6),
+            "shadow_primary_lane_agreement_checked_weight": round(
+                shadow_primary_lane_agreement_checked_weight, 6
+            ),
             "reason_constraint_checked_weight": round(reason_constraint_checked_weight, 6),
+        },
+        "shadow_view_classifier_metrics": {
+            "available_weight_ratio": round(_safe_div(shadow_classifier_available_weight, total_weight, default=0.0), 6),
+            "confidence_mean": None
+            if shadow_classifier_confidence_weight <= 0.0
+            else round(
+                _safe_div(shadow_classifier_confidence_weighted_sum, shadow_classifier_confidence_weight, default=0.0),
+                6,
+            ),
+            "lane_accuracy": _optional_accuracy(
+                shadow_view_lane_matched_weight,
+                shadow_view_lane_checked_weight,
+            ),
+            "lane_detail_accuracy": _optional_accuracy(
+                shadow_view_lane_detail_matched_weight,
+                shadow_view_lane_detail_checked_weight,
+            ),
+            "primary_lane_agreement": _optional_accuracy(
+                shadow_primary_lane_agreement_matched_weight,
+                shadow_primary_lane_agreement_checked_weight,
+            ),
+            "lane_checked_weight": round(shadow_view_lane_checked_weight, 6),
+            "lane_detail_checked_weight": round(shadow_view_lane_detail_checked_weight, 6),
+            "primary_lane_agreement_checked_weight": round(shadow_primary_lane_agreement_checked_weight, 6),
+            "providers": sorted(shadow_classifier_providers),
         },
         "heavy_evidence_metrics": {
             "available_weight_ratio": round(_safe_div(heavy_evidence_available_weight, total_weight, default=0.0), 6),

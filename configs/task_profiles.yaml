@@ -187,6 +187,8 @@ review_policy:
   consistency_mode: soft_gate
   strict_fail_min_conf: 0.18
   face_no_signal_conf: 0.08
+  allow_classic_cv_fallback: false
+  fatal_on_engine_unavailable: true
 
 profile_policy:
   identity_lock:

@@ -28,6 +28,7 @@ class ViewRouteResult:
     head_skin_ratio: Optional[float] = None
     reasons: List[str] = field(default_factory=list)
     lane_scores: Dict[str, float] = field(default_factory=dict)
+    shadow_classifier: Dict[str, Any] = field(default_factory=dict)
 
     def to_json_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -45,6 +46,7 @@ class ViewRouteResult:
         if self.head_skin_ratio is not None:
             payload["head_skin_ratio"] = round(float(self.head_skin_ratio), 6)
         payload["face_yaw_proxy"] = round(float(self.face_yaw_proxy), 6)
+        payload["shadow_classifier"] = dict(self.shadow_classifier or {})
         return payload
 
 
@@ -279,6 +281,7 @@ def route_view_lane(
 
     subject_mask = None
     skin_mask = None
+    shadow_classifier: Dict[str, Any] = {}
     if img_bgr is not None and getattr(runtime, "providers", None) is not None:
         try:
             subject_mask = runtime.providers.get_subject_mask(
@@ -296,6 +299,16 @@ def route_view_lane(
             )
         except Exception:
             skin_mask = None
+        try:
+            shadow_classifier = runtime.providers.classify_view_lane(
+                img_bgr,
+                face_feat=face_feat,
+                pose_feat=pose_feat,
+                subject_mask=subject_mask,
+                skin_mask=skin_mask,
+            )
+        except Exception:
+            shadow_classifier = {}
 
     mask_symmetry = _mask_symmetry_score(subject_mask)
     head_skin_ratio = _head_skin_ratio(subject_mask, skin_mask)
@@ -435,4 +448,5 @@ def route_view_lane(
         head_skin_ratio=head_skin_ratio,
         reasons=reasons,
         lane_scores=scores,
+        shadow_classifier=shadow_classifier,
     )

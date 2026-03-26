@@ -41,9 +41,12 @@ def build_batch_admission_advice(
     batch_gate = batch_summary.get("batch_gate") or {}
     identity_summary = batch_summary.get("identity_summary") or {}
     geometry_summary = batch_summary.get("geometry_summary") or {}
+    engine_status = batch_summary.get("engine_status") or {}
 
     blockers: List[str] = []
     supports: List[str] = []
+    if bool(engine_status.get("fatal")):
+        blockers.append("ENGINE_FATAL_UNAVAILABLE")
     if batch_gate.get("enabled") and batch_gate.get("status") not in {None, "pass", "disabled"}:
         blockers.extend(list(batch_gate.get("reasons") or []))
     if lane_family in {"side", "back"} and target_bucket == "BODY_GOLD.front_core":
@@ -67,7 +70,9 @@ def build_batch_admission_advice(
         if any(len(list(row.get("drift_flags") or [])) > 0 for row in drift_rows):
             blockers.append("WINNER_BANK_DRIFT_PENDING_REVIEW")
 
-    if "SHADOW_OR_REVIEW_BUCKET_ONLY" in blockers:
+    if "ENGINE_FATAL_UNAVAILABLE" in blockers:
+        suggested_action = "hold_batch_until_engine_recovered"
+    elif "SHADOW_OR_REVIEW_BUCKET_ONLY" in blockers:
         suggested_action = "shadow_only_manual_review"
     elif "NON_FRONT_BATCH_FOR_FRONT_CORE" in blockers:
         suggested_action = "reroute_to_matching_lane_profile"

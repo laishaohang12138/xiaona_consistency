@@ -349,6 +349,8 @@ class ReviewPolicy:
     active_profile: str = "body_gold_fullbody"
     min_conf_for_strict_fail: float = 0.18
     face_no_signal_conf_th: float = 0.08
+    allow_classic_cv_fallback: bool = False
+    fatal_on_engine_unavailable: bool = True
 
 
 @dataclass
@@ -475,6 +477,13 @@ class EngineState:
     pose_engine: Any = None
     mp_pose: Any = None
     hog_people: Any = None
+    face_reason: Optional[str] = None
+    pose_reason: Optional[str] = None
+    classic_cv_fallback_active: bool = False
+    fatal: bool = False
+    fatal_reasons: List[str] = field(default_factory=list)
+    policy_allow_classic_cv_fallback: bool = False
+    policy_fatal_on_engine_unavailable: bool = True
 
 
 @dataclass
@@ -761,6 +770,7 @@ def _default_provider_policy() -> Dict[str, str]:
         "subject_mask": "human_parsing",
         "skin_region": "human_parsing",
         "heavy_evidence": "segformer_body_fusion",
+        "view_classifier": "view_classifier_lite",
         "anchor_source": "registry_then_directory_fallback",
     }
 
@@ -1077,6 +1087,14 @@ def apply_external_project_configs(config: RuntimeConfig) -> None:
                 config.review.face_no_signal_conf_th = float(
                     review_policy["face_no_signal_conf"]
                 )
+            if review_policy.get("allow_classic_cv_fallback") is not None:
+                config.review.allow_classic_cv_fallback = bool(
+                    review_policy["allow_classic_cv_fallback"]
+                )
+            if review_policy.get("fatal_on_engine_unavailable") is not None:
+                config.review.fatal_on_engine_unavailable = bool(
+                    review_policy["fatal_on_engine_unavailable"]
+                )
             if isinstance(review_policy.get("consistency_mode"), str):
                 config.consistency.mode = str(review_policy["consistency_mode"])
 
@@ -1306,12 +1324,16 @@ def apply_external_project_configs(config: RuntimeConfig) -> None:
                 heavy_evidence = provider_defaults.get(
                     "heavy_evidence", config.provider_policy["heavy_evidence"]
                 )
+                view_classifier = provider_defaults.get(
+                    "view_classifier", config.provider_policy["view_classifier"]
+                )
                 anchor_source = provider_defaults.get(
                     "anchor_source", config.provider_policy["anchor_source"]
                 )
                 config.provider_policy["subject_mask"] = str(subject_mask)
                 config.provider_policy["skin_region"] = str(skin_region)
                 config.provider_policy["heavy_evidence"] = str(heavy_evidence)
+                config.provider_policy["view_classifier"] = str(view_classifier)
                 config.provider_policy["anchor_source"] = str(anchor_source)
 
         config.external_config_status["consistency_thresholds"] = True

@@ -134,10 +134,13 @@ def _build_batch_summary(report_payload: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "target_profile": report_meta.get("active_profile"),
+        "run_status": report_meta.get("run_status"),
         "input_count": report_meta.get("input_count"),
+        "engine_status": report_meta.get("engine_status") or {},
         "anchor_truth": report_meta.get("anchor_governance") or {},
         "master_truth_reference": report_meta.get("master_truth_reference") or {},
         "heavy_provider_status": report_meta.get("heavy_provider_status") or {},
+        "view_classifier_status": report_meta.get("view_classifier_status") or {},
         "heavy_evidence_summary": shot_selection.get("heavy_evidence_summary") or {},
         "group_count": shot_selection.get("group_count"),
         "status_counts": _status_counts(items, "status"),
@@ -269,6 +272,14 @@ def _summarize_item(
             "view_lane": debug.get("view_lane"),
             "view_lane_detail": debug.get("view_lane_detail"),
             "view_lane_strictness_score": debug.get("view_lane_strictness_score"),
+            "shadow_classifier": {
+                "provider_name": ((debug.get("view_classifier_shadow") or {}).get("provider_name")),
+                "lane": ((debug.get("view_classifier_shadow") or {}).get("lane")),
+                "lane_detail": ((debug.get("view_classifier_shadow") or {}).get("lane_detail")),
+                "confidence": ((debug.get("view_classifier_shadow") or {}).get("confidence")),
+                "decision_margin": ((debug.get("view_classifier_shadow") or {}).get("decision_margin")),
+                "disagrees_with_primary": debug.get("view_classifier_shadow_disagrees"),
+            },
         },
         "scores": {
             "face": (item.get("scores") or {}).get("face"),

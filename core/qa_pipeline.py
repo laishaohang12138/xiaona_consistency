@@ -90,8 +90,22 @@ from .qa_utils import (
 def create_runtime(base_dir: Optional[Path] = None) -> RuntimeContext:
     config = create_runtime_config(base_dir)
     providers = build_provider_bundle(config.provider_policy)
-    engines = init_engines()
+    engines = init_engines(config.review)
     return RuntimeContext(config=config, providers=providers, engines=engines)
+
+
+def _engine_status_payload(runtime: RuntimeContext) -> Dict[str, Any]:
+    return {
+        "face_mode": runtime.engines.face_mode,
+        "pose_mode": runtime.engines.pose_mode,
+        "face_reason": runtime.engines.face_reason,
+        "pose_reason": runtime.engines.pose_reason,
+        "classic_cv_fallback_active": bool(runtime.engines.classic_cv_fallback_active),
+        "fatal": bool(runtime.engines.fatal),
+        "fatal_reasons": list(runtime.engines.fatal_reasons or []),
+        "policy_allow_classic_cv_fallback": bool(runtime.engines.policy_allow_classic_cv_fallback),
+        "policy_fatal_on_engine_unavailable": bool(runtime.engines.policy_fatal_on_engine_unavailable),
+    }
 
 
 def print_runtime_config(runtime: RuntimeContext) -> None:
@@ -111,6 +125,9 @@ def print_runtime_config(runtime: RuntimeContext) -> None:
     print("[CONFIG] FACE_CONF_MAP = linear_map_to_01(bbox_ratio, 0.006, 0.035)")
     print(f"[CONFIG] FACE_NO_RELIABLE_SIGNAL_TH = {config.review.face_no_signal_conf_th}")
     print(f"[CONFIG] MIN_CONF_FOR_STRICT_FAIL = {config.review.min_conf_for_strict_fail}")
+    print(f"[CONFIG] ALLOW_CLASSIC_CV_FALLBACK = {config.review.allow_classic_cv_fallback}")
+    print(f"[CONFIG] FATAL_ON_ENGINE_UNAVAILABLE = {config.review.fatal_on_engine_unavailable}")
+    print(f"[CONFIG] ENGINE_STATUS={_engine_status_payload(runtime)}")
     print(f"[CONFIG] CONSISTENCY_MODE={config.consistency.mode}")
 
 
@@ -255,6 +272,11 @@ def _build_report_meta(
         if hasattr(runtime.providers, "describe_heavy_evidence")
         else {}
     )
+    view_classifier_status = (
+        runtime.providers.describe_view_classifier()
+        if hasattr(runtime.providers, "describe_view_classifier")
+        else {}
+    )
     back180_readiness = {
         "legacy_router_supports_back_180": False,
         "shadow_router_supports_back_180": True,
@@ -266,16 +288,20 @@ def _build_report_meta(
     return {
         "schema_version": "qa_report_v2_8",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "run_status": "engine_fatal" if runtime.engines.fatal else "ok",
         "active_profile": target_profile,
         "review_policy": {
             "active_profile_default": runtime.config.review.active_profile,
             "strict_fail_min_conf": runtime.config.review.min_conf_for_strict_fail,
             "face_no_signal_conf_th": runtime.config.review.face_no_signal_conf_th,
+            "allow_classic_cv_fallback": runtime.config.review.allow_classic_cv_fallback,
+            "fatal_on_engine_unavailable": runtime.config.review.fatal_on_engine_unavailable,
         },
         "profile_policy": _json_ready(profile_policy),
         "provider_policy": _json_ready(runtime.config.provider_policy),
         "providers": _json_ready(runtime.providers.describe()),
         "heavy_provider_status": _json_ready(heavy_provider_status),
+        "view_classifier_status": _json_ready(view_classifier_status),
         "anchor_registry_summary": anchor_registry_summary(runtime.config),
         "anchor_registry_snapshot": anchor_snapshot,
         "anchor_governance": {
@@ -297,6 +323,7 @@ def _build_report_meta(
             "pose": runtime.engines.pose_mode,
             "ssim_backend": "skimage" if SKIMAGE_SSIM_AVAILABLE else "ncc_fallback",
         },
+        "engine_status": _engine_status_payload(runtime),
         "view_detector": {
             "raw_buckets": ["front", "three_quarter", "profile_like"],
             "canonical_lanes": ["front", "three_quarter", "side_90"],
@@ -328,6 +355,12 @@ def _build_report_meta(
                 "supports_back_180": bool(back180_readiness["shadow_router_supports_back_180"]),
                 "primary_release_ready": bool(back180_readiness["primary_release_ready"]),
                 "source_priority": ["face", "pose", "subject_mask", "skin_region"],
+            },
+            "shadow_view_classifier": {
+                "enabled": bool((view_classifier_status or {}).get("enabled")),
+                "mode": "parallel_only",
+                "influences_primary_route": False,
+                "provider_status": _json_ready(view_classifier_status),
             },
         },
         "collection_parser": {
@@ -422,6 +455,68 @@ def _build_report_meta(
         },
         "input_count": int(input_count),
     }
+
+
+def _write_report_outputs(runtime: RuntimeContext, report_payload: Dict[str, Any]) -> Path:
+    config = runtime.config
+    with open(config.paths.report_file, "w", encoding="utf-8") as file:
+        json.dump(report_payload, file, indent=2, ensure_ascii=False)
+    ranked_candidates_file = config.paths.dir_output / "ranked_candidates.json"
+    with open(ranked_candidates_file, "w", encoding="utf-8") as file:
+        json.dump(report_payload.get("shot_selection") or {}, file, indent=2, ensure_ascii=False)
+    build_review_packet(
+        report_payload,
+        config.paths.dir_output,
+        config.paths.report_file,
+        ranked_candidates_file,
+    )
+    return ranked_candidates_file
+
+
+def _write_engine_fatal_outputs(
+    runtime: RuntimeContext,
+    target_profile: str,
+    input_count: int = 0,
+) -> None:
+    report_meta = _build_report_meta(runtime, target_profile, AnchorSet(), input_count, master_reference=None)
+    report_meta["run_status"] = "engine_fatal"
+    collection_aggregates = {
+        "summary": {},
+        "batch_gate": {
+            "enabled": True,
+            "applied": True,
+            "status": "fatal",
+            "reasons": list(runtime.engines.fatal_reasons or ["ENGINE_FATAL_UNAVAILABLE"]),
+            "recommendation": "hold_batch_until_engine_recovered",
+        },
+    }
+    shot_selection = {
+        "mode": "engine_fatal",
+        "final_decision_owner": "custom_gpt_plus_human",
+        "target_profile": target_profile,
+        "group_count": 0,
+        "groups": [],
+        "heavy_review_summary": {
+            "enabled": False,
+            "reason": "ENGINE_FATAL_UNAVAILABLE",
+        },
+        "heavy_evidence_summary": {},
+    }
+    report_payload = {
+        "report_meta": report_meta,
+        "collection_aggregates": collection_aggregates,
+        "shot_selection": shot_selection,
+        "winner_bank_governance": {},
+        "items": [],
+    }
+    ranked_candidates_file = _write_report_outputs(runtime, report_payload)
+    review_packet_file = runtime.config.paths.dir_output / "review_packet.json"
+    print("\n[致命] 核心视觉引擎不可用，已输出 fatal 报告。")
+    print(f"[报告] {runtime.config.paths.report_file}")
+    print(f"[排序] {ranked_candidates_file}")
+    print(f"[复核包] {review_packet_file}")
+    if runtime.engines.fatal_reasons:
+        print(f"[致命原因] {runtime.engines.fatal_reasons}")
 
 
 def _apply_profile_view_policy(
@@ -946,6 +1041,11 @@ def _run_pipeline_impl(
     target_profile = profile_name or config.review.active_profile
     if target_profile not in config.task_profiles:
         raise ValueError(f"未知任务模板: {target_profile}. 可选: {list(config.task_profiles.keys())}")
+
+    if runtime.engines.fatal:
+        input_count = len(list_images_in_dir(config.paths.dir_input)) if config.paths.dir_input.exists() else 0
+        _write_engine_fatal_outputs(runtime, target_profile, input_count=input_count)
+        return
 
     profile = config.task_profiles[target_profile]
     weights = profile["weights"]
@@ -1480,6 +1580,14 @@ def _run_pipeline_impl(
                     "view_scoring_surface_requested": face_debug.get("view_surface_requested"),
                     "view_router_v2": shadow_view_route.to_json_dict(),
                     "view_router_v2_disagrees": shadow_view_route.lane != view_lane,
+                    "view_classifier_shadow": _json_ready(shadow_view_route.shadow_classifier),
+                    "view_classifier_shadow_available": bool((shadow_view_route.shadow_classifier or {}).get("enabled")),
+                    "view_classifier_shadow_lane": (shadow_view_route.shadow_classifier or {}).get("lane"),
+                    "view_classifier_shadow_confidence": (shadow_view_route.shadow_classifier or {}).get("confidence"),
+                    "view_classifier_shadow_disagrees": (
+                        bool((shadow_view_route.shadow_classifier or {}).get("enabled"))
+                        and str((shadow_view_route.shadow_classifier or {}).get("lane") or "unknown") != str(view_lane)
+                    ),
                     "identity_anchor_count_view": len(face_identity_anchors_view),
                     "master_consistency_card": master_consistency_card,
                     "source_path": str(img_path.resolve()),
@@ -1625,17 +1733,7 @@ def _run_pipeline_impl(
         "winner_bank_governance": winner_bank_governance,
         "items": report_items,
     }
-    with open(config.paths.report_file, "w", encoding="utf-8") as file:
-        json.dump(report_payload, file, indent=2, ensure_ascii=False)
-    ranked_candidates_file = config.paths.dir_output / "ranked_candidates.json"
-    with open(ranked_candidates_file, "w", encoding="utf-8") as file:
-        json.dump(shot_selection, file, indent=2, ensure_ascii=False)
-    build_review_packet(
-        report_payload,
-        config.paths.dir_output,
-        config.paths.report_file,
-        ranked_candidates_file,
-    )
+    ranked_candidates_file = _write_report_outputs(runtime, report_payload)
     review_packet_file = config.paths.dir_output / "review_packet.json"
 
     print("\n[完工] 质检完成 [OK]")
@@ -1699,6 +1797,11 @@ def main(
 
     if runtime.config.run_mode not in {"qa", "calibrate", "benchmark"}:
         raise ValueError("RUN_MODE 只能是 'qa'、'calibrate' 或 'benchmark'")
+    if runtime.config.run_mode == "benchmark" and needs_live_visual_runtime and runtime.engines.fatal:
+        raise RuntimeError(
+            "benchmark compare_heavy 需要可用的视觉引擎，当前 engine_fatal: "
+            + "; ".join(runtime.engines.fatal_reasons or ["ENGINE_FATAL_UNAVAILABLE"])
+        )
 
     if runtime.config.run_mode == "calibrate":
         print(f"[校准模式] 从目录读取样本: {runtime.config.paths.dir_calib}")
