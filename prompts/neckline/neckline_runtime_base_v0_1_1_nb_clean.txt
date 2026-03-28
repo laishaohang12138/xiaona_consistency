@@ -1,0 +1,16 @@
+[NECKLINE RUNTIME BASE | v0.1.1-nb-clean]
+Use Ref #1 for facial identity geometry only. Use Ref #2 for body constitution, shoulder width, torso identity, upper-to-lower continuity, and framing only. If Ref #3 is provided, use it only to stabilize the shoulder line, clavicle basin, neckline edge, collar lay, placket line, and neck-column continuity; never let Ref #3 change the face or the body constitution. One woman only, same XiaoNa, no redesign, no beautify, no face replacement drift.
+
+Same face as Ref #1: soft oval face, rounded chin, natural jaw width, blunt rounded nose tip, natural eye size and spacing, natural brows, relaxed closed mouth, calm neutral expression, no smile, no teeth, no pout. Do not genericize the face. Do not make her younger, cuter, glamorous, or influencer-like.
+
+Black center-part low ponytail, tidy natural hairline, hair tucked behind ears or behind shoulders, both clavicles and the entire neckline edge fully visible, no loose strands crossing the neckline. Small silver hoop earrings only if visible. No necklace, no choker, no scarf, no brooch, no extra accessories.
+
+Soft studio broad light with clean frontal fill and subtle edge separation. Neutral-cool white balance. Real skin texture, visible pores, no beauty filter, no wax skin, no plastic skin, no heavy makeup. Face, neck, clavicles, and upper chest must stay in the same exposure family. No dark neck, no dark clavicles, no red chest patch, no muddy collar shadow.
+
+Slim Chinese woman, 170 cm visual height, 50 kg visual weight, slender professional model build, long-leg proportion, 1:7.5 to 1:8 head-to-body ratio, straight relaxed shoulders, distinct clavicles, 30 cm neck, high natural waist if visible, narrow compact pelvis if visible. Shoulder width must stay equal to Ref #2. The neckline must never shorten the neck, widen the shoulders, thicken the trapezius, enlarge the bust, or change torso identity.
+
+Clean basic wardrobe only. No outerwear, no layering, no blazer, no cardigan, no coat, no jacket. No logo, no print, no slogan, no lace, no sheer fabric, no mesh, no metallic shine, no sequins, no lingerie read.
+
+Clean neutral grey seamless studio background, no props, no furniture, no text, no watermark. 65 mm equivalent lens, neutral perspective, eye-level or slightly upper-chest-level camera, level horizon, straight verticals. Static standing or quiet upright pose only. Hands stay away from the neckline and chest. Hair must never block the garment-skin boundary.
+
+Photorealistic, natural anatomy, stable identity, high detail on face, clavicles, neckline edge, collar seam or placket when present, and upper-chest contour. Product-reference image, not glamour, not campaign, not sensual.

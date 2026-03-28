@@ -1,0 +1,64 @@
+prompt_asset:
+  id: neckline_runtime_v0_1_1_nb_clean
+  scope: NECKLINE
+  status: active
+  version: v0.1.1-nb-clean
+  source_import: D:/xiaona_consistency/prompts/archive/neckline_v0_1_1_nb_clean_compiled_prompts_2026-03-23.md
+  refs_required:
+    - ref_1_face_master
+    - ref_2_full_body_master
+  refs_optional:
+    - ref_3_upper_support_94
+    - ref_3_upper_support_97
+  runtime_presets:
+    neckline_first_pass:
+      base: neckline_runtime_base_v0_1_1_nb_clean.txt
+      plugin_family: NK-A01~NK-E04
+      negatives:
+        - negative_core_neckline_v0_1_1_nb_clean.txt
+    neckline_shortlist_reroll:
+      base: neckline_runtime_base_v0_1_1_nb_clean.txt
+      plugin_family: NK-A01~NK-E04
+      negatives:
+        - negative_core_neckline_v0_1_1_nb_clean.txt
+        - negative_finish_neckline_v0_1_1_nb_clean.txt
+  plugin_registry:
+    family_a:
+      - shot_plugin_nk_a01_high_mock_neck_front_neutral_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_a02_high_mock_neck_front_natural_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_a03_high_mock_neck_three_quarter_left_mild_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_a04_high_mock_neck_three_quarter_right_mild_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_a05_high_mock_neck_vertical_continuity_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_a06_high_mock_neck_square_product_safe_v0_1_1_nb_clean.txt
+    family_b:
+      - shot_plugin_nk_b01_crew_u_neck_front_neutral_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_b02_crew_u_neck_front_natural_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_b03_crew_u_neck_three_quarter_left_mild_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_b04_crew_u_neck_three_quarter_right_mild_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_b05_crew_u_neck_vertical_continuity_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_b06_crew_u_neck_square_product_safe_v0_1_1_nb_clean.txt
+    family_c:
+      - shot_plugin_nk_c01_v_neck_front_neutral_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_c02_v_neck_front_natural_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_c03_v_neck_three_quarter_left_mild_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_c04_v_neck_three_quarter_right_mild_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_c05_v_neck_vertical_continuity_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_c06_v_neck_square_product_safe_v0_1_1_nb_clean.txt
+    family_d:
+      - shot_plugin_nk_d01_shirt_open_collar_front_neutral_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_d02_shirt_open_collar_front_natural_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_d03_shirt_open_collar_three_quarter_left_mild_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_d04_shirt_open_collar_vertical_continuity_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_d05_shirt_open_collar_vertical_mild_right_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_d06_shirt_open_collar_square_product_safe_v0_1_1_nb_clean.txt
+    family_e:
+      - shot_plugin_nk_e01_off_shoulder_halter_front_neutral_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_e02_off_shoulder_halter_front_neutral_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_e03_off_shoulder_halter_three_quarter_left_mild_v0_1_1_nb_clean.txt
+      - shot_plugin_nk_e04_off_shoulder_halter_vertical_continuity_v0_1_1_nb_clean.txt
+  notes:
+    - NECKLINE only
+    - five neckline families with 28 frozen slots
+    - ref_3 stays upper-boundary support only and must not redefine identity
+    - NECKLINE teaches fabric-skin boundary stability, not outerwear volume or new identity definition
+    - `NK-E01` and `NK-E02` intentionally share the same front-neutral shot class while carrying different garment-family coverage

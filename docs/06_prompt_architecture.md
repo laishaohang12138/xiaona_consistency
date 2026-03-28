@@ -18,13 +18,24 @@
 ## Active BRIDGE Prompt Stack
 - The active BRIDGE prompt pack is `v0.3.1-nb2`
 - It is a scoped runtime stack aligned to the BRIDGE layer role
-- Scope is BRIDGE only; NECKLINE / OUTER / FACE LOCK still need their own scoped assets
+- Scope is BRIDGE only; OUTER / FACE LOCK still need their own scoped assets
 
 ## BRIDGE Runtime Formulas
 - Bridge first pass:
   `bridge_runtime_base_v0_3_1_nb2.txt` + one main plugin `BR-01~BR-08` + `negative_core_bridge_v0_3_1_nb2.txt`
 - Bridge shortlist re-roll:
   `bridge_runtime_base_v0_3_1_nb2.txt` + one main plugin `BR-01~BR-08` + `negative_core_bridge_v0_3_1_nb2.txt` + `negative_finish_bridge_v0_3_1_nb2.txt`
+
+## Active NECKLINE Prompt Stack
+- The active NECKLINE prompt pack is `v0.1.1-nb-clean`
+- It is a scoped runtime stack aligned to the NECKLINE layer role
+- Scope is NECKLINE only; OUTER / FACE LOCK still need their own scoped assets
+
+## NECKLINE Runtime Formulas
+- Neckline first pass:
+  `neckline_runtime_base_v0_1_1_nb_clean.txt` + one main plugin `NK-A01~NK-E04` + `negative_core_neckline_v0_1_1_nb_clean.txt`
+- Neckline shortlist re-roll:
+  `neckline_runtime_base_v0_1_1_nb_clean.txt` + one main plugin `NK-A01~NK-E04` + `negative_core_neckline_v0_1_1_nb_clean.txt` + `negative_finish_neckline_v0_1_1_nb_clean.txt`
 
 ## BRIDGE Runtime Base
 - Owns:
@@ -48,6 +59,32 @@
 ## BRIDGE Negative Layers
 - `negative_core_bridge_v0_3_1_nb2.txt` is always on for active BRIDGE lanes
 - `negative_finish_bridge_v0_3_1_nb2.txt` is shortlist re-roll tightening only
+
+## NECKLINE Runtime Base
+- Owns:
+  - reference priority doctrine
+  - anchor role split
+  - identity geometry hard-lock
+  - upper-boundary continuity
+  - neckline exposure discipline
+  - fabric-skin boundary stability
+  - camera / optics / framing discipline
+  - low-entropy anatomy and motion rules
+- Cross-batch reusable
+- Must remain stable across five neckline families and must not be casually edited for a single image
+
+## NECKLINE Plugin Families
+- Family A `NK-A01~NK-A06` owns HIGH / MOCK NECK coverage
+- Family B `NK-B01~NK-B06` owns CREW / U NECK coverage
+- Family C `NK-C01~NK-C06` owns V NECK coverage
+- Family D `NK-D01~NK-D06` owns SHIRT COLLAR / OPEN COLLAR coverage
+- Family E `NK-E01~NK-E04` owns OFF-SHOULDER / HALTER coverage
+- NECKLINE plugins may control neckline openness, collar / placket readability, clavicle reveal, and upper-boundary framing, but must not overturn the runtime base
+- NECKLINE does not own outerwear volume, heavy layering, or FACE LOCK identity recovery
+
+## NECKLINE Negative Layers
+- `negative_core_neckline_v0_1_1_nb_clean.txt` is always on for active NECKLINE lanes
+- `negative_finish_neckline_v0_1_1_nb_clean.txt` is shortlist re-roll tightening only
 
 ## BODY GOLD Runtime Base
 - Owns:
