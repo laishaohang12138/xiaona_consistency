@@ -32,6 +32,112 @@ from core.qa_runtime import (
 BASE_DIR = Path(__file__).resolve().parent
 main = pipeline_main
 
+HEAVY_PROVIDER_UI: Dict[str, Dict[str, str]] = {
+    "segformer_body_fusion": {
+        "label": "工业默认融合",
+        "summary": "同时启用服装边界证据和体态几何证据，适合日常批次复核。",
+        "scene": "日常 shot_review / 没有 canonical 产物时的稳定默认模式",
+    },
+    "segformer_body_truth_fusion": {
+        "label": "真相融合模式",
+        "summary": "在默认融合上叠加 116-1 canonical body truth，适合验证绝对身材真相是否到位。",
+        "scene": "已经准备好 116-1 master artifact 和候选 sidecar 时",
+    },
+    "segformer_parser": {
+        "label": "边界证据模式",
+        "summary": "只看服装边界、领口、肩线和可见肢体边界。",
+        "scene": "优先检查服装边界、领口、肩线稳定性",
+    },
+    "body_measure_lite": {
+        "label": "体态几何模式",
+        "summary": "只看轻量体态、3D 和空间结构证据。",
+        "scene": "优先判断站姿、比例、侧后轮廓是否稳定",
+    },
+    "body_canonical_hmr2": {
+        "label": "116-1 真相直连模式",
+        "summary": "优先尝试本地 HMR2/4D-Humans 直连导出并使用显卡，失败时继续读取现有 canonical body truth 产物。",
+        "scene": "单独验证 116-1 身材真相链，或给 truth fusion 提供 body canonical 证据",
+    },
+    "disabled": {
+        "label": "关闭重证据",
+        "summary": "只保留轻量 QA 主链路，不做任何重型补证。",
+        "scene": "纯轻量回放、排查基础分数链路时",
+    },
+}
+
+VIEW_CLASSIFIER_UI: Dict[str, str] = {
+    "view_classifier_lite": "轻量视角辅助分类器（只做 shadow 对照，不改主路由）",
+    "disabled": "关闭视角辅助分类器",
+}
+
+FACE_CANONICAL_UI: Dict[str, str] = {
+    "face_pose_canonical_3ddfa": "脸部 canonical 直连 3DDFA-V3（优先直连外部仓库，失败自动回退 bridge）",
+    "face_pose_canonical_bridge": "脸部 canonical 桥接（shadow-only，面向 0 号脸规范化对照）",
+    "disabled": "关闭脸部 canonical 辅助",
+}
+
+WORKFLOW_UI: Dict[str, Dict[str, str]] = {
+    "shot_review": {
+        "label": "批次复核",
+        "summary": "对当前 input 图集运行 QA，输出排序、review packet 和 winner 候选。",
+    },
+    "inspect_review_packet": {
+        "label": "查看复核摘要",
+        "summary": "直接读取最近一次 review packet，快速看批次状态、Top1、风险和人工提示。",
+    },
+    "promote_winner": {
+        "label": "确认 winner",
+        "summary": "把人工确认通过的 winner 写入 winner bank，不等于主训练集自动准入。",
+    },
+    "winner_bank_status": {
+        "label": "查看 winner bank",
+        "summary": "查看已确认样本、最新漂移和下一步人工动作。",
+    },
+    "advanced_cli": {
+        "label": "高级工程模式",
+        "summary": "进入 qa / benchmark / optuna / calibrate 等工程入口。",
+    },
+}
+
+
+def _heavy_provider_ui(provider_name: Any) -> Dict[str, str]:
+    name = str(provider_name or "").strip()
+    return HEAVY_PROVIDER_UI.get(
+        name,
+        {
+            "label": name or "未知重证据模式",
+            "summary": "暂无中文说明。",
+            "scene": "请结合 provider 名称排查。",
+        },
+    )
+
+
+def _heavy_provider_title(provider_name: Any) -> str:
+    name = str(provider_name or "").strip()
+    ui = _heavy_provider_ui(name)
+    return f"{ui['label']} [{name}]" if name else ui["label"]
+
+
+def _print_heavy_provider_explanation(provider_name: Any) -> None:
+    name = str(provider_name or "").strip()
+    ui = _heavy_provider_ui(name)
+    print(f"[交互引导] 已选择重型证据模式：{ui['label']} [{name}]")
+    print(f"[交互引导] 适用场景：{ui['scene']}")
+    print(f"[交互引导] 模式说明：{ui['summary']}")
+    if name in {"segformer_body_truth_fusion", "body_canonical_hmr2"}:
+        print("[交互引导] 前置条件：需要 116-1 的 canonical master artifact，以及候选图 sidecar。")
+        print("[交互引导] 产物说明见 docs/20_body_canonical_artifact_bridge.md")
+        print("[交互引导] 如需直连 HMR2，请继续看 docs/23_body_canonical_hmr2_integration.md")
+
+
+def _print_workflow_explanation(workflow_name: Any) -> None:
+    name = str(workflow_name or "").strip()
+    ui = WORKFLOW_UI.get(name)
+    if not ui:
+        return
+    print(f"[交互引导] 已选择任务：{ui['label']} [{name}]")
+    print(f"[交互引导] 任务说明：{ui['summary']}")
+
 
 def _configure_console_encoding() -> None:
     for stream_name in ["stdin", "stdout", "stderr"]:
@@ -117,7 +223,7 @@ def _select_choice(
 ) -> str:
     print("[交互引导] 可选项:")
     for index, (value, description) in enumerate(options, start=1):
-        print(f"  {index}. {value} | {description}")
+        print(f"  {index}. {description} [{value}]")
     valid_names = {value for value, _ in options}
     default_value = default if default in valid_names else options[0][0]
     while True:
@@ -192,20 +298,42 @@ def _select_review_profile_interactively(default: str = "body_gold_fullbody") ->
 
 
 def _select_heavy_provider_interactively(default: str = "segformer_body_fusion") -> str:
-    return _select_choice(
-        "请选择本轮使用的重型证据模式",
-        [
-            ("segformer_body_fusion", "工业默认模式：同时启用服装边界证据和体态几何证据"),
-            ("segformer_parser", "仅启用 Segformer 服装/领口/肩线边界证据"),
-            ("body_measure_lite", "仅启用 body measure 体态/3D/空间结构证据"),
-            ("disabled", "关闭重型证据，仅保留轻量 QA 主链路"),
-        ],
-        default=default,
-    )
+    options = [
+        "segformer_body_fusion",
+        "segformer_body_truth_fusion",
+        "segformer_parser",
+        "body_measure_lite",
+        "body_canonical_hmr2",
+        "disabled",
+    ]
+    print("[交互引导] 本轮可选的重型证据模式：")
+    for index, value in enumerate(options, start=1):
+        ui = _heavy_provider_ui(value)
+        print(f"  {index}. {ui['label']} [{value}]")
+        print(f"     适用: {ui['scene']}")
+        print(f"     说明: {ui['summary']}")
+    valid_names = set(options)
+    default_value = default if default in valid_names else options[0]
+    while True:
+        choice = _prompt_text("请选择本轮使用的重型证据模式（输入编号或内部代号）", default_value)
+        if choice.isdigit():
+            index = int(choice)
+            if 1 <= index <= len(options):
+                return options[index - 1]
+        if choice in valid_names:
+            return choice
+        print(f"[交互引导] 无法识别的选项: {choice}")
 
 
 def _parse_heavy_provider_compare_targets(values: Optional[Sequence[str]]) -> List[str]:
-    allowed = {"segformer_body_fusion", "segformer_parser", "body_measure_lite", "disabled"}
+    allowed = {
+        "segformer_body_fusion",
+        "segformer_body_truth_fusion",
+        "segformer_parser",
+        "body_measure_lite",
+        "body_canonical_hmr2",
+        "disabled",
+    }
     parsed: List[str] = []
     for raw_value in values or []:
         for chunk in str(raw_value).split(","):
@@ -223,13 +351,21 @@ def _parse_heavy_provider_compare_targets(values: Optional[Sequence[str]]) -> Li
 
 
 def _prompt_heavy_provider_compare_targets(
-    default: Sequence[str] = ("segformer_body_fusion", "segformer_parser", "body_measure_lite"),
+    default: Sequence[str] = (
+        "segformer_body_fusion",
+        "segformer_body_truth_fusion",
+        "segformer_parser",
+        "body_measure_lite",
+        "body_canonical_hmr2",
+    ),
 ) -> List[str]:
-    print("[交互引导] 可对比的 heavy provider:")
-    print("  1. segformer_body_fusion | 工业默认融合模式")
-    print("  2. segformer_parser | 服装边界/领口/肩线重证据")
-    print("  3. body_measure_lite | 体态/3D/空间结构重证据")
-    print("  4. disabled | 关闭重型证据，仅作基线对照")
+    print("[交互引导] 可对比的重型证据模式：")
+    compare_order = list(default) + ["disabled"]
+    for index, value in enumerate(compare_order, start=1):
+        ui = _heavy_provider_ui(value)
+        print(f"  {index}. {ui['label']} [{value}]")
+        print(f"     适用: {ui['scene']}")
+        print(f"     说明: {ui['summary']}")
     default_text = ",".join(default)
     while True:
         raw = _prompt_text("请输入需要对比的 heavy provider（逗号分隔）", default_text)
@@ -260,110 +396,408 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
     anchor_truth = batch.get("anchor_truth") or {}
     heavy_provider_status = batch.get("heavy_provider_status") or {}
     view_classifier_status = batch.get("view_classifier_status") or {}
+    face_canonical_status = batch.get("face_canonical_status") or {}
     heavy_evidence = batch.get("heavy_evidence_summary") or {}
+    canonical_truth = batch.get("canonical_truth_summary") or {}
+    master_truth_artifact_dir = batch.get("master_truth_artifact_dir")
     identity = batch.get("identity_summary") or {}
     geometry = batch.get("geometry_summary") or {}
     admission = batch.get("admission_advice") or {}
-    print("\n[Review Packet]")
-    print(f"  Profile: {batch.get('target_profile')}")
-    print(f"  Status : {batch.get('run_status')}")
-    print(f"  Images : {batch.get('input_count')}")
+    ranked = packet.get("ranked_review_packet") or {}
+    groups = list(ranked.get("groups") or [])
+    primary_group = groups[0] if len(groups) > 0 and isinstance(groups[0], dict) else {}
+    shortlist = list(primary_group.get("shortlist") or [])
+    top_shortlist = shortlist[0] if len(shortlist) > 0 and isinstance(shortlist[0], dict) else {}
+    print("\n[复核摘要]")
+    print(f"  训练层: {batch.get('target_profile')}")
+    print(f"  状态  : {batch.get('run_status')}")
+    print(f"  图片数: {batch.get('input_count')}")
     if engine_status:
         print(
-            "  Engine : "
+            "  引擎  : "
             f"face={engine_status.get('face_mode')} "
             f"| pose={engine_status.get('pose_mode')} "
             f"| fatal={engine_status.get('fatal')} "
             f"| classic_cv={engine_status.get('classic_cv_fallback_active')}"
         )
         if engine_status.get("fatal_reasons"):
-            print(f"  Fatal  : {engine_status.get('fatal_reasons')}")
+            print(f"  致命原因: {engine_status.get('fatal_reasons')}")
     if anchor_truth:
         print(
-            "  Truth  : "
+            "  真相锚点: "
             f"face={((anchor_truth.get('face_truth_anchor') or {}).get('anchor_id'))} "
             f"| body={((anchor_truth.get('body_truth_anchor') or {}).get('anchor_id'))} "
             f"| upper={((anchor_truth.get('upper_support_anchor') or {}).get('anchor_id'))}"
         )
     if heavy_provider_status:
         component_names = ",".join(
-            str(node.get("provider_name"))
+            _heavy_provider_ui(node.get("provider_name")).get("label")
             for node in heavy_provider_status.get("component_providers", [])
             if isinstance(node, dict) and str(node.get("provider_name") or "").strip()
         )
         print(
-            "  HeavyP : "
-            f"requested={heavy_provider_status.get('requested_heavy_evidence')} "
-            f"| active={heavy_provider_status.get('provider_name')} "
+            "  重证据策略: "
+            f"请求={_heavy_provider_title(heavy_provider_status.get('requested_heavy_evidence'))} "
+            f"| 生效={_heavy_provider_title(heavy_provider_status.get('provider_name'))} "
             f"| enabled={heavy_provider_status.get('enabled')}"
-            f"{f' | components={component_names}' if component_names else ''}"
+            f"{f' | 组件={component_names}' if component_names else ''}"
         )
     if view_classifier_status:
+        view_name = str(view_classifier_status.get("provider_name") or "").strip()
         print(
-            "  ViewClf: "
-            f"requested={view_classifier_status.get('requested_view_classifier')} "
-            f"| active={view_classifier_status.get('provider_name')} "
+            "  视角辅助: "
+            f"请求={VIEW_CLASSIFIER_UI.get(str(view_classifier_status.get('requested_view_classifier') or '').strip(), view_classifier_status.get('requested_view_classifier'))} "
+            f"| 生效={VIEW_CLASSIFIER_UI.get(view_name, view_name)} "
             f"| enabled={view_classifier_status.get('enabled')}"
         )
-    print(f"  Top1   : {selection.get('top_ranked_image')}")
-    print(f"  Window : top {selection.get('manual_review_window')}")
-    print(f"  Gate   : {batch_gate.get('status')} | reasons={batch_gate.get('reasons') or []}")
+    if face_canonical_status:
+        face_canonical_name = str(face_canonical_status.get("provider_name") or "").strip()
+        requested_name = str(face_canonical_status.get("requested_face_canonical") or "").strip()
+        print(
+            "  脸部辅助: "
+            f"请求={FACE_CANONICAL_UI.get(requested_name, requested_name)} "
+            f"| 生效={FACE_CANONICAL_UI.get(face_canonical_name, face_canonical_name)} "
+            f"| enabled={face_canonical_status.get('enabled')}"
+        )
+    print(f"  第一名: {selection.get('top_ranked_image')}")
+    print(f"  复核窗: top {selection.get('manual_review_window')}")
+    print(f"  批次闸门: {batch_gate.get('status')} | reasons={batch_gate.get('reasons') or []}")
     if heavy_evidence:
         heavy_summary = heavy_evidence.get("summary") or {}
+        heavy_ui = _heavy_provider_ui(heavy_evidence.get("provider_name"))
         component_names = ",".join(
-            str(node.get("provider_name"))
+            _heavy_provider_ui(node.get("provider_name")).get("label")
             for node in heavy_summary.get("component_providers", [])
             if isinstance(node, dict) and str(node.get("provider_name") or "").strip()
         )
         print(
-            "  Heavy  : "
-            f"provider={heavy_evidence.get('provider_name')} "
-            f"| available={heavy_evidence.get('available')} "
-            f"| conf={heavy_evidence.get('confidence')} "
-            f"| coverage={heavy_evidence.get('coverage')} "
+            "  重证据结果: "
+            f"模式={_heavy_provider_title(heavy_evidence.get('provider_name'))} "
+            f"| 可用={heavy_evidence.get('available')} "
+            f"| 置信度={heavy_evidence.get('confidence')} "
+            f"| 覆盖度={heavy_evidence.get('coverage')} "
             f"| cache_hit={heavy_summary.get('cache_hit_count')} "
             f"| cache_write={heavy_summary.get('cache_write_count')}"
-            f"{f' | components={component_names}' if component_names else ''}"
+            f"{f' | 组件={component_names}' if component_names else ''}"
         )
+        print(f"  说明  : {heavy_ui.get('summary')}")
+    show_batch_truth = any(
+        canonical_truth.get(key) is not None
+        for key in [
+            "canonical_truth_available",
+            "body_shape_truth_alignment",
+            "body_shape_beta_similarity",
+            "body_mesh_fit_confidence",
+        ]
+    ) or str(heavy_evidence.get("provider_name") or "") in {"segformer_body_truth_fusion", "body_canonical_hmr2"}
+    if show_batch_truth:
+        provider_state = canonical_truth.get("body_canonical_provider_state") or {}
+        print(
+            "  身材真相: "
+            f"available={canonical_truth.get('canonical_truth_available')} "
+            f"| align={canonical_truth.get('body_shape_truth_alignment')} "
+            f"| beta={canonical_truth.get('body_shape_beta_similarity')} "
+            f"| fit={canonical_truth.get('body_mesh_fit_confidence')}"
+            + (f" | provider={provider_state.get('provider_name')}" if provider_state else "")
+        )
+        if canonical_truth.get("canonical_truth_available") is not True:
+            print("  说明  : 当前还没有可用的 116-1 canonical body truth 证据，系统会退化为边界/体态几何复核。")
+            if master_truth_artifact_dir:
+                print(f"  下一步: 先准备 {master_truth_artifact_dir} 下的 master artifact 和候选 sidecar")
+            if str((heavy_provider_status or {}).get("integration_state") or "") == "missing_smpl_model":
+                print("  阻塞  : 本地 HMR2 已接通，但缺少 SMPL neutral 模型文件。")
+                print("  参考  : docs/23_body_canonical_hmr2_integration.md")
+            else:
+                print("  参考  : docs/20_body_canonical_artifact_bridge.md")
+    if top_shortlist:
+        top_face_canonical = top_shortlist.get("face_canonical_summary") or {}
+        top_truth = top_shortlist.get("canonical_truth_summary") or {}
+        show_top_truth = any(
+            top_truth.get(key) is not None
+            for key in [
+                "canonical_truth_available",
+                "body_shape_truth_alignment",
+                "body_shape_beta_similarity",
+                "body_mesh_fit_confidence",
+            ]
+        )
+        if show_top_truth:
+            print(
+                "  第一名真相: "
+                f"available={top_truth.get('canonical_truth_available')} "
+                f"| align={top_truth.get('body_shape_truth_alignment')} "
+                f"| beta={top_truth.get('body_shape_beta_similarity')} "
+                f"| fit={top_truth.get('body_mesh_fit_confidence')}"
+            )
+        show_top_face = any(
+            top_face_canonical.get(key) is not None
+            for key in [
+                "available",
+                "face_pose_normalization_confidence",
+                "canonical_face_landmark_similarity",
+                "canonical_face_identity_similarity",
+            ]
+        ) or str((face_canonical_status or {}).get("provider_name") or "") in {"face_pose_canonical_bridge", "face_pose_canonical_3ddfa"}
+        if show_top_face:
+            print(
+                "  第一名脸辅: "
+                f"available={top_face_canonical.get('available')} "
+                f"| normalize={top_face_canonical.get('face_pose_normalization_confidence')} "
+                f"| landmark={top_face_canonical.get('canonical_face_landmark_similarity')} "
+                f"| identity={top_face_canonical.get('canonical_face_identity_similarity')} "
+                f"| pose_delta={top_face_canonical.get('pose_delta_deg')}"
+            )
     print(
-        "  Identity: "
+        "  身份凝聚: "
         f"face={identity.get('batch_identity_cohesion')} "
         f"clothfree={identity.get('batch_clothfree_identity_cohesion')} "
         f"hybrid={identity.get('batch_hybrid_identity_cohesion')}"
     )
     print(
-        "  Geometry: "
+        "  几何对齐: "
         f"body={geometry.get('body_under_clothes_continuity')} "
         f"3d={geometry.get('batch_3d_cohesion')} "
         f"world3d={geometry.get('batch_world3d_cohesion')}"
     )
-    print(f"  Risks  : {batch.get('primary_risks') or []}")
+    print(f"  主要风险: {batch.get('primary_risks') or []}")
     print(
-        f"  Admission: target={admission.get('target_bucket')} "
+        f"  复核建议: target={admission.get('target_bucket')} "
         f"| action={admission.get('suggested_action')} | blockers={admission.get('blockers') or []}"
     )
-    print(f"  Guidance: {batch.get('review_guidance') or []}")
+    print(f"  人工提示: {batch.get('review_guidance') or []}")
 
 
 def _print_winner_bank_summary(report: Dict[str, Any]) -> None:
-    print("\n[Winner Bank]")
-    print(f"  Status     : {report.get('status')}")
-    print(f"  Curated    : {report.get('curated_bank_available')} | entries={report.get('curated_entry_count')}")
-    print(f"  Candidates : {report.get('candidate_entry_count')}")
-    print(f"  Drift rows : {report.get('drift_row_count')}")
-    print(f"  Next step  : {report.get('manual_next_step')}")
+    print("\n[Winner Bank 摘要]")
+    print(f"  状态    : {report.get('status')}")
+    print(f"  已确认库: {report.get('curated_bank_available')} | entries={report.get('curated_entry_count')}")
+    print(f"  候选数  : {report.get('candidate_entry_count')}")
+    print(f"  漂移行数: {report.get('drift_row_count')}")
+    print(f"  下一步  : {report.get('manual_next_step')}")
     top_risks = list(report.get("top_drift_risks") or [])
     if top_risks:
-        print(f"  Top risks  : {top_risks[:4]}")
+        print(f"  主要风险: {top_risks[:4]}")
     drift_rows = list(report.get("drift_rows") or [])
     for row in drift_rows[:2]:
         print(
-            f"  Drift      : {row.get('image')} | severity={row.get('drift_severity')} "
+            f"  漂移样本: {row.get('image')} | severity={row.get('drift_severity')} "
             f"| flags={list(row.get('drift_flags') or [])[:3]}"
         )
         focus = list(row.get("manual_focus") or [])[:2]
         if focus:
-            print(f"               focus={focus}")
+            print(f"  复核重点: {focus}")
+
+
+def _describe_alignment_bucket(value: Any) -> str:
+    try:
+        numeric = float(value)
+    except Exception:
+        return "暂无结论"
+    if numeric >= 0.82:
+        return "稳定贴近真相"
+    if numeric >= 0.76:
+        return "进入人工复核区"
+    if numeric >= 0.72:
+        return "已经出现可见漂移"
+    return "偏离明显"
+
+
+def _describe_percentage_bucket(value: Any) -> str:
+    try:
+        numeric = float(value)
+    except Exception:
+        return "暂无结论"
+    if numeric >= 0.85:
+        return "稳定"
+    if numeric >= 0.65:
+        return "可用"
+    if numeric >= 0.35:
+        return "偏弱"
+    return "很弱"
+
+
+def _describe_canonical_truth_state(packet: Dict[str, Any]) -> None:
+    batch = packet.get("batch_summary") or {}
+    admission = batch.get("admission_advice") or {}
+    canonical_truth = batch.get("canonical_truth_summary") or {}
+    face_canonical_status = batch.get("face_canonical_status") or {}
+    shortlist = _review_packet_shortlist_entries(packet)
+    top_item = shortlist[0] if shortlist else {}
+    master_card = top_item.get("master_consistency_card") or {}
+    top_truth = top_item.get("canonical_truth_summary") or {}
+    top_face = top_item.get("face_canonical_summary") or {}
+    provider_status = batch.get("heavy_provider_status") or {}
+    provider_name = str(provider_status.get("provider_name") or "").strip()
+    lane_family = str(master_card.get("lane_family") or "").strip()
+    route_action = str(admission.get("suggested_action") or "").strip()
+    print("\n[运行结论]")
+    if lane_family:
+        print(f"  批次定位: 当前 Top1 更接近 {lane_family} lane，应按对应 lane 标准理解分数。")
+    if route_action:
+        print(f"  流程动作: {route_action}")
+
+    canonical_available = top_truth.get("canonical_truth_available")
+    if canonical_available is True:
+        align = top_truth.get("body_shape_truth_alignment")
+        beta = top_truth.get("body_shape_beta_similarity")
+        fit = top_truth.get("body_mesh_fit_confidence")
+        print(
+            "  116-1 真相链: 已接入 canonical body truth "
+            f"| align={align}（{_describe_alignment_bucket(align)}）"
+            f" | beta={beta} | fit={fit}"
+        )
+        return
+
+    batch_canonical_available = canonical_truth.get("canonical_truth_available")
+    if provider_name in {"segformer_body_truth_fusion", "body_canonical_hmr2"}:
+        print("  116-1 真相链: 已切到 canonical 模式，但当前批次还没有可用的 HMR2 真相产物。")
+        master_truth_artifact_dir = batch.get("master_truth_artifact_dir")
+        if master_truth_artifact_dir:
+            print(f"  下一步    : 先补齐 {master_truth_artifact_dir} 下的 master artifact 和候选 sidecar。")
+        if str(provider_status.get("integration_state") or "") == "missing_smpl_model":
+            print("  阻塞      : 本地 HMR2 已接通 GPU，但缺少 SMPL neutral 模型文件。")
+            print("  参考文档  : docs/23_body_canonical_hmr2_integration.md")
+        else:
+            print("  参考文档  : docs/20_body_canonical_artifact_bridge.md")
+    elif batch_canonical_available is not True:
+        print("  116-1 真相链: 当前仍在轻量代理模式，尚未接入 canonical body truth。")
+        print("  建议模式  : 如需严格按 116-1 身材真相复核，请改用 segformer_body_truth_fusion。")
+
+    light_align = master_card.get("body_truth_alignment")
+    if light_align is not None:
+        print(
+            "  轻量真相代理: "
+            f"Top1 body_truth_alignment={light_align}（{_describe_alignment_bucket(light_align)}）"
+        )
+        print("  说明      : 这是当前轻量主链对 116-1 的代理读数，不等于 canonical HMR2 真相结论。")
+
+    face_provider_name = str(face_canonical_status.get("provider_name") or "").strip()
+    if face_provider_name in {"face_pose_canonical_bridge", "face_pose_canonical_3ddfa"}:
+        if top_face.get("available") is True:
+            print(
+                "  0 号脸辅助: 已接入 canonical face shadow "
+                f"| normalize={top_face.get('face_pose_normalization_confidence')} "
+                f"| landmark={top_face.get('canonical_face_landmark_similarity')} "
+                f"| identity={top_face.get('canonical_face_identity_similarity')}"
+            )
+        else:
+            print("  0 号脸辅助: 已启用 canonical shadow，但当前没有可用的 face canonical 证据。")
+            if face_provider_name == "face_pose_canonical_3ddfa":
+                print("  下一步    : clone 3DDFA-V3 到 external/3DDFA-V3，或先补 face canonical sidecar。")
+                print("  参考文档  : docs/21_face_pose_canonical_artifact_bridge.md / docs/22_face_pose_canonical_3ddfa_integration.md")
+
+
+def _print_benchmark_replay_summary(payload: Dict[str, Any]) -> None:
+    metrics = payload.get("metrics") or {}
+    heavy_metrics = payload.get("heavy_evidence_metrics") or {}
+    canonical_metrics = payload.get("canonical_truth_metrics") or {}
+    shadow_metrics = payload.get("shadow_view_classifier_metrics") or {}
+    face_canonical_metrics = payload.get("face_canonical_metrics") or {}
+    print("\n[Benchmark 回放摘要]")
+    print(
+        f"  样本数  : report={payload.get('num_report_items')} "
+        f"| labels={payload.get('num_labeled_items')} | benchmark={payload.get('num_benchmarked_items')}"
+    )
+    print(
+        "  核心指标: "
+        f"release_safety={metrics.get('release_safety_score')} "
+        f"| macro_f1={metrics.get('macro_f1')} "
+        f"| false_pass={metrics.get('false_pass_rate')} "
+        f"| exact={metrics.get('exact_accuracy')}"
+    )
+    if metrics:
+        print(
+            f"  结果解读: 当前规则回放整体{_describe_percentage_bucket(metrics.get('release_safety_score'))}，"
+            f" false_pass_rate={metrics.get('false_pass_rate')}。"
+        )
+    if heavy_metrics:
+        providers = ",".join(list(heavy_metrics.get("providers") or []))
+        print(
+            "  重证据  : "
+            f"providers={providers or '无'} "
+            f"| available={heavy_metrics.get('available_weight_ratio')} "
+            f"| confidence={heavy_metrics.get('confidence_mean')} "
+            f"| coverage={heavy_metrics.get('coverage_mean')}"
+        )
+    if canonical_metrics:
+        print(
+            "  真相证据: "
+            f"available={canonical_metrics.get('body_shape_truth_available_weight_ratio')} "
+            f"| align={canonical_metrics.get('body_shape_truth_alignment_mean')} "
+            f"| beta={canonical_metrics.get('body_shape_beta_similarity_mean')} "
+            f"| readiness={canonical_metrics.get('canonical_truth_readiness_score')}"
+        )
+        if float(canonical_metrics.get("body_shape_truth_available_weight_ratio", 0.0) or 0.0) <= 0.0:
+            print("  说明    : 这次 benchmark 还没有真正评到 canonical body truth，当前只是在评轻量或边界证据。")
+    if shadow_metrics:
+        print(
+            "  视角辅助: "
+            f"available={shadow_metrics.get('available_weight_ratio')} "
+            f"| lane_acc={shadow_metrics.get('lane_accuracy', shadow_metrics.get('shadow_view_lane_accuracy'))} "
+            f"| detail_acc={shadow_metrics.get('lane_detail_accuracy', shadow_metrics.get('shadow_view_lane_detail_accuracy'))} "
+            f"| agreement={shadow_metrics.get('primary_lane_agreement', shadow_metrics.get('shadow_primary_lane_agreement'))}"
+        )
+    if face_canonical_metrics:
+        providers = ",".join(list(face_canonical_metrics.get("providers") or []))
+        print(
+            "  脸部辅助: "
+            f"providers={providers or '无'} "
+            f"| available={face_canonical_metrics.get('available_weight_ratio')} "
+            f"| truth={face_canonical_metrics.get('truth_available_weight_ratio')} "
+            f"| normalize={face_canonical_metrics.get('face_pose_normalization_confidence_mean')} "
+            f"| landmark={face_canonical_metrics.get('canonical_face_landmark_similarity_mean')} "
+            f"| readiness={face_canonical_metrics.get('face_canonical_readiness_score')}"
+        )
+        if float(face_canonical_metrics.get("available_weight_ratio", 0.0) or 0.0) <= 0.0:
+            print("  说明    : 这次 benchmark 还没有真正评到 0 号脸 canonical sidecar，当前仍主要依赖原始 face 主链。")
+
+
+def _print_benchmark_heavy_compare_summary(payload: Dict[str, Any]) -> None:
+    comparison = payload.get("comparison") or {}
+    ranking = list(comparison.get("ranking_by_evidence_readiness") or [])
+    baseline = str(comparison.get("baseline_provider") or "").strip()
+    face_canonical_metrics = payload.get("face_canonical_metrics") or {}
+    print("\n[Heavy Compare 摘要]")
+    print(f"  基线模式: {_heavy_provider_title(baseline)}")
+    note = ((payload.get("comparison_scope") or {}).get("note") or "").strip()
+    if note:
+        print(f"  说明    : {note}")
+    for index, row in enumerate(ranking[:4], start=1):
+        if not isinstance(row, dict):
+            continue
+        provider_name = str(row.get("provider_name") or "").strip()
+        print(
+            f"  {index}. {_heavy_provider_title(provider_name)} "
+            f"| readiness={row.get('evidence_readiness_score')} "
+            f"| truth={row.get('canonical_truth_readiness_score')} "
+            f"| available={row.get('available_weight_ratio')} "
+            f"| confidence={row.get('confidence_mean')} "
+            f"| coverage={row.get('coverage_mean')}"
+        )
+    providers = payload.get("providers") or {}
+    top_row = ranking[0] if ranking else {}
+    top_provider_name = str(top_row.get("provider_name") or "").strip()
+    top_provider = providers.get(top_provider_name) if isinstance(providers, dict) else {}
+    top_canonical = (top_provider or {}).get("canonical_truth_metrics") or {}
+    if face_canonical_metrics:
+        providers_text = ",".join(list(face_canonical_metrics.get("providers") or []))
+        print(
+            "  脸部辅助: "
+            f"providers={providers_text or '无'} "
+            f"| available={face_canonical_metrics.get('available_weight_ratio')} "
+            f"| truth={face_canonical_metrics.get('truth_available_weight_ratio')} "
+            f"| normalize={face_canonical_metrics.get('face_pose_normalization_confidence_mean')} "
+            f"| readiness={face_canonical_metrics.get('face_canonical_readiness_score')}"
+        )
+        print("  说明    : 脸部 canonical 属于固定 shadow 证据，本次 heavy compare 不拿它参与 provider 排名。")
+    if top_provider_name:
+        if float(top_canonical.get("body_shape_truth_available_weight_ratio", 0.0) or 0.0) > 0.0:
+            print(
+                "  结论    : 当前最佳模式已经真正接入 canonical body truth，"
+                f" align={top_canonical.get('body_shape_truth_alignment_mean')}。"
+            )
+        else:
+            print("  结论    : 当前排名主要仍由边界/体态几何证据决定，canonical body truth 还没有真正进入对比。")
 
 
 def _review_packet_shortlist_entries(packet: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -483,6 +917,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
     if args.workflow is None and args.mode is None:
         args.workflow = _select_workflow_interactively(default="shot_review")
         workflow = str(args.workflow or "").strip()
+        _print_workflow_explanation(workflow)
 
     if workflow == "shot_review":
         args.mode = "qa"
@@ -490,6 +925,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
             args.profile = _select_review_profile_interactively(default=str(args.profile or "body_gold_fullbody"))
         if getattr(args, "heavy_provider", None) is None:
             args.heavy_provider = _select_heavy_provider_interactively(default="segformer_body_fusion")
+        _print_heavy_provider_explanation(args.heavy_provider)
         return
 
     if workflow in {"inspect_review_packet", "promote_winner", "winner_bank_status"}:
@@ -500,6 +936,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         effective_mode = str(args.mode)
     if effective_mode == "qa" and getattr(args, "heavy_provider", None) is None:
         args.heavy_provider = _select_heavy_provider_interactively(default="segformer_body_fusion")
+        _print_heavy_provider_explanation(args.heavy_provider)
 
     if effective_mode == "benchmark":
         has_action = (
@@ -539,6 +976,11 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
                     default="input",
                     must_exist=True,
                 )
+                if args.benchmark_output is None:
+                    args.benchmark_output = _resolve_cli_path(
+                        Path("outputs/benchmark_heavy_compare.interactive.json"),
+                        base_dir,
+                    )
             else:
                 args.benchmark_labels = _prompt_path(
                     "请输入 benchmark 标签文件路径",
@@ -546,6 +988,11 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
                     default="outputs/benchmark_labels_verify.json",
                     must_exist=True,
                 )
+                if args.benchmark_output is None:
+                    args.benchmark_output = _resolve_cli_path(
+                        Path("outputs/benchmark_replay.interactive.json"),
+                        base_dir,
+                    )
 
         if args.benchmark_template_out is not None and args.benchmark_report is None:
             args.benchmark_report = _prompt_path(
@@ -595,14 +1042,15 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
     if workflow == "inspect_review_packet":
         packet = _load_json_file(paths["review_packet"], "review packet")
         _print_review_packet_summary(packet)
-        print(f"[Review Packet File] {paths['review_packet']}")
-        print("[交互引导] 如需让 GPT 深入分析，请直接读取这份 review_packet.json。")
+        _describe_canonical_truth_state(packet)
+        print(f"[复核摘要文件] {paths['review_packet']}")
+        print("[交互引导] 如需继续深挖，请直接基于这份 review_packet.json 做分析。")
         return 0
 
     if workflow == "winner_bank_status":
         report = _load_json_file(paths["winner_bank_report"], "winner bank report")
         _print_winner_bank_summary(report)
-        print(f"[Winner Bank Report] {paths['winner_bank_report']}")
+        print(f"[Winner Bank 报告] {paths['winner_bank_report']}")
         return 0
 
     if workflow == "promote_winner":
@@ -618,6 +1066,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         review_packet = _load_json_file(paths["review_packet"], "review packet") if paths["review_packet"].exists() else {}
         if review_packet:
             _print_review_packet_summary(review_packet)
+            _describe_canonical_truth_state(review_packet)
             _print_shortlist_review_for_promotion(review_packet)
         selected_entry: Optional[Dict[str, Any]] = None
         if args.winner_rank is not None:
@@ -783,7 +1232,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--heavy-provider",
-        choices=["segformer_body_fusion", "segformer_parser", "body_measure_lite", "disabled"],
+        choices=[
+            "segformer_body_fusion",
+            "segformer_body_truth_fusion",
+            "segformer_parser",
+            "body_measure_lite",
+            "body_canonical_hmr2",
+            "disabled",
+        ],
         help="Override the heavy evidence provider for QA mode.",
     )
     parser.add_argument(
@@ -817,7 +1273,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--benchmark-compare-heavy-providers",
         nargs="+",
-        help="Replay heavy evidence on the labeled benchmark set for one or more providers, for example segformer_body_fusion segformer_parser body_measure_lite.",
+        help="Replay heavy evidence on the labeled benchmark set for one or more providers, for example segformer_body_fusion segformer_body_truth_fusion segformer_parser body_measure_lite body_canonical_hmr2.",
     )
     parser.add_argument(
         "--benchmark-image-root",
@@ -1076,7 +1532,21 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             packet = None
         if packet is not None:
             _print_review_packet_summary(packet)
-            print(f"[Review Packet File] {review_packet_path}")
+            _describe_canonical_truth_state(packet)
+            print(f"[复核摘要文件] {review_packet_path}")
+    elif effective_mode == "benchmark" and args.benchmark_output is not None:
+        benchmark_output_path = _resolve_cli_path(args.benchmark_output, base_dir)
+        try:
+            benchmark_payload = _load_json_file(benchmark_output_path, "benchmark output")
+        except ValueError:
+            benchmark_payload = None
+        if benchmark_payload is not None:
+            schema_version = str(benchmark_payload.get("schema_version") or "").strip()
+            if schema_version == "qa_benchmark_heavy_compare_v1":
+                _print_benchmark_heavy_compare_summary(benchmark_payload)
+            else:
+                _print_benchmark_replay_summary(benchmark_payload)
+            print(f"[Benchmark 输出文件] {benchmark_output_path}")
     return 0
 
 

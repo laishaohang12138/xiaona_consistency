@@ -487,6 +487,34 @@ def _extract_shadow_classifier(debug: Dict[str, Any]) -> Dict[str, Any]:
     return shadow
 
 
+def _extract_face_canonical(debug: Dict[str, Any]) -> Dict[str, Any]:
+    shadow: Dict[str, Any] = {}
+    if isinstance(debug.get("face_canonical_shadow", {}), dict):
+        shadow = copy.deepcopy(debug.get("face_canonical_shadow", {}))
+
+    if not shadow:
+        shadow = {}
+
+    flat_available = debug.get("face_canonical_shadow_available", None)
+    flat_confidence = debug.get("face_canonical_shadow_confidence", None)
+
+    if flat_available is not None and "available" not in shadow:
+        shadow["available"] = bool(flat_available)
+    if flat_confidence is not None and not isinstance(
+        shadow.get("face_pose_normalization_confidence", None), (int, float)
+    ):
+        shadow["face_pose_normalization_confidence"] = _safe_float(flat_confidence, 0.0)
+
+    shadow.setdefault("provider_name", "")
+    shadow.setdefault("provider_version", "")
+    shadow.setdefault("mode", "shadow_only")
+    shadow.setdefault("available", False)
+    shadow.setdefault("canonical_truth_available", False)
+    shadow.setdefault("guidance", [])
+    shadow.setdefault("reasons", [])
+    return shadow
+
+
 def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[str, Any]:
     target_profile = str(item.get("task_profile", runtime.config.review.active_profile))
     if target_profile not in runtime.config.task_profiles:
@@ -514,6 +542,7 @@ def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[st
     view_lane_strictness_score = _safe_float(debug.get("view_lane_strictness_score", 0.0), 0.0)
     heavy_evidence = _extract_heavy_evidence(debug)
     shadow_classifier = _extract_shadow_classifier(debug)
+    face_canonical = _extract_face_canonical(debug)
     shadow_classifier_lane = str(shadow_classifier.get("lane", "")).strip()
     shadow_classifier_enabled = bool(shadow_classifier.get("enabled"))
     shadow_classifier_confidence = _safe_float(shadow_classifier.get("confidence", 0.0), 0.0)
@@ -691,6 +720,9 @@ def replay_report_item(runtime: RuntimeContext, item: Dict[str, Any]) -> Dict[st
             "view_classifier_shadow_lane": shadow_classifier_lane,
             "view_classifier_shadow_confidence": round(shadow_classifier_confidence, 6),
             "view_classifier_shadow_disagrees": shadow_classifier_enabled and shadow_classifier_lane != view_lane,
+            "face_canonical_shadow": face_canonical,
+            "face_canonical_shadow_available": bool(face_canonical.get("available")),
+            "face_canonical_shadow_confidence": face_canonical.get("face_pose_normalization_confidence"),
             "heavy_evidence": heavy_evidence,
             "quality_flags": quality_flags,
             "quality_debug": quality_debug,
@@ -799,6 +831,179 @@ def _new_heavy_metric_state() -> Dict[str, Any]:
     }
 
 
+def _new_face_canonical_state() -> Dict[str, Any]:
+    return {
+        "total_weight": 0.0,
+        "available_weight": 0.0,
+        "truth_available_weight": 0.0,
+        "normalization_sum": 0.0,
+        "normalization_weight": 0.0,
+        "landmark_sum": 0.0,
+        "landmark_weight": 0.0,
+        "identity_sum": 0.0,
+        "identity_weight": 0.0,
+        "pose_delta_sum": 0.0,
+        "pose_delta_weight": 0.0,
+        "coverage_sum": 0.0,
+        "coverage_weight": 0.0,
+        "frontalization_sum": 0.0,
+        "frontalization_weight": 0.0,
+        "fit_conf_sum": 0.0,
+        "fit_conf_weight": 0.0,
+        "providers": set(),
+    }
+
+
+def _update_face_canonical_state(
+    state: Dict[str, Any],
+    *,
+    face_canonical: Dict[str, Any],
+    weight: float,
+) -> None:
+    state["total_weight"] += float(weight)
+    available = bool(face_canonical.get("available"))
+    truth_available = bool(face_canonical.get("canonical_truth_available"))
+    if available:
+        state["available_weight"] += float(weight)
+    if truth_available:
+        state["truth_available_weight"] += float(weight)
+
+    provider_name = str(face_canonical.get("provider_name", "")).strip()
+    if provider_name:
+        state["providers"].add(provider_name)
+
+    for key, sum_key, weight_key in [
+        ("face_pose_normalization_confidence", "normalization_sum", "normalization_weight"),
+        ("canonical_face_landmark_similarity", "landmark_sum", "landmark_weight"),
+        ("canonical_face_identity_similarity", "identity_sum", "identity_weight"),
+        ("pose_delta_similarity", "pose_delta_sum", "pose_delta_weight"),
+        ("visible_face_coverage", "coverage_sum", "coverage_weight"),
+        ("frontalization_quality", "frontalization_sum", "frontalization_weight"),
+        ("pose_fit_confidence", "fit_conf_sum", "fit_conf_weight"),
+    ]:
+        value = face_canonical.get(key, None)
+        if isinstance(value, (int, float)):
+            state[sum_key] += float(value) * float(weight)
+            state[weight_key] += float(weight)
+
+
+def _finalize_face_canonical_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    total_weight = float(state.get("total_weight", 0.0) or 0.0)
+    normalization_mean = (
+        None
+        if float(state.get("normalization_weight", 0.0) or 0.0) <= 0.0
+        else round(
+            _safe_div(
+                float(state.get("normalization_sum", 0.0) or 0.0),
+                float(state.get("normalization_weight", 0.0) or 0.0),
+                default=0.0,
+            ),
+            6,
+        )
+    )
+    landmark_mean = (
+        None
+        if float(state.get("landmark_weight", 0.0) or 0.0) <= 0.0
+        else round(
+            _safe_div(
+                float(state.get("landmark_sum", 0.0) or 0.0),
+                float(state.get("landmark_weight", 0.0) or 0.0),
+                default=0.0,
+            ),
+            6,
+        )
+    )
+    identity_mean = (
+        None
+        if float(state.get("identity_weight", 0.0) or 0.0) <= 0.0
+        else round(
+            _safe_div(
+                float(state.get("identity_sum", 0.0) or 0.0),
+                float(state.get("identity_weight", 0.0) or 0.0),
+                default=0.0,
+            ),
+            6,
+        )
+    )
+    pose_delta_similarity_mean = (
+        None
+        if float(state.get("pose_delta_weight", 0.0) or 0.0) <= 0.0
+        else round(
+            _safe_div(
+                float(state.get("pose_delta_sum", 0.0) or 0.0),
+                float(state.get("pose_delta_weight", 0.0) or 0.0),
+                default=0.0,
+            ),
+            6,
+        )
+    )
+    coverage_mean = (
+        None
+        if float(state.get("coverage_weight", 0.0) or 0.0) <= 0.0
+        else round(
+            _safe_div(
+                float(state.get("coverage_sum", 0.0) or 0.0),
+                float(state.get("coverage_weight", 0.0) or 0.0),
+                default=0.0,
+            ),
+            6,
+        )
+    )
+    frontalization_mean = (
+        None
+        if float(state.get("frontalization_weight", 0.0) or 0.0) <= 0.0
+        else round(
+            _safe_div(
+                float(state.get("frontalization_sum", 0.0) or 0.0),
+                float(state.get("frontalization_weight", 0.0) or 0.0),
+                default=0.0,
+            ),
+            6,
+        )
+    )
+    fit_conf_mean = (
+        None
+        if float(state.get("fit_conf_weight", 0.0) or 0.0) <= 0.0
+        else round(
+            _safe_div(
+                float(state.get("fit_conf_sum", 0.0) or 0.0),
+                float(state.get("fit_conf_weight", 0.0) or 0.0),
+                default=0.0,
+            ),
+            6,
+        )
+    )
+    readiness_score = round(
+        0.30 * float(_safe_div(float(state.get("available_weight", 0.0) or 0.0), total_weight, default=0.0))
+        + 0.15 * float(_safe_div(float(state.get("truth_available_weight", 0.0) or 0.0), total_weight, default=0.0))
+        + 0.20 * float(normalization_mean or 0.0)
+        + 0.15 * float(landmark_mean or 0.0)
+        + 0.10 * float(identity_mean or 0.0)
+        + 0.10 * float(fit_conf_mean or 0.0),
+        6,
+    )
+    return {
+        "available_weight_ratio": round(
+            _safe_div(float(state.get("available_weight", 0.0) or 0.0), total_weight, default=0.0),
+            6,
+        ),
+        "truth_available_weight_ratio": round(
+            _safe_div(float(state.get("truth_available_weight", 0.0) or 0.0), total_weight, default=0.0),
+            6,
+        ),
+        "face_pose_normalization_confidence_mean": normalization_mean,
+        "canonical_face_landmark_similarity_mean": landmark_mean,
+        "canonical_face_identity_similarity_mean": identity_mean,
+        "pose_delta_similarity_mean": pose_delta_similarity_mean,
+        "visible_face_coverage_mean": coverage_mean,
+        "frontalization_quality_mean": frontalization_mean,
+        "pose_fit_confidence_mean": fit_conf_mean,
+        "face_canonical_readiness_score": readiness_score,
+        "face_canonical_readiness_formula": "0.30*available + 0.15*truth_available + 0.20*normalize + 0.15*landmark + 0.10*identity + 0.10*fit_conf",
+        "providers": sorted(state.get("providers", set())),
+    }
+
+
 def _update_heavy_metric_state(
     state: Dict[str, Any],
     *,
@@ -847,6 +1052,7 @@ def _update_heavy_metric_state(
             metric_name,
             {
                 "num_items": 0,
+                "present_weight": 0.0,
                 "value_sum": 0.0,
                 "value_weight": 0.0,
                 "confidence_sum": 0.0,
@@ -856,6 +1062,7 @@ def _update_heavy_metric_state(
             },
         )
         metric_state["num_items"] += 1
+        metric_state["present_weight"] += weight
 
         metric_value = metric.get("metric_value")
         if isinstance(metric_value, (int, float)):
@@ -883,6 +1090,14 @@ def _finalize_heavy_metric_state(state: Dict[str, Any]) -> Dict[str, Any]:
                 continue
             metric_means[str(metric_name)] = {
                 "num_items": int(metric_state.get("num_items", 0) or 0),
+                "present_weight_ratio": round(
+                    _safe_div(
+                        float(metric_state.get("present_weight", 0.0) or 0.0),
+                        total_weight,
+                        default=0.0,
+                    ),
+                    6,
+                ),
                 "value_mean": None
                 if float(metric_state.get("value_weight", 0.0) or 0.0) <= 0.0
                 else round(
@@ -966,6 +1181,85 @@ def _finalize_heavy_metric_state(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _heavy_metric_mean_value(metrics: Dict[str, Any], metric_name: str, field_name: str) -> Optional[float]:
+    metric_means = metrics.get("metric_means", {}) if isinstance(metrics, dict) else {}
+    if not isinstance(metric_means, dict):
+        return None
+    metric_row = metric_means.get(metric_name, {})
+    if not isinstance(metric_row, dict):
+        return None
+    value = metric_row.get(field_name)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _extract_canonical_truth_summary(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    body_truth_available_ratio = _heavy_metric_mean_value(
+        metrics,
+        "body_shape_truth_alignment",
+        "present_weight_ratio",
+    )
+    body_truth_mean = _heavy_metric_mean_value(
+        metrics,
+        "body_shape_truth_alignment",
+        "value_mean",
+    )
+    body_beta_mean = _heavy_metric_mean_value(
+        metrics,
+        "body_shape_beta_similarity",
+        "value_mean",
+    )
+    measurement_mean = _heavy_metric_mean_value(
+        metrics,
+        "canonical_measurement_similarity",
+        "value_mean",
+    )
+    pose_delta_mean = _heavy_metric_mean_value(
+        metrics,
+        "body_pose_delta_similarity",
+        "value_mean",
+    )
+    mesh_fit_mean = _heavy_metric_mean_value(
+        metrics,
+        "body_mesh_fit_confidence",
+        "value_mean",
+    )
+    readiness_terms = [
+        0.45 * float(body_truth_available_ratio or 0.0),
+        0.30 * float(body_truth_mean or 0.0),
+        0.15 * float(body_beta_mean or 0.0),
+        0.10 * float(mesh_fit_mean or 0.0),
+    ]
+    canonical_truth_readiness_score = round(sum(readiness_terms), 6)
+    return {
+        "body_shape_truth_available_weight_ratio": round(float(body_truth_available_ratio or 0.0), 6),
+        "body_shape_truth_alignment_mean": None
+        if body_truth_mean is None
+        else round(body_truth_mean, 6),
+        "body_shape_beta_similarity_mean": None
+        if body_beta_mean is None
+        else round(body_beta_mean, 6),
+        "canonical_measurement_similarity_mean": None
+        if measurement_mean is None
+        else round(measurement_mean, 6),
+        "body_pose_delta_similarity_mean": None
+        if pose_delta_mean is None
+        else round(pose_delta_mean, 6),
+        "body_mesh_fit_confidence_mean": None
+        if mesh_fit_mean is None
+        else round(mesh_fit_mean, 6),
+        "canonical_truth_readiness_score": canonical_truth_readiness_score,
+        "canonical_truth_readiness_formula": (
+            "0.45*body_shape_truth_available + 0.30*body_shape_truth_alignment "
+            "+ 0.15*body_shape_beta_similarity + 0.10*body_mesh_fit_confidence"
+        ),
+    }
+
+
 def benchmark_heavy_provider_compare(
     runtime: RuntimeContext,
     report_path: Path,
@@ -987,6 +1281,21 @@ def benchmark_heavy_provider_compare(
     report_meta = report_payload.get("report_meta", {}) if isinstance(report_payload.get("report_meta", {}), dict) else {}
     original_provider_policy = copy.deepcopy(runtime.config.provider_policy)
     original_provider_bundle = runtime.providers
+    face_canonical_state = _new_face_canonical_state()
+
+    for image_name, label in labels.items():
+        report_item = items_by_name.get(image_name)
+        if report_item is None:
+            continue
+        report_debug = report_item.get("debug", {}) if isinstance(report_item.get("debug", {}), dict) else {}
+        face_canonical = _extract_face_canonical(report_debug)
+        weight = _safe_float(label.get("weight", 1.0), 1.0)
+        _update_face_canonical_state(
+            face_canonical_state,
+            face_canonical=face_canonical,
+            weight=weight,
+        )
+    face_canonical_metrics = _finalize_face_canonical_state(face_canonical_state)
 
     provider_results: Dict[str, Any] = {}
     try:
@@ -1013,6 +1322,8 @@ def benchmark_heavy_provider_compare(
                     missing_from_report.append(image_name)
                     continue
 
+                report_debug = report_item.get("debug", {}) if isinstance(report_item.get("debug", {}), dict) else {}
+                face_canonical = _extract_face_canonical(report_debug)
                 weight = _safe_float(label.get("weight", 1.0), 1.0)
                 expected_status = str(label.get("expected_status", "")).strip().upper()
                 resolved_image_path, resolution_source = _resolve_report_item_image_path(
@@ -1083,10 +1394,20 @@ def benchmark_heavy_provider_compare(
                             "failure_reason": heavy_evidence.get("failure_reason"),
                             "summary": heavy_evidence.get("summary", {}),
                         },
+                        "face_canonical": {
+                            "available": bool(face_canonical.get("available")),
+                            "provider_name": face_canonical.get("provider_name"),
+                            "provider_version": face_canonical.get("provider_version"),
+                            "face_pose_normalization_confidence": face_canonical.get("face_pose_normalization_confidence"),
+                            "canonical_face_landmark_similarity": face_canonical.get("canonical_face_landmark_similarity"),
+                            "canonical_face_identity_similarity": face_canonical.get("canonical_face_identity_similarity"),
+                            "pose_delta_deg": face_canonical.get("pose_delta_deg"),
+                        },
                     }
                 )
 
             heavy_metrics = _finalize_heavy_metric_state(aggregate_state)
+            canonical_truth_summary = _extract_canonical_truth_summary(heavy_metrics)
             evidence_readiness_score = round(
                 0.50 * float(heavy_metrics.get("available_weight_ratio", 0.0) or 0.0)
                 + 0.25 * float(heavy_metrics.get("confidence_mean", 0.0) or 0.0)
@@ -1110,6 +1431,7 @@ def benchmark_heavy_provider_compare(
                 "derived_scores": {
                     "evidence_readiness_score": evidence_readiness_score,
                     "evidence_readiness_formula": "0.50*available + 0.25*confidence + 0.25*coverage",
+                    **canonical_truth_summary,
                 },
                 "num_report_items": len(report_items),
                 "num_labeled_items": len(labels),
@@ -1117,6 +1439,7 @@ def benchmark_heavy_provider_compare(
                 "missing_from_report": sorted(missing_from_report),
                 "missing_images": missing_images,
                 "heavy_evidence_metrics": heavy_metrics,
+                "canonical_truth_metrics": canonical_truth_summary,
                 "group_metrics": {
                     status: _finalize_heavy_metric_state(state)
                     for status, state in by_expected_status.items()
@@ -1137,19 +1460,27 @@ def benchmark_heavy_provider_compare(
     deltas_vs_baseline = {}
     for provider_name in compare_targets:
         metrics = provider_results.get(provider_name, {}).get("heavy_evidence_metrics", {})
+        canonical_metrics = provider_results.get(provider_name, {}).get("canonical_truth_metrics", {})
         ranking.append(
             {
                 "provider_name": provider_name,
                 "evidence_readiness_score": provider_results.get(provider_name, {}).get("derived_scores", {}).get(
                     "evidence_readiness_score"
                 ),
+                "canonical_truth_readiness_score": canonical_metrics.get("canonical_truth_readiness_score"),
                 "available_weight_ratio": metrics.get("available_weight_ratio"),
                 "confidence_mean": metrics.get("confidence_mean"),
                 "coverage_mean": metrics.get("coverage_mean"),
+                "body_shape_truth_available_weight_ratio": canonical_metrics.get(
+                    "body_shape_truth_available_weight_ratio"
+                ),
+                "body_shape_truth_alignment_mean": canonical_metrics.get("body_shape_truth_alignment_mean"),
+                "body_shape_beta_similarity_mean": canonical_metrics.get("body_shape_beta_similarity_mean"),
             }
         )
         if provider_name == baseline_provider:
             continue
+        baseline_canonical = provider_results.get(baseline_provider, {}).get("canonical_truth_metrics", {})
         deltas_vs_baseline[provider_name] = {
             "available_weight_ratio_delta": round(
                 float(metrics.get("available_weight_ratio", 0.0) or 0.0)
@@ -1171,11 +1502,27 @@ def benchmark_heavy_provider_compare(
                 - float(provider_results.get(baseline_provider, {}).get("derived_scores", {}).get("evidence_readiness_score", 0.0) or 0.0),
                 6,
             ),
+            "canonical_truth_readiness_score_delta": round(
+                float(canonical_metrics.get("canonical_truth_readiness_score", 0.0) or 0.0)
+                - float(baseline_canonical.get("canonical_truth_readiness_score", 0.0) or 0.0),
+                6,
+            ),
+            "body_shape_truth_available_weight_ratio_delta": round(
+                float(canonical_metrics.get("body_shape_truth_available_weight_ratio", 0.0) or 0.0)
+                - float(baseline_canonical.get("body_shape_truth_available_weight_ratio", 0.0) or 0.0),
+                6,
+            ),
+            "body_shape_truth_alignment_mean_delta": round(
+                float(canonical_metrics.get("body_shape_truth_alignment_mean", 0.0) or 0.0)
+                - float(baseline_canonical.get("body_shape_truth_alignment_mean", 0.0) or 0.0),
+                6,
+            ),
         }
 
     ranking.sort(
         key=lambda row: (
             -float(row.get("evidence_readiness_score", 0.0) or 0.0),
+            -float(row.get("canonical_truth_readiness_score", 0.0) or 0.0),
             -float(row.get("available_weight_ratio", 0.0) or 0.0),
             -float(row.get("coverage_mean", 0.0) or 0.0),
             str(row.get("provider_name", "")),
@@ -1203,6 +1550,7 @@ def benchmark_heavy_provider_compare(
             "compare_mode": "heavy_evidence_replay",
             "note": "该对比只量化重型证据可用率、置信度、覆盖率和细项指标，不改写最终准入判断。",
         },
+        "face_canonical_metrics": face_canonical_metrics,
         "providers": provider_results,
         "comparison": {
             "baseline_provider": baseline_provider,
@@ -1441,6 +1789,8 @@ def benchmark_report(
     heavy_evidence_coverage_weighted_sum = 0.0
     heavy_evidence_coverage_weight = 0.0
     heavy_evidence_providers: set[str] = set()
+    heavy_metric_state = _new_heavy_metric_state()
+    face_canonical_state = _new_face_canonical_state()
     shadow_classifier_available_weight = 0.0
     shadow_classifier_confidence_weighted_sum = 0.0
     shadow_classifier_confidence_weight = 0.0
@@ -1480,6 +1830,7 @@ def benchmark_report(
         replay_debug = replayed.get("debug", {}) if isinstance(replayed.get("debug", {}), dict) else {}
         heavy_evidence = _extract_heavy_evidence(replay_debug)
         shadow_classifier = _extract_shadow_classifier(replay_debug)
+        face_canonical = _extract_face_canonical(replay_debug)
         predicted_view_lane = str(replay_debug.get("view_lane", ""))
         predicted_view_lane_detail = str(replay_debug.get("view_lane_detail", ""))
         predicted_shadow_view_lane = str(shadow_classifier.get("lane", "")).strip()
@@ -1574,6 +1925,17 @@ def benchmark_report(
         if isinstance(heavy_coverage, (int, float)):
             heavy_evidence_coverage_weighted_sum += float(heavy_coverage) * weight
             heavy_evidence_coverage_weight += weight
+        _update_heavy_metric_state(
+            heavy_metric_state,
+            heavy_evidence=heavy_evidence,
+            weight=weight,
+            image_resolved=True,
+        )
+        _update_face_canonical_state(
+            face_canonical_state,
+            face_canonical=face_canonical,
+            weight=weight,
+        )
 
         view_lane_key = predicted_view_lane or "unknown"
         view_lane_detail_key = predicted_view_lane_detail or "unknown"
@@ -1629,6 +1991,15 @@ def benchmark_report(
                     "decision_margin": shadow_classifier.get("decision_margin"),
                     "disagrees": shadow_primary_lane_agreement is False,
                 },
+                "face_canonical": {
+                    "available": bool(face_canonical.get("available")),
+                    "provider_name": face_canonical.get("provider_name"),
+                    "provider_version": face_canonical.get("provider_version"),
+                    "face_pose_normalization_confidence": face_canonical.get("face_pose_normalization_confidence"),
+                    "canonical_face_landmark_similarity": face_canonical.get("canonical_face_landmark_similarity"),
+                    "canonical_face_identity_similarity": face_canonical.get("canonical_face_identity_similarity"),
+                    "pose_delta_deg": face_canonical.get("pose_delta_deg"),
+                },
                 "agreement": {
                     "task_profile_match": task_profile_match,
                     "view_lane_match": view_lane_match,
@@ -1676,6 +2047,11 @@ def benchmark_report(
             for key, state in sorted(aggregate_by_task_profile.items())
         },
     }
+    heavy_evidence_metrics = _finalize_heavy_metric_state(heavy_metric_state)
+    heavy_evidence_metrics["providers"] = sorted(heavy_evidence_providers)
+    canonical_truth_metrics = _extract_canonical_truth_summary(heavy_evidence_metrics)
+    heavy_evidence_metrics.update(canonical_truth_metrics)
+    face_canonical_metrics = _finalize_face_canonical_state(face_canonical_state)
 
     return {
         "schema_version": "qa_benchmark_result_v1",
@@ -1759,16 +2135,9 @@ def benchmark_report(
             "primary_lane_agreement_checked_weight": round(shadow_primary_lane_agreement_checked_weight, 6),
             "providers": sorted(shadow_classifier_providers),
         },
-        "heavy_evidence_metrics": {
-            "available_weight_ratio": round(_safe_div(heavy_evidence_available_weight, total_weight, default=0.0), 6),
-            "confidence_mean": None
-            if heavy_evidence_confidence_weight <= 0.0
-            else round(_safe_div(heavy_evidence_confidence_weighted_sum, heavy_evidence_confidence_weight, default=0.0), 6),
-            "coverage_mean": None
-            if heavy_evidence_coverage_weight <= 0.0
-            else round(_safe_div(heavy_evidence_coverage_weighted_sum, heavy_evidence_coverage_weight, default=0.0), 6),
-            "providers": sorted(heavy_evidence_providers),
-        },
+        "face_canonical_metrics": face_canonical_metrics,
+        "heavy_evidence_metrics": heavy_evidence_metrics,
+        "canonical_truth_metrics": canonical_truth_metrics,
         "class_metrics": {
             status: {key: round(value, 6) for key, value in metrics.items()}
             for status, metrics in class_metrics.items()

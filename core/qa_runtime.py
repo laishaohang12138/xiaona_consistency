@@ -331,6 +331,7 @@ class ProjectPaths:
     dir_anchors: Path
     dir_input: Path
     dir_output: Path
+    dir_master_truth: Path
     dir_heavy_cache: Path
     dir_calib: Path
     dir_out_pass: Path
@@ -771,6 +772,7 @@ def _default_provider_policy() -> Dict[str, str]:
         "skin_region": "human_parsing",
         "heavy_evidence": "segformer_body_fusion",
         "view_classifier": "view_classifier_lite",
+        "face_canonical": "face_pose_canonical_3ddfa",
         "anchor_source": "registry_then_directory_fallback",
     }
 
@@ -785,6 +787,7 @@ def create_project_paths(base_dir: Optional[Path] = None) -> ProjectPaths:
         dir_anchors=dir_anchors,
         dir_input=root / "input",
         dir_output=dir_output,
+        dir_master_truth=dir_output / "master_truth",
         dir_heavy_cache=dir_output / "heavy_evidence_cache",
         dir_calib=root / "calib_pass",
         dir_out_pass=dir_output / "pass",
@@ -800,7 +803,14 @@ def create_project_paths(base_dir: Optional[Path] = None) -> ProjectPaths:
 
 
 def ensure_output_dirs(paths: ProjectPaths) -> None:
-    for target in [paths.dir_output, paths.dir_heavy_cache, paths.dir_out_pass, paths.dir_out_warn, paths.dir_out_fail]:
+    for target in [
+        paths.dir_output,
+        paths.dir_master_truth,
+        paths.dir_heavy_cache,
+        paths.dir_out_pass,
+        paths.dir_out_warn,
+        paths.dir_out_fail,
+    ]:
         target.mkdir(parents=True, exist_ok=True)
 
 
@@ -1327,6 +1337,9 @@ def apply_external_project_configs(config: RuntimeConfig) -> None:
                 view_classifier = provider_defaults.get(
                     "view_classifier", config.provider_policy["view_classifier"]
                 )
+                face_canonical = provider_defaults.get(
+                    "face_canonical", config.provider_policy["face_canonical"]
+                )
                 anchor_source = provider_defaults.get(
                     "anchor_source", config.provider_policy["anchor_source"]
                 )
@@ -1334,6 +1347,7 @@ def apply_external_project_configs(config: RuntimeConfig) -> None:
                 config.provider_policy["skin_region"] = str(skin_region)
                 config.provider_policy["heavy_evidence"] = str(heavy_evidence)
                 config.provider_policy["view_classifier"] = str(view_classifier)
+                config.provider_policy["face_canonical"] = str(face_canonical)
                 config.provider_policy["anchor_source"] = str(anchor_source)
 
         config.external_config_status["consistency_thresholds"] = True

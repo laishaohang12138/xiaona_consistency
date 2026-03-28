@@ -88,6 +88,40 @@ def _normalize_view_classifier_result(node: Any) -> Dict[str, Any]:
     }
 
 
+def _normalize_face_canonical_result(node: Any) -> Dict[str, Any]:
+    raw = dict(node) if isinstance(node, dict) else {}
+    return {
+        "enabled": bool(raw.get("enabled", True)),
+        "provider_name": str(raw.get("provider_name") or "unknown"),
+        "provider_family": str(raw.get("provider_family") or "face_canonical_shadow"),
+        "provider_version": str(raw.get("provider_version") or "unknown"),
+        "model_id": raw.get("model_id"),
+        "device": raw.get("device"),
+        "mode": str(raw.get("mode") or "shadow_only"),
+        "available": bool(raw.get("available", False)),
+        "source_path": raw.get("source_path"),
+        "master_artifact_path": raw.get("master_artifact_path"),
+        "candidate_artifact_path": raw.get("candidate_artifact_path"),
+        "cache_key": raw.get("cache_key"),
+        "cache_file": raw.get("cache_file"),
+        "cache_state": raw.get("cache_state"),
+        "canonical_truth_available": raw.get("canonical_truth_available"),
+        "visible_face_coverage": raw.get("visible_face_coverage"),
+        "frontalization_quality": raw.get("frontalization_quality"),
+        "pose_fit_confidence": raw.get("pose_fit_confidence"),
+        "face_pose_normalization_confidence": raw.get("face_pose_normalization_confidence"),
+        "canonical_face_landmark_similarity": raw.get("canonical_face_landmark_similarity"),
+        "canonical_face_identity_similarity": raw.get("canonical_face_identity_similarity"),
+        "pose_delta_similarity": raw.get("pose_delta_similarity"),
+        "pose_delta_deg": raw.get("pose_delta_deg"),
+        "yaw_deg": raw.get("yaw_deg"),
+        "pitch_deg": raw.get("pitch_deg"),
+        "roll_deg": raw.get("roll_deg"),
+        "reasons": [str(reason) for reason in raw.get("reasons", []) if str(reason).strip()],
+        "guidance": [str(item) for item in raw.get("guidance", []) if str(item).strip()],
+    }
+
+
 class SubjectMaskProvider(ABC):
     provider_name = "subject_mask_base"
 
@@ -167,6 +201,36 @@ class ViewClassifierProvider(ABC):
         pose_feat: Optional[Any] = None,
         subject_mask: Optional[np.ndarray] = None,
         skin_mask: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        raise NotImplementedError
+
+
+class FaceCanonicalProvider(ABC):
+    provider_name = "face_canonical_base"
+    provider_family = "face_canonical_shadow"
+    provider_version = "base"
+
+    def describe(self) -> Dict[str, Any]:
+        return {
+            "enabled": True,
+            "provider_name": self.provider_name,
+            "provider_family": self.provider_family,
+            "provider_version": self.provider_version,
+            "mode": "shadow_only",
+        }
+
+    @abstractmethod
+    def get_provider_status(self) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def analyze_face_canonical(
+        self,
+        runtime: Any,
+        image_path: Path,
+        *,
+        img_bgr: Optional[np.ndarray] = None,
+        face_feat: Optional[Any] = None,
     ) -> Dict[str, Any]:
         raise NotImplementedError
 
@@ -270,6 +334,56 @@ class DisabledViewClassifierProvider(ViewClassifierProvider):
                 "back_180": 0.0,
             },
             "reasons": [f"VIEW_CLASSIFIER_UNAVAILABLE:{self.reason}"],
+        }
+
+
+class DisabledFaceCanonicalProvider(FaceCanonicalProvider):
+    provider_name = "disabled"
+    provider_family = "face_canonical_shadow"
+    provider_version = "disabled"
+
+    def __init__(self, reason: str = "disabled") -> None:
+        self.reason = str(reason).strip() or "disabled"
+
+    def get_provider_status(self) -> Dict[str, Any]:
+        return {
+            "enabled": False,
+            "provider_name": self.provider_name,
+            "provider_family": self.provider_family,
+            "provider_version": self.provider_version,
+            "model_id": None,
+            "device": None,
+            "mode": "shadow_only",
+            "reason": self.reason,
+        }
+
+    def analyze_face_canonical(
+        self,
+        runtime: Any,
+        image_path: Path,
+        *,
+        img_bgr: Optional[np.ndarray] = None,
+        face_feat: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        del runtime, img_bgr, face_feat
+        return {
+            "enabled": False,
+            "provider_name": self.provider_name,
+            "provider_family": self.provider_family,
+            "provider_version": self.provider_version,
+            "model_id": None,
+            "device": None,
+            "mode": "shadow_only",
+            "available": False,
+            "source_path": str(Path(image_path).resolve()),
+            "canonical_truth_available": False,
+            "face_pose_normalization_confidence": None,
+            "canonical_face_landmark_similarity": None,
+            "canonical_face_identity_similarity": None,
+            "pose_delta_similarity": None,
+            "pose_delta_deg": None,
+            "reasons": [f"FACE_CANONICAL_UNAVAILABLE:{self.reason}"],
+            "guidance": [],
         }
 
 
@@ -446,10 +560,12 @@ class ProviderBundle:
     skin_region_provider: SkinRegionProvider
     heavy_evidence_provider: HeavyEvidenceProvider
     view_classifier_provider: ViewClassifierProvider
+    face_canonical_provider: FaceCanonicalProvider
     subject_mask_fallback: SubjectMaskProvider
     skin_region_fallback: SkinRegionProvider
     heavy_evidence_fallback: HeavyEvidenceProvider
     view_classifier_fallback: ViewClassifierProvider
+    face_canonical_fallback: FaceCanonicalProvider
     warned_keys: set[str] = field(default_factory=set)
 
     def get_subject_mask(
@@ -665,20 +781,103 @@ class ProviderBundle:
             "requested_view_classifier": str(self.requested_policy.get("view_classifier", "")),
         }
 
+    def analyze_face_canonical(
+        self,
+        runtime: Any,
+        image_path: Path,
+        *,
+        img_bgr: Optional[np.ndarray] = None,
+        face_feat: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        provider_name = getattr(self.face_canonical_provider, "provider_name", "unknown")
+        provider_failed = False
+        try:
+            result = self.face_canonical_provider.analyze_face_canonical(
+                runtime,
+                Path(image_path),
+                img_bgr=img_bgr,
+                face_feat=face_feat,
+            )
+        except Exception as exc:
+            result = None
+            provider_failed = True
+            _warn_once(
+                self.warned_keys,
+                f"face_canonical_provider_error::{provider_name}",
+                f"[警告] face_canonical provider={provider_name} 调用失败，已回退 disabled。原因: {exc}",
+            )
+        if isinstance(result, dict):
+            normalized = _normalize_face_canonical_result(result)
+            normalized.setdefault("provider_name", getattr(self.face_canonical_provider, "provider_name", "unknown"))
+            normalized.setdefault("provider_family", getattr(self.face_canonical_provider, "provider_family", "face_canonical_shadow"))
+            normalized.setdefault("provider_version", getattr(self.face_canonical_provider, "provider_version", "unknown"))
+            return normalized
+        if provider_name != self.face_canonical_fallback.provider_name and not provider_failed:
+            _warn_once(
+                self.warned_keys,
+                f"face_canonical_provider_fallback::{provider_name}",
+                f"[警告] face_canonical provider={provider_name} 未产出有效结果，已回退 disabled。",
+            )
+        fallback_result = self.face_canonical_fallback.analyze_face_canonical(
+            runtime,
+            Path(image_path),
+            img_bgr=img_bgr,
+            face_feat=face_feat,
+        )
+        normalized_fallback = _normalize_face_canonical_result(fallback_result)
+        normalized_fallback.setdefault("provider_name", getattr(self.face_canonical_fallback, "provider_name", "disabled"))
+        normalized_fallback.setdefault("provider_family", getattr(self.face_canonical_fallback, "provider_family", "face_canonical_shadow"))
+        normalized_fallback.setdefault("provider_version", getattr(self.face_canonical_fallback, "provider_version", "disabled"))
+        return normalized_fallback
+
+    def describe_face_canonical(self) -> Dict[str, Any]:
+        provider_name = getattr(self.face_canonical_provider, "provider_name", "unknown")
+        try:
+            status = self.face_canonical_provider.get_provider_status()
+        except Exception as exc:
+            status = {}
+            _warn_once(
+                self.warned_keys,
+                f"face_canonical_provider_status_error::{provider_name}",
+                f"[警告] face_canonical provider={provider_name} 状态探测失败，已回退 disabled。原因: {exc}",
+            )
+        if isinstance(status, dict) and len(status) > 0:
+            return {
+                **status,
+                "requested_face_canonical": str(self.requested_policy.get("face_canonical", "")),
+            }
+        fallback_status = self.face_canonical_fallback.get_provider_status()
+        if isinstance(fallback_status, dict):
+            return {
+                **fallback_status,
+                "requested_face_canonical": str(self.requested_policy.get("face_canonical", "")),
+            }
+        return {
+            "enabled": False,
+            "provider_name": getattr(self.face_canonical_fallback, "provider_name", "disabled"),
+            "provider_family": getattr(self.face_canonical_fallback, "provider_family", "face_canonical_shadow"),
+            "provider_version": getattr(self.face_canonical_fallback, "provider_version", "disabled"),
+            "reason": "status_unavailable",
+            "requested_face_canonical": str(self.requested_policy.get("face_canonical", "")),
+        }
+
     def describe(self) -> Dict[str, str]:
         return {
             "requested_subject_mask": str(self.requested_policy.get("subject_mask", "")),
             "requested_skin_region": str(self.requested_policy.get("skin_region", "")),
             "requested_heavy_evidence": str(self.requested_policy.get("heavy_evidence", "")),
             "requested_view_classifier": str(self.requested_policy.get("view_classifier", "")),
+            "requested_face_canonical": str(self.requested_policy.get("face_canonical", "")),
             "active_subject_mask": getattr(self.subject_mask_provider, "provider_name", "unknown"),
             "active_skin_region": getattr(self.skin_region_provider, "provider_name", "unknown"),
             "active_heavy_evidence": getattr(self.heavy_evidence_provider, "provider_name", "unknown"),
             "active_view_classifier": getattr(self.view_classifier_provider, "provider_name", "unknown"),
+            "active_face_canonical": getattr(self.face_canonical_provider, "provider_name", "unknown"),
             "subject_fallback": getattr(self.subject_mask_fallback, "provider_name", "unknown"),
             "skin_fallback": getattr(self.skin_region_fallback, "provider_name", "unknown"),
             "heavy_fallback": getattr(self.heavy_evidence_fallback, "provider_name", "unknown"),
             "view_classifier_fallback": getattr(self.view_classifier_fallback, "provider_name", "unknown"),
+            "face_canonical_fallback": getattr(self.face_canonical_fallback, "provider_name", "unknown"),
         }
 
 
@@ -688,6 +887,7 @@ def build_provider_bundle(provider_policy: Dict[str, str]) -> ProviderBundle:
         "skin_region": str(provider_policy.get("skin_region", "human_parsing")),
         "heavy_evidence": str(provider_policy.get("heavy_evidence", "segformer_body_fusion")),
         "view_classifier": str(provider_policy.get("view_classifier", "view_classifier_lite")),
+        "face_canonical": str(provider_policy.get("face_canonical", "face_pose_canonical_3ddfa")),
     }
 
     legacy_subject = LegacyForegroundSubjectMaskProvider()
@@ -695,6 +895,7 @@ def build_provider_bundle(provider_policy: Dict[str, str]) -> ProviderBundle:
     human_provider = HumanParsingProvider()
     heavy_disabled = DisabledHeavyEvidenceProvider()
     view_classifier_disabled = DisabledViewClassifierProvider()
+    face_canonical_disabled = DisabledFaceCanonicalProvider()
 
     subject_provider_map: Dict[str, SubjectMaskProvider] = {
         "human_parsing": human_provider,
@@ -712,12 +913,23 @@ def build_provider_bundle(provider_policy: Dict[str, str]) -> ProviderBundle:
         "disabled": view_classifier_disabled,
     }
     view_classifier_import_errors: Dict[str, str] = {}
+    face_canonical_provider_map: Dict[str, FaceCanonicalProvider] = {
+        "disabled": face_canonical_disabled,
+    }
+    face_canonical_import_errors: Dict[str, str] = {}
+
     try:
         from .qa_heavy_body_measure import BodyMeasureHeavyEvidenceProvider
 
         heavy_provider_map["body_measure_lite"] = BodyMeasureHeavyEvidenceProvider()
     except Exception as exc:
         heavy_import_errors["body_measure_lite"] = str(exc)
+    try:
+        from .qa_heavy_body_canonical import BodyCanonicalHeavyEvidenceProvider
+
+        heavy_provider_map["body_canonical_hmr2"] = BodyCanonicalHeavyEvidenceProvider()
+    except Exception as exc:
+        heavy_import_errors["body_canonical_hmr2"] = str(exc)
     try:
         from .qa_heavy_review import SegformerHeavyEvidenceProvider
 
@@ -731,37 +943,64 @@ def build_provider_bundle(provider_policy: Dict[str, str]) -> ProviderBundle:
     except Exception as exc:
         heavy_import_errors["segformer_body_fusion"] = str(exc)
     try:
+        from .qa_heavy_fusion import SegformerBodyTruthFusionHeavyEvidenceProvider
+
+        heavy_provider_map["segformer_body_truth_fusion"] = SegformerBodyTruthFusionHeavyEvidenceProvider()
+    except Exception as exc:
+        heavy_import_errors["segformer_body_truth_fusion"] = str(exc)
+    try:
         from .qa_view_classifier_lite import ViewClassifierLiteProvider
 
         view_classifier_provider_map["view_classifier_lite"] = ViewClassifierLiteProvider()
     except Exception as exc:
         view_classifier_import_errors["view_classifier_lite"] = str(exc)
+    try:
+        from .qa_face_pose_canonical import FacePoseCanonicalProvider
+
+        face_canonical_provider_map["face_pose_canonical_bridge"] = FacePoseCanonicalProvider()
+    except Exception as exc:
+        face_canonical_import_errors["face_pose_canonical_bridge"] = str(exc)
+    try:
+        from .qa_face_pose_canonical_3ddfa import FacePoseCanonical3DDFAProvider
+
+        face_canonical_provider_map["face_pose_canonical_3ddfa"] = FacePoseCanonical3DDFAProvider()
+    except Exception as exc:
+        face_canonical_import_errors["face_pose_canonical_3ddfa"] = str(exc)
 
     subject_name = requested_policy["subject_mask"]
     skin_name = requested_policy["skin_region"]
     heavy_name = requested_policy["heavy_evidence"]
     view_classifier_name = requested_policy["view_classifier"]
+    face_canonical_name = requested_policy["face_canonical"]
+
     subject_provider = subject_provider_map.get(subject_name, legacy_subject)
     skin_provider = skin_provider_map.get(skin_name, legacy_skin)
     heavy_provider = heavy_provider_map.get(heavy_name, heavy_disabled)
     view_classifier_provider = view_classifier_provider_map.get(view_classifier_name, view_classifier_disabled)
+    face_canonical_provider = face_canonical_provider_map.get(face_canonical_name, face_canonical_disabled)
 
     if subject_name not in subject_provider_map:
-        print(f"[警告] 未知 subject_mask provider={subject_name}，已改用 legacy_foreground。")
+        print(f"[??] ?? subject_mask provider={subject_name}???? legacy_foreground?")
     if skin_name not in skin_provider_map:
-        print(f"[警告] 未知 skin_region provider={skin_name}，已改用 legacy_ycrcb。")
+        print(f"[??] ?? skin_region provider={skin_name}???? legacy_ycrcb?")
     if heavy_name not in heavy_provider_map:
         import_error = heavy_import_errors.get(heavy_name)
         if import_error is not None:
-            print(f"[警告] heavy_evidence provider={heavy_name} 初始化失败，已改用 disabled。原因: {import_error}")
+            print(f"[??] heavy_evidence provider={heavy_name} ????????? disabled???: {import_error}")
         else:
-            print(f"[警告] 未知 heavy_evidence provider={heavy_name}，已改用 disabled。")
+            print(f"[??] ?? heavy_evidence provider={heavy_name}???? disabled?")
     if view_classifier_name not in view_classifier_provider_map:
         import_error = view_classifier_import_errors.get(view_classifier_name)
         if import_error is not None:
-            print(f"[警告] view_classifier provider={view_classifier_name} 初始化失败，已改用 disabled。原因: {import_error}")
+            print(f"[??] view_classifier provider={view_classifier_name} ????????? disabled???: {import_error}")
         else:
-            print(f"[警告] 未知 view_classifier provider={view_classifier_name}，已改用 disabled。")
+            print(f"[??] ?? view_classifier provider={view_classifier_name}???? disabled?")
+    if face_canonical_name not in face_canonical_provider_map:
+        import_error = face_canonical_import_errors.get(face_canonical_name)
+        if import_error is not None:
+            print(f"[??] face_canonical provider={face_canonical_name} ????????? disabled???: {import_error}")
+        else:
+            print(f"[??] ?? face_canonical provider={face_canonical_name}???? disabled?")
 
     return ProviderBundle(
         requested_policy=requested_policy,
@@ -769,8 +1008,10 @@ def build_provider_bundle(provider_policy: Dict[str, str]) -> ProviderBundle:
         skin_region_provider=skin_provider,
         heavy_evidence_provider=heavy_provider,
         view_classifier_provider=view_classifier_provider,
+        face_canonical_provider=face_canonical_provider,
         subject_mask_fallback=legacy_subject,
         skin_region_fallback=legacy_skin,
         heavy_evidence_fallback=heavy_disabled,
         view_classifier_fallback=view_classifier_disabled,
+        face_canonical_fallback=face_canonical_disabled,
     )

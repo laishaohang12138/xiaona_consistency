@@ -115,6 +115,70 @@ def _load_json_if_exists(path_str: Any) -> Optional[Dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
+def _extract_canonical_truth_summary(heavy_evidence: Any) -> Dict[str, Any]:
+    bundle = heavy_evidence if isinstance(heavy_evidence, dict) else {}
+    metrics = list(bundle.get("metrics") or [])
+    summary = dict(bundle.get("summary") or {}) if isinstance(bundle.get("summary"), dict) else {}
+    component_rows = list(summary.get("component_providers") or [])
+
+    def _metric_value(metric_name: str) -> Optional[float]:
+        for row in metrics:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("metric_name") or "").strip() != metric_name:
+                continue
+            value = row.get("metric_value")
+            try:
+                return float(value)
+            except Exception:
+                return None
+        return None
+
+    body_canonical_component = None
+    for row in component_rows:
+        if not isinstance(row, dict):
+            continue
+        provider_name = str(row.get("provider_name") or "").strip()
+        component_key = str(row.get("component_key") or "").strip()
+        if provider_name == "body_canonical_hmr2" or component_key == "body_canonical":
+            body_canonical_component = dict(row)
+            break
+
+    available = None
+    if isinstance(body_canonical_component, dict):
+        available = bool(body_canonical_component.get("available"))
+
+    return {
+        "canonical_truth_available": available,
+        "body_canonical_provider_state": body_canonical_component or {},
+        "body_shape_truth_alignment": _round_or_none(_metric_value("body_shape_truth_alignment")),
+        "body_shape_beta_similarity": _round_or_none(_metric_value("body_shape_beta_similarity")),
+        "canonical_measurement_similarity": _round_or_none(_metric_value("canonical_measurement_similarity")),
+        "body_pose_delta_similarity": _round_or_none(_metric_value("body_pose_delta_similarity")),
+        "body_mesh_fit_confidence": _round_or_none(_metric_value("body_mesh_fit_confidence")),
+    }
+
+
+def _extract_face_canonical_summary(debug: Any) -> Dict[str, Any]:
+    payload = debug if isinstance(debug, dict) else {}
+    shadow = payload.get("face_canonical_shadow") if isinstance(payload.get("face_canonical_shadow"), dict) else {}
+    return {
+        "available": bool(shadow.get("available")) if shadow else None,
+        "provider_name": str(shadow.get("provider_name") or "") if shadow else "",
+        "mode": str(shadow.get("mode") or "") if shadow else "",
+        "face_pose_normalization_confidence": _round_or_none(shadow.get("face_pose_normalization_confidence")),
+        "visible_face_coverage": _round_or_none(shadow.get("visible_face_coverage")),
+        "frontalization_quality": _round_or_none(shadow.get("frontalization_quality")),
+        "pose_fit_confidence": _round_or_none(shadow.get("pose_fit_confidence")),
+        "canonical_face_landmark_similarity": _round_or_none(shadow.get("canonical_face_landmark_similarity")),
+        "canonical_face_identity_similarity": _round_or_none(shadow.get("canonical_face_identity_similarity")),
+        "pose_delta_similarity": _round_or_none(shadow.get("pose_delta_similarity")),
+        "pose_delta_deg": _round_or_none(shadow.get("pose_delta_deg")),
+        "guidance": list(shadow.get("guidance") or [])[:4] if shadow else [],
+        "reasons": list(shadow.get("reasons") or [])[:6] if shadow else [],
+    }
+
+
 def _primary_group(shot_selection: Dict[str, Any]) -> Dict[str, Any]:
     groups = list(shot_selection.get("groups") or [])
     if len(groups) == 0:
@@ -139,9 +203,12 @@ def _build_batch_summary(report_payload: Dict[str, Any]) -> Dict[str, Any]:
         "engine_status": report_meta.get("engine_status") or {},
         "anchor_truth": report_meta.get("anchor_governance") or {},
         "master_truth_reference": report_meta.get("master_truth_reference") or {},
+        "master_truth_artifact_dir": report_meta.get("master_truth_artifact_dir"),
         "heavy_provider_status": report_meta.get("heavy_provider_status") or {},
         "view_classifier_status": report_meta.get("view_classifier_status") or {},
+        "face_canonical_status": report_meta.get("face_canonical_status") or {},
         "heavy_evidence_summary": shot_selection.get("heavy_evidence_summary") or {},
+        "canonical_truth_summary": _extract_canonical_truth_summary(shot_selection.get("heavy_evidence_summary") or {}),
         "group_count": shot_selection.get("group_count"),
         "status_counts": _status_counts(items, "status"),
         "module_status_counts": _module_status_counts(items),
@@ -193,9 +260,13 @@ def _build_ranked_review_packet(
             enriched = dict(row)
             record_key = str(row.get("record_key") or row.get("image") or "").strip()
             item_row = item_lookup.get(record_key) or {}
+            enriched["canonical_truth_summary"] = _extract_canonical_truth_summary(
+                row.get("heavy_evidence") or (item_row.get("canonical_truth_summary") if isinstance(item_row, dict) else {})
+            )
             if item_row:
                 enriched["master_consistency_card"] = item_row.get("master_consistency_card")
                 enriched["admission_advice"] = item_row.get("admission_advice")
+                enriched["face_canonical_summary"] = item_row.get("face_canonical_summary")
             shortlist_rows.append(enriched)
         pairwise_rows: List[Dict[str, Any]] = []
         for card in group.get("pairwise_compare_cards") or []:
@@ -258,6 +329,7 @@ def _summarize_item(
     garment = debug.get("garment_metrics") or {}
     depth_metrics = debug.get("depth_3d_metrics") or {}
     master_consistency_card = debug.get("master_consistency_card") or {}
+    heavy_evidence = debug.get("heavy_evidence") or {}
     record_key = (item.get("collection") or {}).get("input_relative_path") or item.get("image")
     row = {
         "image": item.get("image"),
@@ -281,6 +353,7 @@ def _summarize_item(
                 "disagrees_with_primary": debug.get("view_classifier_shadow_disagrees"),
             },
         },
+        "face_canonical_summary": _extract_face_canonical_summary(debug),
         "scores": {
             "face": (item.get("scores") or {}).get("face"),
             "upper": (item.get("scores") or {}).get("upper"),
@@ -309,6 +382,7 @@ def _summarize_item(
             "primary_bottleneck": depth_metrics.get("primary_bottleneck"),
             "reasons": list(depth_metrics.get("reasons") or []),
         },
+        "canonical_truth_summary": _extract_canonical_truth_summary(heavy_evidence),
         "outliers": {
             "score": diagnostics.get("outlier_score"),
             "reasons": list(diagnostics.get("outlier_reasons") or []),
@@ -372,7 +446,7 @@ def build_review_packet(
         if str(row.get("record_key") or row.get("image") or "").strip()
     }
     review_packet = {
-        "schema_version": "review_packet_v1_1",
+        "schema_version": "review_packet_v1_3",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "system_role": "evidence_only",
         "final_decision_owner": "custom_gpt_plus_human",

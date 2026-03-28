@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .providers import HeavyEvidenceProvider
+from .qa_heavy_body_canonical import BodyCanonicalHeavyEvidenceProvider
 from .qa_heavy_body_measure import BodyMeasureHeavyEvidenceProvider
 from .qa_heavy_review import (
     SegformerHeavyEvidenceProvider,
@@ -12,10 +13,7 @@ from .qa_heavy_review import (
 )
 from .qa_utils import dedupe_keep_order
 
-_PROVIDER_NAME = "segformer_body_fusion"
-_PROVIDER_FAMILY = "multi_evidence_fusion"
-_PROVIDER_VERSION = "segformer_body_fusion_v1"
-_MODEL_ID = "mattmdjaga/segformer_b2_clothes+mediapipe_pose+body_measure_lite_v1"
+_FUSION_SCHEMA = "heavy_evidence_v1"
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -25,7 +23,7 @@ def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
         return default
 
 
-def _weighted_mean(items: List[tuple[Optional[float], float]]) -> Optional[float]:
+def _weighted_mean(items: Iterable[Tuple[Optional[float], float]]) -> Optional[float]:
     numerator = 0.0
     denominator = 0.0
     for value, weight in items:
@@ -76,7 +74,7 @@ def _merge_guidance(*bundles: Dict[str, Any]) -> List[str]:
     for bundle in bundles:
         summary = bundle.get("summary") or {}
         guidance.extend(str(item) for item in summary.get("guidance", []) if str(item).strip())
-    return dedupe_keep_order(guidance)[:6]
+    return dedupe_keep_order(guidance)[:8]
 
 
 def _aggregate_cache_counts(*bundles: Dict[str, Any]) -> Dict[str, int]:
@@ -96,7 +94,11 @@ def _aggregate_cache_counts(*bundles: Dict[str, Any]) -> Dict[str, int]:
 
 
 def _resolve_cache_state(*bundles: Dict[str, Any]) -> Optional[str]:
-    states = [str(bundle.get("cache_state") or "").strip().lower() for bundle in bundles if str(bundle.get("cache_state") or "").strip()]
+    states = [
+        str(bundle.get("cache_state") or "").strip().lower()
+        for bundle in bundles
+        if str(bundle.get("cache_state") or "").strip()
+    ]
     if len(states) == 0:
         return None
     if all(state == "hit" for state in states):
@@ -108,46 +110,88 @@ def _resolve_cache_state(*bundles: Dict[str, Any]) -> Optional[str]:
     return states[0]
 
 
-class SegformerBodyFusionHeavyEvidenceProvider(HeavyEvidenceProvider):
-    provider_name = _PROVIDER_NAME
-    provider_family = _PROVIDER_FAMILY
-    provider_version = _PROVIDER_VERSION
+def _component_bundle(provider: HeavyEvidenceProvider, runtime: Any, image_path: Path) -> Dict[str, Any]:
+    raw = provider.get_heavy_evidence_metrics(runtime, image_path)
+    return normalize_heavy_evidence_bundle(
+        build_heavy_evidence_bundle(
+            raw,
+            lane_scope="report_item",
+            advisory_only=True,
+            mode="provider_component",
+            image=str(image_path.name),
+        )
+    )
 
-    def __init__(self) -> None:
-        self.segformer_provider = SegformerHeavyEvidenceProvider()
-        self.body_provider = BodyMeasureHeavyEvidenceProvider()
+
+class _MultiComponentFusionHeavyEvidenceProvider(HeavyEvidenceProvider):
+    provider_name = "multi_component_fusion"
+    provider_family = "multi_evidence_fusion"
+    provider_version = "multi_component_fusion_v1"
+    model_id = "fusion"
+
+    def __init__(
+        self,
+        *,
+        components: Sequence[Tuple[HeavyEvidenceProvider, float, float, str]],
+        positive_guidance: Sequence[str],
+        degraded_guidance: Sequence[Tuple[str, str]],
+        unavailable_guidance: str,
+    ) -> None:
+        self.components = list(components)
+        self.positive_guidance = list(positive_guidance)
+        self.degraded_guidance = list(degraded_guidance)
+        self.unavailable_guidance = str(unavailable_guidance)
 
     def get_provider_status(self) -> Dict[str, Any]:
-        seg_status = self.segformer_provider.get_provider_status()
-        body_status = self.body_provider.get_provider_status()
-        enabled = bool(seg_status.get("enabled")) or bool(body_status.get("enabled"))
+        component_statuses = []
         reason_parts = []
-        if not bool(seg_status.get("enabled")):
-            reason_parts.append(f"segformer:{seg_status.get('reason') or 'disabled'}")
-        if not bool(body_status.get("enabled")):
-            reason_parts.append(f"body_measure:{body_status.get('reason') or 'disabled'}")
+        enabled = False
+        device_values: List[str] = []
+        for provider, _, _, component_key in self.components:
+            status = provider.get_provider_status()
+            component_enabled = bool(status.get("enabled"))
+            enabled = enabled or component_enabled
+            if not component_enabled:
+                reason_parts.append(f"{component_key}:{status.get('reason') or 'disabled'}")
+            device = str(status.get("device") or "").strip()
+            if device:
+                device_values.append(device)
+            component_statuses.append(
+                {
+                    "provider_name": status.get("provider_name"),
+                    "provider_version": status.get("provider_version"),
+                    "enabled": component_enabled,
+                    "component_key": component_key,
+                }
+            )
+        device = device_values[0] if len(set(device_values)) == 1 else "mixed"
         return {
             "enabled": enabled,
             "provider_name": self.provider_name,
             "provider_family": self.provider_family,
             "provider_version": self.provider_version,
-            "model_id": _MODEL_ID,
-            "device": seg_status.get("device") if seg_status.get("device") == body_status.get("device") else "mixed",
+            "model_id": self.model_id,
+            "device": device,
             "reason": None if len(reason_parts) == 0 else ";".join(reason_parts),
-            "evidence_schema_version": "heavy_evidence_v1",
-            "component_providers": [
-                {
-                    "provider_name": seg_status.get("provider_name"),
-                    "provider_version": seg_status.get("provider_version"),
-                    "enabled": bool(seg_status.get("enabled")),
-                },
-                {
-                    "provider_name": body_status.get("provider_name"),
-                    "provider_version": body_status.get("provider_version"),
-                    "enabled": bool(body_status.get("enabled")),
-                },
-            ],
+            "evidence_schema_version": _FUSION_SCHEMA,
+            "component_providers": component_statuses,
         }
+
+    def _inject_guidance(self, component_rows: Sequence[Dict[str, Any]], guidance: List[str]) -> List[str]:
+        available_keys = {
+            str(row.get("component_key") or "").strip()
+            for row in component_rows
+            if bool(row.get("available"))
+        }
+        if len(available_keys) == len(self.components):
+            guidance = list(self.positive_guidance) + guidance
+        elif len(available_keys) > 0:
+            for component_key, message in self.degraded_guidance:
+                if component_key not in available_keys:
+                    guidance.insert(0, message)
+        else:
+            guidance.insert(0, self.unavailable_guidance)
+        return dedupe_keep_order(guidance)[:8]
 
     def get_heavy_evidence_metrics(
         self,
@@ -155,101 +199,115 @@ class SegformerBodyFusionHeavyEvidenceProvider(HeavyEvidenceProvider):
         image_path: Path,
     ) -> Dict[str, Any]:
         resolved_path = Path(image_path).resolve()
-        seg_raw = self.segformer_provider.get_heavy_evidence_metrics(runtime, resolved_path)
-        body_raw = self.body_provider.get_heavy_evidence_metrics(runtime, resolved_path)
-        seg_bundle = normalize_heavy_evidence_bundle(
-            build_heavy_evidence_bundle(
-                seg_raw,
-                lane_scope="report_item",
-                advisory_only=True,
-                mode="provider_component",
-                image=str(resolved_path.name),
-            )
-        )
-        body_bundle = normalize_heavy_evidence_bundle(
-            build_heavy_evidence_bundle(
-                body_raw,
-                lane_scope="report_item",
-                advisory_only=True,
-                mode="provider_component",
-                image=str(resolved_path.name),
-            )
-        )
+        bundle_rows: List[Dict[str, Any]] = []
+        component_rows: List[Dict[str, Any]] = []
+        confidence_items: List[Tuple[Optional[float], float]] = []
+        coverage_items: List[Tuple[Optional[float], float]] = []
+        reasons: List[str] = []
+        candidate_count = 1
 
-        seg_available = bool(seg_bundle.get("available"))
-        body_available = bool(body_bundle.get("available"))
-        confidence = _weighted_mean(
-            [
-                (_safe_float(seg_bundle.get("confidence")), 0.46 if seg_available else 0.0),
-                (_safe_float(body_bundle.get("confidence")), 0.54 if body_available else 0.0),
-            ]
-        )
-        coverage = _weighted_mean(
-            [
-                (_safe_float(seg_bundle.get("coverage")), 0.48 if seg_available else 0.0),
-                (_safe_float(body_bundle.get("coverage")), 0.52 if body_available else 0.0),
-            ]
-        )
-        cache_counts = _aggregate_cache_counts(seg_bundle, body_bundle)
-        guidance = _merge_guidance(seg_bundle, body_bundle)
-        if seg_available and body_available:
-            guidance.insert(0, "服装边界证据与体态几何证据都已到位，可作为工业默认复核模式。")
-        elif body_available:
-            guidance.insert(0, "当前仅保留体态几何证据，领口/肩线边界判断会偏弱。")
-        elif seg_available:
-            guidance.insert(0, "当前仅保留服装边界证据，体态/3D 几何判断会偏弱。")
-        else:
-            guidance.insert(0, "融合证据不可用，当前没有可依赖的重型支撑读数。")
-        guidance = dedupe_keep_order(guidance)[:6]
-
-        reasons = dedupe_keep_order(
-            list(seg_bundle.get("reasons") or [])
-            + list(body_bundle.get("reasons") or [])
-        )[:16]
-
-        summary = {
-            "component_providers": [
+        for provider, confidence_weight, coverage_weight, component_key in self.components:
+            bundle = _component_bundle(provider, runtime, resolved_path)
+            bundle_rows.append(bundle)
+            available = bool(bundle.get("available"))
+            if available:
+                confidence_items.append((_safe_float(bundle.get("confidence")), confidence_weight))
+                coverage_items.append((_safe_float(bundle.get("coverage")), coverage_weight))
+            reasons.extend(list(bundle.get("reasons") or []))
+            summary = bundle.get("summary") or {}
+            candidate_count = max(candidate_count, int(summary.get("candidate_count", 0) or 0), 1)
+            component_rows.append(
                 {
-                    "provider_name": seg_bundle.get("provider_name"),
-                    "provider_version": seg_bundle.get("provider_version"),
-                    "available": seg_available,
-                    "confidence": seg_bundle.get("confidence"),
-                    "coverage": seg_bundle.get("coverage"),
-                    "cache_state": seg_bundle.get("cache_state"),
-                },
-                {
-                    "provider_name": body_bundle.get("provider_name"),
-                    "provider_version": body_bundle.get("provider_version"),
-                    "available": body_available,
-                    "confidence": body_bundle.get("confidence"),
-                    "coverage": body_bundle.get("coverage"),
-                    "cache_state": body_bundle.get("cache_state"),
-                },
-            ],
-            "segformer_summary": dict(seg_bundle.get("summary") or {}),
-            "body_measure_summary": dict(body_bundle.get("summary") or {}),
-            **cache_counts,
-            "candidate_count": max(
-                int((seg_bundle.get("summary") or {}).get("candidate_count", 0) or 0),
-                int((body_bundle.get("summary") or {}).get("candidate_count", 0) or 0),
-                1,
-            ),
-            "guidance": guidance,
+                    "component_key": component_key,
+                    "provider_name": bundle.get("provider_name"),
+                    "provider_version": bundle.get("provider_version"),
+                    "available": available,
+                    "confidence": bundle.get("confidence"),
+                    "coverage": bundle.get("coverage"),
+                    "cache_state": bundle.get("cache_state"),
+                }
+            )
+
+        guidance = _merge_guidance(*bundle_rows)
+        guidance = self._inject_guidance(component_rows, guidance)
+        cache_counts = _aggregate_cache_counts(*bundle_rows)
+
+        component_summaries = {
+            f"{str(row.get('component_key') or '').strip()}_summary": dict((bundle_rows[idx].get("summary") or {}))
+            for idx, row in enumerate(component_rows)
+            if str(row.get("component_key") or "").strip()
         }
+        ok = any(bool(bundle.get("available")) for bundle in bundle_rows)
+        devices = [str(bundle.get("device") or "").strip() for bundle in bundle_rows if str(bundle.get("device") or "").strip()]
+        device = devices[0] if len(set(devices)) == 1 else "mixed"
 
         return {
-            "ok": seg_available or body_available,
+            "ok": ok,
             "provider_name": self.provider_name,
             "provider_family": self.provider_family,
             "provider_version": self.provider_version,
-            "model_id": _MODEL_ID,
-            "device": seg_bundle.get("device") if seg_bundle.get("device") == body_bundle.get("device") else "mixed",
+            "model_id": self.model_id,
+            "device": device,
             "source_path": str(resolved_path),
-            "cache_state": _resolve_cache_state(seg_bundle, body_bundle),
-            "confidence": confidence,
-            "coverage": coverage,
-            "metric_specs": _bundle_metric_specs(seg_bundle) + _bundle_metric_specs(body_bundle),
-            "summary": summary,
-            "signature_refs": _merge_signature_refs(seg_bundle, body_bundle),
-            "reasons": reasons,
+            "cache_state": _resolve_cache_state(*bundle_rows),
+            "confidence": _weighted_mean(confidence_items),
+            "coverage": _weighted_mean(coverage_items),
+            "metric_specs": [spec for bundle in bundle_rows for spec in _bundle_metric_specs(bundle)],
+            "summary": {
+                "component_providers": component_rows,
+                **component_summaries,
+                **cache_counts,
+                "candidate_count": candidate_count,
+                "guidance": guidance,
+            },
+            "signature_refs": _merge_signature_refs(*bundle_rows),
+            "reasons": dedupe_keep_order(reasons)[:20],
         }
+
+
+class SegformerBodyFusionHeavyEvidenceProvider(_MultiComponentFusionHeavyEvidenceProvider):
+    provider_name = "segformer_body_fusion"
+    provider_family = "multi_evidence_fusion"
+    provider_version = "segformer_body_fusion_v1"
+    model_id = "mattmdjaga/segformer_b2_clothes+mediapipe_pose+body_measure_lite_v1"
+
+    def __init__(self) -> None:
+        super().__init__(
+            components=[
+                (SegformerHeavyEvidenceProvider(), 0.46, 0.48, "segformer"),
+                (BodyMeasureHeavyEvidenceProvider(), 0.54, 0.52, "body_measure"),
+            ],
+            positive_guidance=[
+                "Garment boundary evidence and body geometry evidence are both available for review.",
+            ],
+            degraded_guidance=[
+                ("segformer", "Segformer boundary evidence is missing; neckline and cloth-edge review will be weaker."),
+                ("body_measure", "Body geometry evidence is missing; 3D and constitution review will be weaker."),
+            ],
+            unavailable_guidance="All heavy evidence components are unavailable for this image.",
+        )
+
+
+class SegformerBodyTruthFusionHeavyEvidenceProvider(_MultiComponentFusionHeavyEvidenceProvider):
+    provider_name = "segformer_body_truth_fusion"
+    provider_family = "multi_evidence_fusion"
+    provider_version = "segformer_body_truth_fusion_v1"
+    model_id = "mattmdjaga/segformer_b2_clothes+body_measure_lite+body_canonical_hmr2_v1"
+
+    def __init__(self) -> None:
+        super().__init__(
+            components=[
+                (SegformerHeavyEvidenceProvider(), 0.22, 0.28, "segformer"),
+                (BodyMeasureHeavyEvidenceProvider(), 0.28, 0.28, "body_measure"),
+                (BodyCanonicalHeavyEvidenceProvider(), 0.50, 0.44, "body_canonical"),
+            ],
+            positive_guidance=[
+                "Boundary, geometry, and canonical 116-1 body truth evidence are all available for review.",
+            ],
+            degraded_guidance=[
+                ("body_canonical", "Canonical 116-1 body truth evidence is missing; this fusion falls back to boundary and geometry only."),
+                ("segformer", "Segformer boundary evidence is missing; garment-edge review will be weaker."),
+                ("body_measure", "Body geometry evidence is missing; constitution review will be weaker."),
+            ],
+            unavailable_guidance="All heavy evidence components are unavailable for this image.",
+        )

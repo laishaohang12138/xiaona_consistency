@@ -277,6 +277,11 @@ def _build_report_meta(
         if hasattr(runtime.providers, "describe_view_classifier")
         else {}
     )
+    face_canonical_status = (
+        runtime.providers.describe_face_canonical()
+        if hasattr(runtime.providers, "describe_face_canonical")
+        else {}
+    )
     back180_readiness = {
         "legacy_router_supports_back_180": False,
         "shadow_router_supports_back_180": True,
@@ -286,7 +291,7 @@ def _build_report_meta(
         "source_of_truth": "view_detector.back_180_readiness",
     }
     return {
-        "schema_version": "qa_report_v2_8",
+        "schema_version": "qa_report_v2_9",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "run_status": "engine_fatal" if runtime.engines.fatal else "ok",
         "active_profile": target_profile,
@@ -302,6 +307,7 @@ def _build_report_meta(
         "providers": _json_ready(runtime.providers.describe()),
         "heavy_provider_status": _json_ready(heavy_provider_status),
         "view_classifier_status": _json_ready(view_classifier_status),
+        "face_canonical_status": _json_ready(face_canonical_status),
         "anchor_registry_summary": anchor_registry_summary(runtime.config),
         "anchor_registry_snapshot": anchor_snapshot,
         "anchor_governance": {
@@ -315,6 +321,7 @@ def _build_report_meta(
             "final_decision_owner": "custom_gpt_plus_human",
         },
         "master_truth_reference": _json_ready((master_reference or {}).get("summary") or {}),
+        "master_truth_artifact_dir": str(runtime.config.paths.dir_master_truth),
         "anchor_paths_resolved": _json_ready(anchors.meta),
         "layer_quotas": _json_ready(runtime.config.layer_quotas),
         "threshold_snapshot": _build_threshold_snapshot(runtime, target_profile),
@@ -1237,6 +1244,18 @@ def _run_pipeline_impl(
                     face_debug["view_surface_requested"] = face_debug_f.get("view_surface_requested")
                     face_debug["view_surface_used"] = face_debug_f.get("view_surface_used")
 
+            face_canonical_shadow = {}
+            if getattr(runtime, "providers", None) is not None and hasattr(runtime.providers, "analyze_face_canonical"):
+                try:
+                    face_canonical_shadow = runtime.providers.analyze_face_canonical(
+                        runtime,
+                        img_path,
+                        img_bgr=img,
+                        face_feat=cand_face,
+                    )
+                except Exception:
+                    face_canonical_shadow = {}
+
             batch_identity_samples.append(
                 {
                     "record_key": str(collection_meta.get("input_relative_path") or img_path.name),
@@ -1588,6 +1607,9 @@ def _run_pipeline_impl(
                         bool((shadow_view_route.shadow_classifier or {}).get("enabled"))
                         and str((shadow_view_route.shadow_classifier or {}).get("lane") or "unknown") != str(view_lane)
                     ),
+                    "face_canonical_shadow": _json_ready(face_canonical_shadow),
+                    "face_canonical_shadow_available": bool((face_canonical_shadow or {}).get("available")),
+                    "face_canonical_shadow_confidence": (face_canonical_shadow or {}).get("face_pose_normalization_confidence"),
                     "identity_anchor_count_view": len(face_identity_anchors_view),
                     "master_consistency_card": master_consistency_card,
                     "source_path": str(img_path.resolve()),
@@ -1869,7 +1891,9 @@ def main(
                 print(
                     f"  {index}. {row.get('provider_name')} "
                     f"| readiness={row.get('evidence_readiness_score')} "
+                    f"| truth={row.get('canonical_truth_readiness_score')} "
                     f"| available={row.get('available_weight_ratio')} "
+                    f"| truth_avail={row.get('body_shape_truth_available_weight_ratio')} "
                     f"| conf={row.get('confidence_mean')} "
                     f"| coverage={row.get('coverage_mean')}"
                 )
