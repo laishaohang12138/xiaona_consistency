@@ -779,6 +779,10 @@ def _print_benchmark_heavy_compare_summary(payload: Dict[str, Any]) -> None:
     top_provider_name = str(top_row.get("provider_name") or "").strip()
     top_provider = providers.get(top_provider_name) if isinstance(providers, dict) else {}
     top_canonical = (top_provider or {}).get("canonical_truth_metrics") or {}
+    truth_enabled_rows = [
+        row for row in ranking
+        if float(row.get("body_shape_truth_available_weight_ratio", 0.0) or 0.0) > 0.0
+    ]
     if face_canonical_metrics:
         providers_text = ",".join(list(face_canonical_metrics.get("providers") or []))
         print(
@@ -795,6 +799,15 @@ def _print_benchmark_heavy_compare_summary(payload: Dict[str, Any]) -> None:
             print(
                 "  结论    : 当前最佳模式已经真正接入 canonical body truth，"
                 f" align={top_canonical.get('body_shape_truth_alignment_mean')}。"
+            )
+        elif truth_enabled_rows:
+            best_truth = truth_enabled_rows[0]
+            print(
+                "  结论    : overall readiness 当前仍由基础边界/体态几何模式领先，"
+                "但 canonical body truth 已进入对比；"
+                f"最佳真相模式={_heavy_provider_title(best_truth.get('provider_name'))} "
+                f"| truth={best_truth.get('canonical_truth_readiness_score')} "
+                f"| align={best_truth.get('body_shape_truth_alignment_mean')}。"
             )
         else:
             print("  结论    : 当前排名主要仍由边界/体态几何证据决定，canonical body truth 还没有真正进入对比。")
