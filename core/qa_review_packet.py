@@ -147,6 +147,15 @@ def _extract_canonical_truth_summary(heavy_evidence: Any) -> Dict[str, Any]:
     available = None
     if isinstance(body_canonical_component, dict):
         available = bool(body_canonical_component.get("available"))
+    elif str(bundle.get("provider_name") or "").strip() == "body_canonical_hmr2":
+        available = bool(bundle.get("available")) if bundle.get("available") is not None else None
+        body_canonical_component = {
+            "provider_name": "body_canonical_hmr2",
+            "available": available,
+            "confidence": bundle.get("confidence"),
+            "coverage": bundle.get("coverage"),
+            "device": bundle.get("device"),
+        }
 
     return {
         "canonical_truth_available": available,
@@ -309,11 +318,18 @@ def _build_ranked_review_packet(
                 "pairwise_compare_cards": pairwise_rows,
             }
         )
+    top_candidates: List[Dict[str, Any]] = []
+    if groups_out:
+        primary_group = groups_out[0] if isinstance(groups_out[0], dict) else {}
+        for row in list(primary_group.get("shortlist") or [])[:3]:
+            if isinstance(row, dict):
+                top_candidates.append(dict(row))
     return {
         "mode": shot_selection.get("mode"),
         "final_decision_owner": shot_selection.get("final_decision_owner"),
         "target_profile": shot_selection.get("target_profile"),
         "group_count": shot_selection.get("group_count"),
+        "top_candidates": top_candidates,
         "groups": groups_out,
     }
 
@@ -446,7 +462,7 @@ def build_review_packet(
         if str(row.get("record_key") or row.get("image") or "").strip()
     }
     review_packet = {
-        "schema_version": "review_packet_v1_3",
+        "schema_version": "review_packet_v1_4",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "system_role": "evidence_only",
         "final_decision_owner": "custom_gpt_plus_human",

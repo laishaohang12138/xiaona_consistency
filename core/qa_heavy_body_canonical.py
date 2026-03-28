@@ -25,6 +25,10 @@ _CACHE_SCHEMA = "body_canonical_cache_v1"
 _MASTER_ARTIFACT_NAME = "body_master_shape_only.json"
 _DEFAULT_MEASUREMENT_SCALE = 0.08
 _DEFAULT_SMPL_MODEL = "basicModel_neutral_lbs_10_207_0_v1.0.0.pkl"
+_ALT_SMPL_MODELS = [
+    "basicModel_neutral_lbs_10_207_0_v1.1.0.pkl",
+    "basicmodel_neutral_lbs_10_207_0_v1.1.0.pkl",
+]
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -235,7 +239,7 @@ def _resolve_settings() -> Dict[str, Any]:
     repo_root = _repo_root()
     repo_dir = Path(os.getenv("XIAONA_HMR2_REPO", str(repo_root / "external" / "4D-Humans"))).resolve()
     python_exec = os.getenv("XIAONA_HMR2_PYTHON", sys.executable)
-    default_entrypoint = repo_dir / "demo_xiaona_export.py"
+    default_entrypoint = repo_root / "export_body_canonical_direct_hmr2.py"
     if not default_entrypoint.exists():
         default_entrypoint = repo_dir / "demo.py"
     entrypoint = Path(os.getenv("XIAONA_HMR2_ENTRYPOINT", str(default_entrypoint))).resolve()
@@ -248,6 +252,9 @@ def _resolve_settings() -> Dict[str, Any]:
         repo_root / "data" / _DEFAULT_SMPL_MODEL,
         Path.home() / ".cache" / "4DHumans" / "data" / "smpl" / "SMPL_NEUTRAL.pkl",
     ]
+    for alt_name in _ALT_SMPL_MODELS:
+        smpl_candidates.append(repo_dir / "data" / alt_name)
+        smpl_candidates.append(repo_root / "data" / alt_name)
     smpl_model_path = next((path for path in smpl_candidates if path.exists()), None)
     built_in_ready = repo_dir.exists() and entrypoint.exists() and smpl_model_path is not None
     if custom_command_template:

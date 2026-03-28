@@ -41,13 +41,13 @@ The recommended way is to provide a command template that writes raw exports int
 The repository now includes a minimal local entrypoint:
 
 ```text
-external/4D-Humans/demo_xiaona_export.py
+export_body_canonical_direct_hmr2.py
 ```
 
 If the following are present, the provider can try local direct export without any command template:
 
 - `external/4D-Humans/`
-- `external/4D-Humans/demo_xiaona_export.py`
+- `export_body_canonical_direct_hmr2.py`
 - `data/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl`
   or `external/4D-Humans/data/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl`
 
@@ -58,7 +58,7 @@ GPU is used automatically when `torch.cuda.is_available()` is true.
 ```powershell
 $env:XIAONA_HMR2_REPO="D:\models\4D-Humans"
 $env:XIAONA_HMR2_PYTHON="D:\venvs\hmr2\python.exe"
-$env:XIAONA_HMR2_ENTRYPOINT="D:\models\4D-Humans\demo_xiaona_export.py"
+$env:XIAONA_HMR2_ENTRYPOINT="D:\xiaona_consistency\export_body_canonical_direct_hmr2.py"
 $env:XIAONA_HMR2_DEVICE="cuda"
 ```
 
