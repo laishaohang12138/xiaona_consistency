@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 import torch
 
+from .qa_artifact_manifest import register_artifact_manifest
 from .providers import FaceCanonicalProvider
 from .qa_features import extract_face_feat
 
@@ -446,6 +447,7 @@ class FacePoseCanonical3DDFAProvider(FaceCanonicalProvider):
         master_artifact, _ = bridge_mod._load_master_artifact(runtime)
         if master_artifact is not None:
             return False
+        settings = _resolve_settings()
         master_face_path = _resolve_master_face_path(runtime)
         if not master_face_path.exists():
             raise FileNotFoundError(f"Face truth anchor not found: {master_face_path}")
@@ -467,6 +469,23 @@ class FacePoseCanonical3DDFAProvider(FaceCanonicalProvider):
         master_path = bridge_mod._master_truth_dir(runtime) / bridge_mod._MASTER_ARTIFACT_NAME
         master_path.parent.mkdir(parents=True, exist_ok=True)
         master_path.write_text(json.dumps(_json_ready(artifact), indent=2, ensure_ascii=False), encoding="utf-8")
+        register_artifact_manifest(
+            artifact_path=master_path,
+            manifest_root=bridge_mod._master_truth_dir(runtime),
+            artifact_family="face_canonical",
+            artifact_role="master_truth",
+            provider_name=str(artifact.get("provider_name") or self.provider_name),
+            provider_family=str(artifact.get("provider_family") or self.provider_family),
+            provider_version=str(artifact.get("provider_version") or self.provider_version),
+            model_id=str(artifact.get("model_id") or _MODEL_ID),
+            schema_version=str(artifact.get("schema_version") or _ARTIFACT_SCHEMA),
+            source_path=master_face_path,
+            device=str(settings["resolved_device"]),
+            repo_dir=Path(settings["repo_dir"]),
+            entrypoint=str(settings["entrypoint"]),
+            conversion_meta=dict(artifact.get("conversion_meta") or {}),
+            extra={"notes": artifact.get("notes"), "direct_export_path": str(export_path)},
+        )
         return True
 
     def _ensure_candidate_artifact(
@@ -498,7 +517,30 @@ class FacePoseCanonical3DDFAProvider(FaceCanonicalProvider):
             identity_vector=identity_vector,
             face_confidence=face_confidence,
         )
-        return bool(bridge_mod._write_cached_candidate(cache_file, cache_key, artifact))
+        cache_written = bool(bridge_mod._write_cached_candidate(cache_file, cache_key, artifact))
+        if cache_written:
+            register_artifact_manifest(
+                artifact_path=cache_file,
+                manifest_root=bridge_mod._master_truth_dir(runtime),
+                artifact_family="face_canonical",
+                artifact_role="candidate",
+                provider_name=str(artifact.get("provider_name") or self.provider_name),
+                provider_family=str(artifact.get("provider_family") or self.provider_family),
+                provider_version=str(artifact.get("provider_version") or self.provider_version),
+                model_id=str(artifact.get("model_id") or _MODEL_ID),
+                schema_version=str(artifact.get("schema_version") or _ARTIFACT_SCHEMA),
+                source_path=image_path,
+                device=str(settings["resolved_device"]),
+                repo_dir=Path(settings["repo_dir"]),
+                entrypoint=str(settings["entrypoint"]),
+                conversion_meta=dict(artifact.get("conversion_meta") or {}),
+                extra={
+                    "notes": artifact.get("notes"),
+                    "cache_key": cache_key,
+                    "direct_export_path": str(export_path),
+                },
+            )
+        return cache_written
 
     def analyze_face_canonical(
         self,
@@ -541,6 +583,48 @@ class FacePoseCanonical3DDFAProvider(FaceCanonicalProvider):
             img_bgr=img_bgr,
             face_feat=face_feat,
         )
+        manifest_root = Path(getattr(runtime.config.paths, "dir_master_truth"))
+        master_artifact_path = str(result.get("master_artifact_path") or "").strip()
+        candidate_artifact_path = str(result.get("candidate_artifact_path") or "").strip()
+        cache_file = str(result.get("cache_file") or "").strip()
+        if master_artifact_path:
+            register_artifact_manifest(
+                artifact_path=Path(master_artifact_path),
+                manifest_root=manifest_root,
+                artifact_family="face_canonical",
+                artifact_role="master_truth",
+                provider_name=self.provider_name,
+                provider_family=self.provider_family,
+                provider_version=self.provider_version,
+                model_id=_MODEL_ID,
+                schema_version=_ARTIFACT_SCHEMA,
+                source_path=_resolve_master_face_path(runtime),
+                device=str(settings["resolved_device"]),
+                repo_dir=Path(settings["repo_dir"]),
+                entrypoint=str(settings["entrypoint"]),
+                extra={"bridge_fallback": "face_pose_canonical_bridge"},
+            )
+        candidate_manifest_path = candidate_artifact_path or cache_file
+        if candidate_manifest_path:
+            register_artifact_manifest(
+                artifact_path=Path(candidate_manifest_path),
+                manifest_root=manifest_root,
+                artifact_family="face_canonical",
+                artifact_role="candidate",
+                provider_name=self.provider_name,
+                provider_family=self.provider_family,
+                provider_version=self.provider_version,
+                model_id=_MODEL_ID,
+                schema_version=_ARTIFACT_SCHEMA,
+                source_path=Path(image_path).resolve(),
+                device=str(settings["resolved_device"]),
+                repo_dir=Path(settings["repo_dir"]),
+                entrypoint=str(settings["entrypoint"]),
+                extra={
+                    "bridge_fallback": "face_pose_canonical_bridge",
+                    "cache_key": result.get("cache_key"),
+                },
+            )
         merged_reasons = list(result.get("reasons") or [])
         merged_guidance = list(result.get("guidance") or [])
         for reason in direct_reasons:

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -92,6 +94,10 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
     "winner_bank_status": {
         "label": "查看 winner bank",
         "summary": "查看已确认样本、最新漂移和下一步人工动作。",
+    },
+    "setup_external_models": {
+        "label": "准备外部模型",
+        "summary": "自动执行 external 仓库拉取/定位、补丁应用和本地 helper 同步，供 3DDFA/HMR2 真相链使用。",
     },
     "advanced_cli": {
         "label": "高级工程模式",
@@ -277,6 +283,7 @@ def _select_workflow_interactively(default: str = "shot_review") -> str:
             ("inspect_review_packet", "查看最近一次 review packet 的批次摘要和复核提示"),
             ("promote_winner", "把人工确认的 winner 写入 winner bank"),
             ("winner_bank_status", "查看 winner bank 状态与最新跨批次漂移报告"),
+            ("setup_external_models", "自动准备 external/3DDFA-V3 与 external/4D-Humans 及补丁"),
             ("advanced_cli", "进入高级工程模式（qa / benchmark / optuna / calibrate）"),
         ],
         default=default,
@@ -388,6 +395,75 @@ def _default_review_paths(base_dir: Path) -> Dict[str, Path]:
     }
 
 
+def _powershell_executable() -> str:
+    return os.environ.get("ComSpec", "").lower().endswith("cmd.exe") and "powershell" or "powershell"
+
+
+def _run_local_powershell_script(
+    script_path: Path,
+    *,
+    base_dir: Path,
+    extra_args: Optional[Sequence[str]] = None,
+) -> None:
+    if not script_path.exists():
+        raise ValueError(f"script does not exist: {script_path}")
+    command = [
+        _powershell_executable(),
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script_path),
+        *(list(extra_args or [])),
+    ]
+    subprocess.run(command, cwd=str(base_dir), check=True)
+
+
+def _external_setup_status(base_dir: Path) -> Dict[str, Any]:
+    repo_3ddfa = (base_dir / "external" / "3DDFA-V3").resolve()
+    repo_hmr2 = (base_dir / "external" / "4D-Humans").resolve()
+    smpl_candidates = [
+        base_dir / "external" / "4D-Humans" / "data" / "basicModel_neutral_lbs_10_207_0_v1.0.0.pkl",
+        base_dir / "data" / "basicModel_neutral_lbs_10_207_0_v1.0.0.pkl",
+        Path.home() / ".cache" / "4DHumans" / "data" / "smpl" / "SMPL_NEUTRAL.pkl",
+    ]
+    asset_3ddfa = [
+        repo_3ddfa / "assets" / "face_model.npy",
+        repo_3ddfa / "assets" / "large_base_net.pth",
+        repo_3ddfa / "assets" / "net_recon.pth",
+        repo_3ddfa / "assets" / "retinaface_resnet50_2020-07-20_old_torch.pth",
+        repo_3ddfa / "assets" / "similarity_Lm3D_all.mat",
+    ]
+    return {
+        "repo_3ddfa_ready": repo_3ddfa.exists(),
+        "repo_hmr2_ready": repo_hmr2.exists(),
+        "smpl_ready": any(path.exists() for path in smpl_candidates),
+        "smpl_path": str(next((path for path in smpl_candidates if path.exists()), smpl_candidates[0])),
+        "assets_3ddfa_ready": all(path.exists() for path in asset_3ddfa),
+        "missing_3ddfa_assets": [str(path) for path in asset_3ddfa if not path.exists()],
+    }
+
+
+def _print_external_setup_status(status: Dict[str, Any]) -> None:
+    print("\n[外部模型状态]")
+    print(
+        "  仓库    : "
+        f"3DDFA={'ok' if status.get('repo_3ddfa_ready') else 'missing'} "
+        f"| 4D-Humans={'ok' if status.get('repo_hmr2_ready') else 'missing'}"
+    )
+    print(
+        "  资产    : "
+        f"3DDFA_assets={'ok' if status.get('assets_3ddfa_ready') else 'missing'} "
+        f"| SMPL={'ok' if status.get('smpl_ready') else 'missing'}"
+    )
+    if status.get("smpl_ready"):
+        print(f"  SMPL 路径: {status.get('smpl_path')}")
+    missing_assets = list(status.get("missing_3ddfa_assets") or [])
+    if missing_assets:
+        print("  缺少 3DDFA 资产:")
+        for item in missing_assets[:5]:
+            print(f"    - {item}")
+
+
 def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
     batch = packet.get("batch_summary") or {}
     selection = batch.get("selection") or {}
@@ -399,7 +475,10 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
     face_canonical_status = batch.get("face_canonical_status") or {}
     heavy_evidence = batch.get("heavy_evidence_summary") or {}
     canonical_truth = batch.get("canonical_truth_summary") or {}
+    lane_risk_focus = batch.get("lane_risk_focus") or {}
     master_truth_artifact_dir = batch.get("master_truth_artifact_dir")
+    artifact_manifest_file = batch.get("artifact_manifest_file")
+    artifact_manifest_summary = batch.get("artifact_manifest_summary") or {}
     identity = batch.get("identity_summary") or {}
     geometry = batch.get("geometry_summary") or {}
     admission = batch.get("admission_advice") or {}
@@ -459,6 +538,12 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
             f"| 生效={FACE_CANONICAL_UI.get(face_canonical_name, face_canonical_name)} "
             f"| enabled={face_canonical_status.get('enabled')}"
         )
+    if artifact_manifest_file:
+        print(
+            "  资产索引: "
+            f"entries={artifact_manifest_summary.get('total_entries')} "
+            f"| file={artifact_manifest_file}"
+        )
     print(f"  第一名: {selection.get('top_ranked_image')}")
     print(f"  复核窗: top {selection.get('manual_review_window')}")
     print(f"  批次闸门: {batch_gate.get('status')} | reasons={batch_gate.get('reasons') or []}")
@@ -487,6 +572,7 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
             "canonical_truth_available",
             "body_shape_truth_alignment",
             "body_shape_beta_similarity",
+            "canonical_measurement_similarity",
             "body_mesh_fit_confidence",
         ]
     ) or str(heavy_evidence.get("provider_name") or "") in {"segformer_body_truth_fusion", "body_canonical_hmr2"}
@@ -497,6 +583,7 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
             f"available={canonical_truth.get('canonical_truth_available')} "
             f"| align={canonical_truth.get('body_shape_truth_alignment')} "
             f"| beta={canonical_truth.get('body_shape_beta_similarity')} "
+            f"| meas={canonical_truth.get('canonical_measurement_similarity')} "
             f"| fit={canonical_truth.get('body_mesh_fit_confidence')}"
             + (f" | provider={provider_state.get('provider_name')}" if provider_state else "")
         )
@@ -518,6 +605,7 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
                 "canonical_truth_available",
                 "body_shape_truth_alignment",
                 "body_shape_beta_similarity",
+                "canonical_measurement_similarity",
                 "body_mesh_fit_confidence",
             ]
         )
@@ -527,6 +615,7 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
                 f"available={top_truth.get('canonical_truth_available')} "
                 f"| align={top_truth.get('body_shape_truth_alignment')} "
                 f"| beta={top_truth.get('body_shape_beta_similarity')} "
+                f"| meas={top_truth.get('canonical_measurement_similarity')} "
                 f"| fit={top_truth.get('body_mesh_fit_confidence')}"
             )
         show_top_face = any(
@@ -559,7 +648,19 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
         f"3d={geometry.get('batch_3d_cohesion')} "
         f"world3d={geometry.get('batch_world3d_cohesion')}"
     )
-    print(f"  主要风险: {batch.get('primary_risks') or []}")
+    if lane_risk_focus:
+        print(
+            "  Lane 风险: "
+            f"family={lane_risk_focus.get('dominant_lane_family')} "
+            f"| note={lane_risk_focus.get('note')}"
+        )
+        print(f"  主要风险: {lane_risk_focus.get('primary_risks') or []}")
+        if lane_risk_focus.get("suppressed_noise"):
+            print(f"  降噪项  : {lane_risk_focus.get('suppressed_noise')}")
+        if lane_risk_focus.get("review_focus"):
+            print(f"  关注点  : {lane_risk_focus.get('review_focus')}")
+    else:
+        print(f"  主要风险: {batch.get('primary_risks') or []}")
     print(
         f"  复核建议: target={admission.get('target_bucket')} "
         f"| action={admission.get('suggested_action')} | blockers={admission.get('blockers') or []}"
@@ -577,6 +678,8 @@ def _print_winner_bank_summary(report: Dict[str, Any]) -> None:
     top_risks = list(report.get("top_drift_risks") or [])
     if top_risks:
         print(f"  主要风险: {top_risks[:4]}")
+    else:
+        print("  漂移画像: 当前还没有稳定的 drift 风险画像，先以当前批次 review_packet 为主。")
     drift_rows = list(report.get("drift_rows") or [])
     for row in drift_rows[:2]:
         print(
@@ -640,11 +743,12 @@ def _describe_canonical_truth_state(packet: Dict[str, Any]) -> None:
     if canonical_available is True:
         align = top_truth.get("body_shape_truth_alignment")
         beta = top_truth.get("body_shape_beta_similarity")
+        measurement = top_truth.get("canonical_measurement_similarity")
         fit = top_truth.get("body_mesh_fit_confidence")
         print(
             "  116-1 真相链: 已接入 canonical body truth "
             f"| align={align}（{_describe_alignment_bucket(align)}）"
-            f" | beta={beta} | fit={fit}"
+            f" | beta={beta} | meas={measurement} | fit={fit}"
         )
         return
 
@@ -693,6 +797,7 @@ def _print_benchmark_replay_summary(payload: Dict[str, Any]) -> None:
     canonical_metrics = payload.get("canonical_truth_metrics") or {}
     shadow_metrics = payload.get("shadow_view_classifier_metrics") or {}
     face_canonical_metrics = payload.get("face_canonical_metrics") or {}
+    lane_focus = payload.get("lane_focus") or {}
     print("\n[Benchmark 回放摘要]")
     print(
         f"  样本数  : report={payload.get('num_report_items')} "
@@ -750,39 +855,68 @@ def _print_benchmark_replay_summary(payload: Dict[str, Any]) -> None:
         )
         if float(face_canonical_metrics.get("available_weight_ratio", 0.0) or 0.0) <= 0.0:
             print("  说明    : 这次 benchmark 还没有真正评到 0 号脸 canonical sidecar，当前仍主要依赖原始 face 主链。")
+    if lane_focus:
+        print(
+            "  Lane 解读: "
+            f"family={lane_focus.get('dominant_lane_family')} "
+            f"| note={lane_focus.get('note')}"
+        )
+        print(f"  主要风险: {lane_focus.get('primary_risks') or []}")
+        if lane_focus.get("suppressed_noise"):
+            print(f"  降噪项  : {lane_focus.get('suppressed_noise')}")
+        if lane_focus.get("review_focus"):
+            print(f"  关注点  : {lane_focus.get('review_focus')}")
 
 
 def _print_benchmark_heavy_compare_summary(payload: Dict[str, Any]) -> None:
     comparison = payload.get("comparison") or {}
-    ranking = list(comparison.get("ranking_by_evidence_readiness") or [])
+    ranking_generic = list(
+        comparison.get("ranking_by_generic_readiness")
+        or comparison.get("ranking_by_evidence_readiness")
+        or []
+    )
+    ranking_truth = list(comparison.get("ranking_by_truth_readiness") or [])
     baseline = str(comparison.get("baseline_provider") or "").strip()
     face_canonical_metrics = payload.get("face_canonical_metrics") or {}
+    lane_focus = payload.get("lane_focus") or {}
     print("\n[Heavy Compare 摘要]")
     print(f"  基线模式: {_heavy_provider_title(baseline)}")
     note = ((payload.get("comparison_scope") or {}).get("note") or "").strip()
     if note:
         print(f"  说明    : {note}")
-    for index, row in enumerate(ranking[:4], start=1):
+    print("  通用榜  :")
+    for index, row in enumerate(ranking_generic[:4], start=1):
         if not isinstance(row, dict):
             continue
         provider_name = str(row.get("provider_name") or "").strip()
         print(
-            f"  {index}. {_heavy_provider_title(provider_name)} "
+            f"    {index}. {_heavy_provider_title(provider_name)} "
             f"| readiness={row.get('evidence_readiness_score')} "
             f"| truth={row.get('canonical_truth_readiness_score')} "
             f"| available={row.get('available_weight_ratio')} "
             f"| confidence={row.get('confidence_mean')} "
             f"| coverage={row.get('coverage_mean')}"
         )
+    truth_enabled_rows = [
+        row for row in ranking_truth
+        if float(row.get("body_shape_truth_available_weight_ratio", 0.0) or 0.0) > 0.0
+    ]
+    if truth_enabled_rows:
+        print("  真相榜  :")
+        for index, row in enumerate(truth_enabled_rows[:4], start=1):
+            provider_name = str(row.get("provider_name") or "").strip()
+            print(
+                f"    {index}. {_heavy_provider_title(provider_name)} "
+                f"| truth={row.get('canonical_truth_readiness_score')} "
+                f"| align={row.get('body_shape_truth_alignment_mean')} "
+                f"| beta={row.get('body_shape_beta_similarity_mean')} "
+                f"| available={row.get('body_shape_truth_available_weight_ratio')}"
+            )
     providers = payload.get("providers") or {}
-    top_row = ranking[0] if ranking else {}
+    top_row = ranking_generic[0] if ranking_generic else {}
     top_provider_name = str(top_row.get("provider_name") or "").strip()
     top_provider = providers.get(top_provider_name) if isinstance(providers, dict) else {}
     top_canonical = (top_provider or {}).get("canonical_truth_metrics") or {}
-    truth_enabled_rows = [
-        row for row in ranking
-        if float(row.get("body_shape_truth_available_weight_ratio", 0.0) or 0.0) > 0.0
-    ]
     if face_canonical_metrics:
         providers_text = ",".join(list(face_canonical_metrics.get("providers") or []))
         print(
@@ -794,16 +928,27 @@ def _print_benchmark_heavy_compare_summary(payload: Dict[str, Any]) -> None:
             f"| readiness={face_canonical_metrics.get('face_canonical_readiness_score')}"
         )
         print("  说明    : 脸部 canonical 属于固定 shadow 证据，本次 heavy compare 不拿它参与 provider 排名。")
+    if lane_focus:
+        print(
+            "  Lane 解读: "
+            f"family={lane_focus.get('dominant_lane_family')} "
+            f"| note={lane_focus.get('note')}"
+        )
+        print(f"  主要风险: {lane_focus.get('primary_risks') or []}")
+        if lane_focus.get("suppressed_noise"):
+            print(f"  降噪项  : {lane_focus.get('suppressed_noise')}")
+        if lane_focus.get("review_focus"):
+            print(f"  关注点  : {lane_focus.get('review_focus')}")
     if top_provider_name:
         if float(top_canonical.get("body_shape_truth_available_weight_ratio", 0.0) or 0.0) > 0.0:
             print(
-                "  结论    : 当前最佳模式已经真正接入 canonical body truth，"
+                "  结论    : 当前通用榜第一已经真正接入 canonical body truth，"
                 f" align={top_canonical.get('body_shape_truth_alignment_mean')}。"
             )
         elif truth_enabled_rows:
             best_truth = truth_enabled_rows[0]
             print(
-                "  结论    : overall readiness 当前仍由基础边界/体态几何模式领先，"
+                "  结论    : 通用榜当前仍由基础边界/体态几何模式领先，"
                 "但 canonical body truth 已进入对比；"
                 f"最佳真相模式={_heavy_provider_title(best_truth.get('provider_name'))} "
                 f"| truth={best_truth.get('canonical_truth_readiness_score')} "
@@ -941,6 +1086,9 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         _print_heavy_provider_explanation(args.heavy_provider)
         return
 
+    if workflow == "setup_external_models":
+        return
+
     if workflow in {"inspect_review_packet", "promote_winner", "winner_bank_status"}:
         return
 
@@ -1052,6 +1200,30 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         return None
 
     paths = _default_review_paths(base_dir)
+    if workflow == "setup_external_models":
+        status_before = _external_setup_status(base_dir)
+        _print_external_setup_status(status_before)
+        skip_checkout = False
+        if args.interactive:
+            skip_checkout = _prompt_yes_no(
+                "是否跳过 external 仓库 checkout 到固定提交（仅同步补丁，不切换版本）",
+                default=False,
+            )
+        bootstrap_script = (base_dir / "bootstrap_external_models.ps1").resolve()
+        apply_script = (base_dir / "apply_external_patches.ps1").resolve()
+        bootstrap_args = ["-SkipCheckout"] if skip_checkout else []
+        print(f"[交互引导] 执行 external bootstrap: {bootstrap_script}")
+        _run_local_powershell_script(bootstrap_script, base_dir=base_dir, extra_args=bootstrap_args)
+        print(f"[交互引导] 执行 external patch apply: {apply_script}")
+        _run_local_powershell_script(apply_script, base_dir=base_dir)
+        status_after = _external_setup_status(base_dir)
+        _print_external_setup_status(status_after)
+        print("[交互引导] 下一步：")
+        print("  1. 运行批次复核，确认 3DDFA/HMR2 真相链状态。")
+        print("  2. 如 3DDFA 仍缺资产，请按上面的缺失清单补齐 external/3DDFA-V3/assets。")
+        print("  3. 如 HMR2 仍缺 SMPL，请确认 basicModel_neutral_lbs_10_207_0_v1.0.0.pkl 路径。")
+        return 0
+
     if workflow == "inspect_review_packet":
         packet = _load_json_file(paths["review_packet"], "review packet")
         _print_review_packet_summary(packet)
@@ -1221,7 +1393,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--workflow",
-        choices=["shot_review", "inspect_review_packet", "promote_winner", "winner_bank_status", "advanced_cli"],
+        choices=[
+            "shot_review",
+            "inspect_review_packet",
+            "promote_winner",
+            "winner_bank_status",
+            "setup_external_models",
+            "advanced_cli",
+        ],
         help="User-facing workflow entry. Prefer this over --mode when you want task-oriented review actions.",
     )
     parser.add_argument(

@@ -57,8 +57,23 @@ Required external assets are not stored here:
 
 ## Expected Workflow
 
-1. Clone the external repositories into `external/`.
-2. Download the required upstream assets separately.
-3. Apply the local patch file.
-4. Copy the helper export script into the external repo.
-5. Run the project as usual.
+1. Clone and pin the external repositories:
+
+```powershell
+.\bootstrap_external_models.ps1
+```
+
+2. Apply the local patches and helper scripts:
+
+```powershell
+.\apply_external_patches.ps1
+```
+
+3. Download the required upstream assets separately.
+4. Run the project as usual.
+
+## Notes
+
+- `bootstrap_external_models.ps1` checks out the commits currently validated by this repository.
+- `apply_external_patches.ps1` is idempotent for already-applied patches.
+- The main repository intentionally ignores `external/` and `data/`; only `external_patches/` is tracked.

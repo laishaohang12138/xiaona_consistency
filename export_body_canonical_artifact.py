@@ -8,6 +8,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 
+from core.qa_artifact_manifest import register_artifact_manifest
+
 ARTIFACT_SCHEMA = "body_canonical_artifact_v1"
 
 
@@ -341,6 +343,20 @@ def main() -> int:
     args = parser.parse_args()
     artifact = _build_artifact(args)
     _write_artifact(args.output, artifact)
+    register_artifact_manifest(
+        artifact_path=args.output.resolve(),
+        artifact_family="body_canonical",
+        artifact_role=str(args.source_role),
+        provider_name=str(artifact.get("provider_name") or args.provider_name),
+        provider_family=str(artifact.get("provider_family") or "body_canonical"),
+        provider_version=str(artifact.get("provider_version") or args.provider_version),
+        model_id=str(artifact.get("model_id") or args.model_id),
+        schema_version=str(artifact.get("schema_version") or ARTIFACT_SCHEMA),
+        source_path=args.source_image.resolve() if args.source_image else None,
+        entrypoint=str(Path(__file__).resolve()),
+        conversion_meta=dict(artifact.get("conversion_meta") or {}),
+        extra={"notes": artifact.get("notes")},
+    )
     shape_beta = _to_vector(artifact.get("shape_beta"))
     pose_vector = _to_vector(artifact.get("pose_vector"))
     print(

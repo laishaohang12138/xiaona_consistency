@@ -46,6 +46,119 @@ def _top_reason_counts(items: Sequence[Dict[str, Any]], limit: int = 8) -> List[
     return [{"reason": reason, "count": count} for reason, count in rows[:limit]]
 
 
+def _lane_family_from_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return "unknown"
+    if "back" in text:
+        return "back"
+    if "side" in text:
+        return "side"
+    if "3q" in text or "quarter" in text:
+        return "three_quarter"
+    if "front" in text or "frontal" in text:
+        return "front"
+    return "unknown"
+
+
+def _dominant_lane_family(items: Sequence[Dict[str, Any]]) -> str:
+    counts: Dict[str, int] = {}
+    for item in items:
+        debug = item.get("debug") or {}
+        lane_text = debug.get("view_lane_detail") or debug.get("view_lane")
+        family = _lane_family_from_text(lane_text)
+        if family == "unknown":
+            continue
+        counts[family] = counts.get(family, 0) + 1
+    if not counts:
+        return "unknown"
+    return sorted(counts.items(), key=lambda row: (-row[1], row[0]))[0][0]
+
+
+def _build_lane_risk_focus(items: Sequence[Dict[str, Any]], limit: int = 6) -> Dict[str, Any]:
+    dominant_lane = _dominant_lane_family(items)
+    suppressed_by_lane = {
+        "side": {
+            "UPPER_FAIL",
+            "FACE_LOW_CONFIDENCE",
+            "FACE_LOW_CONF_NEEDS_REVIEW",
+            "FACE_TOO_SMALL",
+            "FACE_DARKER_THAN_TONE_ANCHOR",
+            "FACE_FLIP_CANONICALIZED",
+            "FACE_SOFTER_THAN_ANCHOR",
+            "FACE_NO_RELIABLE_SIGNAL",
+        },
+        "back": {
+            "UPPER_FAIL",
+            "FACE_LOW_CONFIDENCE",
+            "FACE_LOW_CONF_NEEDS_REVIEW",
+            "FACE_TOO_SMALL",
+            "FACE_DARKER_THAN_TONE_ANCHOR",
+            "FACE_FLIP_CANONICALIZED",
+            "FACE_SOFTER_THAN_ANCHOR",
+            "FACE_NO_RELIABLE_SIGNAL",
+        },
+        "three_quarter": {
+            "UPPER_FAIL",
+        },
+    }
+    review_focus_by_lane = {
+        "front": ["脸部身份", "年龄感/表情", "肩颈与上身比例"],
+        "three_quarter": ["脸型漂移", "年龄感", "肩颈与体态衔接"],
+        "side": ["身材真相", "侧身轮廓", "depth3d/厚度", "腿线与站姿"],
+        "back": ["后背轮廓", "肩线与骨盆", "腿轴与重心", "后侧体量"],
+        "unknown": ["人工复核主图", "确认 lane 是否正确", "优先看明显漂移项"],
+    }
+    note_by_lane = {
+        "front": "当前批次按 front 解释，脸部身份和上身结构是主信号。",
+        "three_quarter": "当前批次按 3Q 解释，脸型漂移和年龄感比纯正脸更重要。",
+        "side": "当前批次按 side 解释，脸部弱信号只做否决参考，主看身材真相、轮廓和空间结构。",
+        "back": "当前批次按 back 解释，正脸相关 reason 会被降噪，主看后背轮廓、骨盆和腿轴。",
+        "unknown": "当前批次 lane 不够稳定，先确认路由再解释风险。",
+    }
+
+    suppressed_reasons = suppressed_by_lane.get(dominant_lane, set())
+    ignored = {
+        "FULL_PASS",
+        "FRAMING_OK",
+        "FEET_IN_FRAME",
+        "FACE_EMBEDDING_READY",
+        "FACE_LANDMARKS_READY",
+    }
+    active_counts: Dict[str, int] = {}
+    noise_counts: Dict[str, int] = {}
+    for item in items:
+        for reason in item.get("reasons") or []:
+            if not isinstance(reason, str) or reason in ignored or reason.endswith("_READY"):
+                continue
+            if reason in suppressed_reasons:
+                noise_counts[reason] = noise_counts.get(reason, 0) + 1
+                continue
+            active_counts[reason] = active_counts.get(reason, 0) + 1
+
+    active_rows = sorted(active_counts.items(), key=lambda row: (-row[1], row[0]))
+    if not active_rows:
+        for row in _top_reason_counts(items, limit=limit):
+            reason = str(row.get("reason") or "").strip()
+            if reason:
+                active_rows.append((reason, int(row.get("count") or 0)))
+    noise_rows = sorted(noise_counts.items(), key=lambda row: (-row[1], row[0]))
+    return {
+        "dominant_lane_family": dominant_lane,
+        "note": note_by_lane.get(dominant_lane, note_by_lane["unknown"]),
+        "review_focus": review_focus_by_lane.get(dominant_lane, review_focus_by_lane["unknown"]),
+        "primary_risks": [
+            {"reason": reason, "count": count}
+            for reason, count in active_rows[:limit]
+        ],
+        "suppressed_noise": [
+            {"reason": reason, "count": count}
+            for reason, count in noise_rows[: min(4, limit)]
+        ],
+        "suppressed_reason_codes": sorted(suppressed_reasons),
+    }
+
+
 def _status_counts(items: Sequence[Dict[str, Any]], key: str) -> Dict[str, int]:
     counts: Dict[str, int] = {}
     for item in items:
@@ -213,6 +326,8 @@ def _build_batch_summary(report_payload: Dict[str, Any]) -> Dict[str, Any]:
         "anchor_truth": report_meta.get("anchor_governance") or {},
         "master_truth_reference": report_meta.get("master_truth_reference") or {},
         "master_truth_artifact_dir": report_meta.get("master_truth_artifact_dir"),
+        "artifact_manifest_file": report_meta.get("artifact_manifest_file"),
+        "artifact_manifest_summary": report_meta.get("artifact_manifest_summary") or {},
         "heavy_provider_status": report_meta.get("heavy_provider_status") or {},
         "view_classifier_status": report_meta.get("view_classifier_status") or {},
         "face_canonical_status": report_meta.get("face_canonical_status") or {},
@@ -223,6 +338,7 @@ def _build_batch_summary(report_payload: Dict[str, Any]) -> Dict[str, Any]:
         "module_status_counts": _module_status_counts(items),
         "lane_detail_counts": _lane_detail_counts(items),
         "primary_risks": _top_reason_counts(items),
+        "lane_risk_focus": _build_lane_risk_focus(items),
         "batch_gate": {
             "enabled": batch_gate.get("enabled"),
             "applied": batch_gate.get("applied"),
@@ -462,7 +578,7 @@ def build_review_packet(
         if str(row.get("record_key") or row.get("image") or "").strip()
     }
     review_packet = {
-        "schema_version": "review_packet_v1_4",
+        "schema_version": "review_packet_v1_5",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "system_role": "evidence_only",
         "final_decision_owner": "custom_gpt_plus_human",

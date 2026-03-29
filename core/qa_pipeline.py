@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from .providers import build_provider_bundle
+from .qa_artifact_manifest import artifact_manifest_path, load_artifact_manifest_summary
 from .qa_consistency import (
     apply_consistency_soft_gate,
     extract_body_constitution_metrics,
@@ -322,6 +323,8 @@ def _build_report_meta(
         },
         "master_truth_reference": _json_ready((master_reference or {}).get("summary") or {}),
         "master_truth_artifact_dir": str(runtime.config.paths.dir_master_truth),
+        "artifact_manifest_file": str(artifact_manifest_path(runtime.config.paths.dir_master_truth)),
+        "artifact_manifest_summary": load_artifact_manifest_summary(runtime.config.paths.dir_master_truth),
         "anchor_paths_resolved": _json_ready(anchors.meta),
         "layer_quotas": _json_ready(runtime.config.layer_quotas),
         "threshold_snapshot": _build_threshold_snapshot(runtime, target_profile),
@@ -464,6 +467,12 @@ def _build_report_meta(
     }
 
 
+def _refresh_report_meta_artifacts(runtime: RuntimeContext, report_meta: Dict[str, Any]) -> Dict[str, Any]:
+    report_meta["artifact_manifest_file"] = str(artifact_manifest_path(runtime.config.paths.dir_master_truth))
+    report_meta["artifact_manifest_summary"] = load_artifact_manifest_summary(runtime.config.paths.dir_master_truth)
+    return report_meta
+
+
 def _write_report_outputs(runtime: RuntimeContext, report_payload: Dict[str, Any]) -> Path:
     config = runtime.config
     with open(config.paths.report_file, "w", encoding="utf-8") as file:
@@ -487,6 +496,7 @@ def _write_engine_fatal_outputs(
 ) -> None:
     report_meta = _build_report_meta(runtime, target_profile, AnchorSet(), input_count, master_reference=None)
     report_meta["run_status"] = "engine_fatal"
+    _refresh_report_meta_artifacts(runtime, report_meta)
     collection_aggregates = {
         "summary": {},
         "batch_gate": {
@@ -1748,6 +1758,7 @@ def _run_pipeline_impl(
     )
     for item in report_items:
         item["recommendations"] = make_recommendations(runtime, item, target_profile)
+    _refresh_report_meta_artifacts(runtime, report_meta)
     report_payload = {
         "report_meta": report_meta,
         "collection_aggregates": collection_aggregates,

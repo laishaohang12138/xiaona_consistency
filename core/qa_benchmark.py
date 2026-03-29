@@ -22,6 +22,108 @@ from .qa_utils import dedupe_keep_order, get_face_size_bucket, get_quality_toler
 VALID_STATUSES = ("PASS", "WARN", "FAIL")
 BENCHMARK_LABEL_SCHEMA = "qa_benchmark_labels_v1"
 HEAVY_PROVIDER_COMPARE_SCHEMA = "qa_benchmark_heavy_compare_v1"
+
+
+def _lane_family_from_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return "unknown"
+    if "back" in text:
+        return "back"
+    if "side" in text:
+        return "side"
+    if "3q" in text or "quarter" in text:
+        return "three_quarter"
+    if "front" in text or "frontal" in text:
+        return "front"
+    return "unknown"
+
+
+def _benchmark_lane_focus(per_item: Sequence[Dict[str, Any]], limit: int = 6) -> Dict[str, Any]:
+    lane_counts: Dict[str, int] = {}
+    for row in per_item:
+        family = _lane_family_from_text(row.get("view_lane_detail") or row.get("view_lane"))
+        if family == "unknown":
+            continue
+        lane_counts[family] = lane_counts.get(family, 0) + 1
+    dominant_lane = "unknown"
+    if lane_counts:
+        dominant_lane = sorted(lane_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+    suppressed_by_lane = {
+        "side": {
+            "UPPER_FAIL",
+            "FACE_LOW_CONFIDENCE",
+            "FACE_LOW_CONF_NEEDS_REVIEW",
+            "FACE_TOO_SMALL",
+            "FACE_DARKER_THAN_TONE_ANCHOR",
+            "FACE_FLIP_CANONICALIZED",
+            "FACE_SOFTER_THAN_ANCHOR",
+            "FACE_NO_RELIABLE_SIGNAL",
+        },
+        "back": {
+            "UPPER_FAIL",
+            "FACE_LOW_CONFIDENCE",
+            "FACE_LOW_CONF_NEEDS_REVIEW",
+            "FACE_TOO_SMALL",
+            "FACE_DARKER_THAN_TONE_ANCHOR",
+            "FACE_FLIP_CANONICALIZED",
+            "FACE_SOFTER_THAN_ANCHOR",
+            "FACE_NO_RELIABLE_SIGNAL",
+        },
+        "three_quarter": {
+            "UPPER_FAIL",
+        },
+    }
+    note_by_lane = {
+        "front": "当前 benchmark 主要是 front lane，脸部身份和上身结构是主解释信号。",
+        "three_quarter": "当前 benchmark 主要是 3Q lane，优先看脸型漂移、年龄感和上身衔接。",
+        "side": "当前 benchmark 主要是 side lane，脸部弱信号只做否决参考，主看身材真相、轮廓和空间结构。",
+        "back": "当前 benchmark 主要是 back lane，正脸相关 reason 已降噪，主看后背轮廓、骨盆和腿轴。",
+        "unknown": "当前 benchmark lane 不够稳定，先确认路由再解读风险。",
+    }
+    review_focus_by_lane = {
+        "front": ["脸部身份", "年龄感/表情", "肩颈与上身比例"],
+        "three_quarter": ["脸型漂移", "年龄感", "肩颈与体态衔接"],
+        "side": ["身材真相", "侧身轮廓", "depth3d/厚度", "腿线与站姿"],
+        "back": ["后背轮廓", "肩线与骨盆", "腿轴与重心", "后侧体量"],
+        "unknown": ["确认 lane 是否正确", "优先看明显漂移项", "再看 route/threshold 是否合理"],
+    }
+    ignored = {
+        "FULL_PASS",
+        "FRAMING_OK",
+        "FEET_IN_FRAME",
+        "FACE_EMBEDDING_READY",
+        "FACE_LANDMARKS_READY",
+    }
+    suppressed = suppressed_by_lane.get(dominant_lane, set())
+    active_counts: Dict[str, int] = {}
+    noise_counts: Dict[str, int] = {}
+    for row in per_item:
+        for reason in row.get("reasons") or []:
+            if not isinstance(reason, str) or reason in ignored or reason.endswith("_READY"):
+                continue
+            if reason in suppressed:
+                noise_counts[reason] = noise_counts.get(reason, 0) + 1
+            else:
+                active_counts[reason] = active_counts.get(reason, 0) + 1
+    active_rows = sorted(active_counts.items(), key=lambda item: (-item[1], item[0]))
+    noise_rows = sorted(noise_counts.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "dominant_lane_family": dominant_lane,
+        "lane_counts": lane_counts,
+        "note": note_by_lane.get(dominant_lane, note_by_lane["unknown"]),
+        "review_focus": review_focus_by_lane.get(dominant_lane, review_focus_by_lane["unknown"]),
+        "primary_risks": [
+            {"reason": reason, "count": count}
+            for reason, count in active_rows[:limit]
+        ],
+        "suppressed_noise": [
+            {"reason": reason, "count": count}
+            for reason, count in noise_rows[: min(4, limit)]
+        ],
+        "suppressed_reason_codes": sorted(suppressed),
+    }
 DEFAULT_BENCHMARK_LABEL_ROLE = "candidate_review"
 DEFAULT_BENCHMARK_FROZEN_ROLE = "benchmark_frozen"
 
@@ -1382,6 +1484,9 @@ def benchmark_heavy_provider_compare(
                         "image": image_name,
                         "expected_status": expected_status,
                         "weight": weight,
+                        "view_lane": str((report_debug.get("view_lane") or "")).strip() or "unknown",
+                        "view_lane_detail": str((report_debug.get("view_lane_detail") or report_debug.get("view_lane") or "")).strip() or "unknown",
+                        "reasons": list(report_item.get("reasons") or []),
                         "source_path": str(resolved_image_path) if resolved_image_path is not None else None,
                         "source_resolution": resolution_source,
                         "heavy_evidence": {
@@ -1519,7 +1624,8 @@ def benchmark_heavy_provider_compare(
             ),
         }
 
-    ranking.sort(
+    ranking_generic = list(ranking)
+    ranking_generic.sort(
         key=lambda row: (
             -float(row.get("evidence_readiness_score", 0.0) or 0.0),
             -float(row.get("canonical_truth_readiness_score", 0.0) or 0.0),
@@ -1528,6 +1634,27 @@ def benchmark_heavy_provider_compare(
             str(row.get("provider_name", "")),
         )
     )
+    ranking_truth = list(ranking)
+    ranking_truth.sort(
+        key=lambda row: (
+            -float(row.get("canonical_truth_readiness_score", 0.0) or 0.0),
+            -float(row.get("body_shape_truth_available_weight_ratio", 0.0) or 0.0),
+            -float(row.get("body_shape_truth_alignment_mean", 0.0) or 0.0),
+            -float(row.get("body_shape_beta_similarity_mean", 0.0) or 0.0),
+            -float(row.get("evidence_readiness_score", 0.0) or 0.0),
+            str(row.get("provider_name", "")),
+        )
+    )
+    best_generic_provider = str((ranking_generic[0] if ranking_generic else {}).get("provider_name") or "")
+    truth_enabled_rows = [
+        row for row in ranking_truth
+        if float(row.get("body_shape_truth_available_weight_ratio", 0.0) or 0.0) > 0.0
+    ]
+    best_truth_provider = str((truth_enabled_rows[0] if truth_enabled_rows else {}).get("provider_name") or "")
+    baseline_items = []
+    if isinstance(provider_results.get(baseline_provider, {}), dict):
+        baseline_items = list(provider_results.get(baseline_provider, {}).get("items") or [])
+    lane_focus = _benchmark_lane_focus(baseline_items)
 
     return {
         "schema_version": HEAVY_PROVIDER_COMPARE_SCHEMA,
@@ -1548,13 +1675,18 @@ def benchmark_heavy_provider_compare(
             "qa_role": "evidence_only",
             "heavy_provider_changes_final_status": False,
             "compare_mode": "heavy_evidence_replay",
-            "note": "该对比只量化重型证据可用率、置信度、覆盖率和细项指标，不改写最终准入判断。",
+            "note": "该对比只量化重型证据，不改写最终准入判断。",
         },
         "face_canonical_metrics": face_canonical_metrics,
+        "lane_focus": lane_focus,
         "providers": provider_results,
         "comparison": {
             "baseline_provider": baseline_provider,
-            "ranking_by_evidence_readiness": ranking,
+            "best_generic_provider": best_generic_provider,
+            "best_truth_provider": best_truth_provider or None,
+            "ranking_by_evidence_readiness": ranking_generic,
+            "ranking_by_generic_readiness": ranking_generic,
+            "ranking_by_truth_readiness": ranking_truth,
             "deltas_vs_baseline": deltas_vs_baseline,
         },
     }
@@ -2052,9 +2184,10 @@ def benchmark_report(
     canonical_truth_metrics = _extract_canonical_truth_summary(heavy_evidence_metrics)
     heavy_evidence_metrics.update(canonical_truth_metrics)
     face_canonical_metrics = _finalize_face_canonical_state(face_canonical_state)
+    lane_focus = _benchmark_lane_focus(per_item)
 
     return {
-        "schema_version": "qa_benchmark_result_v1",
+        "schema_version": "qa_benchmark_result_v1_1",
         "report_file": str(report_path),
         "labels_file": str(labels_path),
         "label_bundle": {
@@ -2138,6 +2271,7 @@ def benchmark_report(
         "face_canonical_metrics": face_canonical_metrics,
         "heavy_evidence_metrics": heavy_evidence_metrics,
         "canonical_truth_metrics": canonical_truth_metrics,
+        "lane_focus": lane_focus,
         "class_metrics": {
             status: {key: round(value, 6) for key, value in metrics.items()}
             for status, metrics in class_metrics.items()

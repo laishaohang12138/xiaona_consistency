@@ -14,6 +14,8 @@ import cv2
 import numpy as np
 import torch
 
+from core.qa_artifact_manifest import register_artifact_manifest
+
 for _alias, _value in {
     "bool": bool,
     "int": int,
@@ -47,6 +49,34 @@ _ALT_SMPL_NAMES = [
     "basicModel_neutral_lbs_10_207_0_v1.1.0.pkl",
     "basicmodel_neutral_lbs_10_207_0_v1.1.0.pkl",
 ]
+_BODY25 = {
+    "neck": 1,
+    "right_shoulder": 2,
+    "left_shoulder": 5,
+    "mid_hip": 8,
+    "right_hip": 9,
+    "right_knee": 10,
+    "right_ankle": 11,
+    "left_hip": 12,
+    "left_knee": 13,
+    "left_ankle": 14,
+    "left_big_toe": 19,
+    "left_small_toe": 20,
+    "left_heel": 21,
+    "right_big_toe": 22,
+    "right_small_toe": 23,
+    "right_heel": 24,
+}
+_MEASUREMENT_SCALES = {
+    "shoulder_width_to_torso": 0.08,
+    "hip_width_to_torso": 0.08,
+    "shoulder_to_hip_ratio": 0.08,
+    "leg_length_to_torso": 0.12,
+    "upper_to_lower_leg_ratio": 0.08,
+    "left_right_leg_balance": 0.05,
+    "foot_length_to_leg": 0.04,
+    "left_right_foot_balance": 0.04,
+}
 
 
 def _resolve_repo_dir() -> Path:
@@ -157,6 +187,140 @@ def _as_list(value: torch.Tensor) -> list[float]:
     return value.detach().cpu().reshape(-1).to(torch.float32).tolist()
 
 
+def _as_numpy(value: torch.Tensor) -> np.ndarray:
+    return value.detach().cpu().to(torch.float32).numpy()
+
+
+def _joint_point(keypoints: np.ndarray, name: str) -> np.ndarray | None:
+    index = _BODY25.get(str(name))
+    if index is None or keypoints.ndim != 2 or keypoints.shape[0] <= index:
+        return None
+    point = np.asarray(keypoints[index], dtype=np.float32).reshape(-1)
+    if point.shape[0] < 3 or not np.isfinite(point).all():
+        return None
+    return point[:3]
+
+
+def _distance(a: np.ndarray | None, b: np.ndarray | None) -> float | None:
+    if a is None or b is None:
+        return None
+    return float(np.linalg.norm(a - b))
+
+
+def _safe_ratio(numerator: float | None, denominator: float | None) -> float | None:
+    if numerator is None or denominator is None or abs(float(denominator)) < 1e-6:
+        return None
+    return float(float(numerator) / float(denominator))
+
+
+def _pair_balance(left_value: float | None, right_value: float | None) -> float | None:
+    if left_value is None or right_value is None:
+        return None
+    hi = max(float(left_value), float(right_value))
+    lo = min(float(left_value), float(right_value))
+    if hi < 1e-6:
+        return None
+    return float(lo / hi)
+
+
+def _mean(values: list[float | None]) -> float | None:
+    clean = [float(value) for value in values if value is not None]
+    if not clean:
+        return None
+    return float(sum(clean) / len(clean))
+
+
+def _foot_length(heel: np.ndarray | None, toe_a: np.ndarray | None, toe_b: np.ndarray | None) -> float | None:
+    candidates = [_distance(heel, toe_a), _distance(heel, toe_b), _distance(toe_a, toe_b)]
+    clean = [float(value) for value in candidates if value is not None]
+    if not clean:
+        return None
+    return float(max(clean))
+
+
+def _measurement_payload(
+    pred_keypoints_3d: torch.Tensor,
+    pred_keypoints_2d: torch.Tensor,
+    image_bgr: np.ndarray,
+) -> tuple[Dict[str, float], Dict[str, float], float, Dict[str, Any]]:
+    keypoints_3d = _as_numpy(pred_keypoints_3d)
+    keypoints_2d = _as_numpy(pred_keypoints_2d)
+    if keypoints_3d.ndim != 2 or keypoints_3d.shape[0] < 25:
+        return {}, dict(_MEASUREMENT_SCALES), 0.0, {"measurement_count": 0, "measurement_basis": "hmr2_body25_3d_v2"}
+
+    left_shoulder = _joint_point(keypoints_3d, "left_shoulder")
+    right_shoulder = _joint_point(keypoints_3d, "right_shoulder")
+    left_hip = _joint_point(keypoints_3d, "left_hip")
+    right_hip = _joint_point(keypoints_3d, "right_hip")
+    neck = _joint_point(keypoints_3d, "neck")
+    mid_hip = _joint_point(keypoints_3d, "mid_hip")
+    left_knee = _joint_point(keypoints_3d, "left_knee")
+    right_knee = _joint_point(keypoints_3d, "right_knee")
+    left_ankle = _joint_point(keypoints_3d, "left_ankle")
+    right_ankle = _joint_point(keypoints_3d, "right_ankle")
+    left_big_toe = _joint_point(keypoints_3d, "left_big_toe")
+    left_small_toe = _joint_point(keypoints_3d, "left_small_toe")
+    left_heel = _joint_point(keypoints_3d, "left_heel")
+    right_big_toe = _joint_point(keypoints_3d, "right_big_toe")
+    right_small_toe = _joint_point(keypoints_3d, "right_small_toe")
+    right_heel = _joint_point(keypoints_3d, "right_heel")
+
+    shoulder_width = _distance(left_shoulder, right_shoulder)
+    hip_width = _distance(left_hip, right_hip)
+    torso_length = _distance(neck, mid_hip)
+    left_upper_leg = _distance(left_hip, left_knee)
+    right_upper_leg = _distance(right_hip, right_knee)
+    left_lower_leg = _distance(left_knee, left_ankle)
+    right_lower_leg = _distance(right_knee, right_ankle)
+    left_leg_length = None if left_upper_leg is None or left_lower_leg is None else float(left_upper_leg + left_lower_leg)
+    right_leg_length = None if right_upper_leg is None or right_lower_leg is None else float(right_upper_leg + right_lower_leg)
+    mean_leg_length = _mean([left_leg_length, right_leg_length])
+    mean_upper_leg = _mean([left_upper_leg, right_upper_leg])
+    mean_lower_leg = _mean([left_lower_leg, right_lower_leg])
+    left_foot_length = _foot_length(left_heel, left_big_toe, left_small_toe)
+    right_foot_length = _foot_length(right_heel, right_big_toe, right_small_toe)
+    mean_foot_length = _mean([left_foot_length, right_foot_length])
+
+    raw_measurements = {
+        "shoulder_width_to_torso": _safe_ratio(shoulder_width, torso_length),
+        "hip_width_to_torso": _safe_ratio(hip_width, torso_length),
+        "shoulder_to_hip_ratio": _safe_ratio(shoulder_width, hip_width),
+        "leg_length_to_torso": _safe_ratio(mean_leg_length, torso_length),
+        "upper_to_lower_leg_ratio": _safe_ratio(mean_upper_leg, mean_lower_leg),
+        "left_right_leg_balance": _pair_balance(left_leg_length, right_leg_length),
+        "foot_length_to_leg": _safe_ratio(mean_foot_length, mean_leg_length),
+        "left_right_foot_balance": _pair_balance(left_foot_length, right_foot_length),
+    }
+    measurements = {
+        key: round(float(value), 6)
+        for key, value in raw_measurements.items()
+        if value is not None and np.isfinite(value)
+    }
+
+    keypoints_2d = np.asarray(keypoints_2d, dtype=np.float32)
+    body25_2d = keypoints_2d[:25] if keypoints_2d.ndim == 2 and keypoints_2d.shape[0] >= 25 else np.empty((0, 2), dtype=np.float32)
+    valid_2d = body25_2d[np.isfinite(body25_2d).all(axis=1)] if body25_2d.size else np.empty((0, 2), dtype=np.float32)
+    image_area = float(max(1, image_bgr.shape[0] * image_bgr.shape[1]))
+    keypoint_bbox_coverage = 0.0
+    if len(valid_2d) >= 3:
+        min_xy = valid_2d.min(axis=0)
+        max_xy = valid_2d.max(axis=0)
+        bbox_area = float(max(0.0, max_xy[0] - min_xy[0]) * max(0.0, max_xy[1] - min_xy[1]))
+        keypoint_bbox_coverage = min(1.0, bbox_area / image_area)
+
+    measurement_coverage = float(len(measurements) / max(1, len(_MEASUREMENT_SCALES)))
+    coverage = round(float((measurement_coverage + keypoint_bbox_coverage) / 2.0), 6)
+    measurement_meta = {
+        "measurement_basis": "hmr2_body25_3d_v2",
+        "measurement_count": int(len(measurements)),
+        "measurement_expected_count": int(len(_MEASUREMENT_SCALES)),
+        "measurement_coverage": round(measurement_coverage, 6),
+        "keypoint_bbox_coverage": round(keypoint_bbox_coverage, 6),
+        "body25_joint_count": int(min(keypoints_3d.shape[0], 25)),
+    }
+    return measurements, dict(_MEASUREMENT_SCALES), coverage, measurement_meta
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Minimal 4D-Humans exporter for XiaoNa body canonical artifacts")
     parser.add_argument("--image_path", required=True, help="Input image path")
@@ -197,26 +361,32 @@ def main() -> None:
     global_orient = pred_smpl_params["global_orient"][0]
     body_pose = pred_smpl_params["body_pose"][0]
     pred_cam = output["pred_cam"][0]
+    pred_keypoints_2d = output["pred_keypoints_2d"][0]
+    pred_keypoints_3d = output["pred_keypoints_3d"][0]
     bbox = boxes[0]
-    bbox_area_ratio = float(((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / max(1.0, image_bgr.shape[0] * image_bgr.shape[1]))
+    measurements, measurement_scales, coverage, measurement_meta = _measurement_payload(
+        pred_keypoints_3d,
+        pred_keypoints_2d,
+        image_bgr,
+    )
     all_finite = all(
         torch.isfinite(tensor).all().item()
-        for tensor in [betas, global_orient, body_pose, pred_cam]
+        for tensor in [betas, global_orient, body_pose, pred_cam, pred_keypoints_2d, pred_keypoints_3d]
     )
     artifact = {
         "schema_version": "body_canonical_artifact_v1",
         "provider_name": "body_canonical_hmr2",
         "provider_family": "body_canonical",
-        "provider_version": "hmr2_xiaona_export_v1",
+        "provider_version": "hmr2_xiaona_export_v2",
         "model_id": str(Path(args.checkpoint).name),
         "source_path": str(image_path),
         "source_role": "candidate",
         "shape_beta": _as_list(betas),
         "pose_vector": _as_list(torch.cat([global_orient.reshape(-1), body_pose.reshape(-1)], dim=0)),
-        "canonical_measurements": {},
-        "measurement_scales": {},
+        "canonical_measurements": measurements,
+        "measurement_scales": measurement_scales,
         "fit_confidence": 1.0 if all_finite else 0.0,
-        "coverage": round(bbox_area_ratio, 6),
+        "coverage": coverage,
         "notes": "direct 4D-Humans export for XiaoNa body canonical bridge",
         "conversion_meta": {
             "repo_dir": str(HMR2_REPO),
@@ -227,10 +397,27 @@ def main() -> None:
             "bbox_xyxy": [float(v) for v in bbox.tolist()],
             "pred_cam": _as_list(pred_cam),
             "image_size": [int(image_bgr.shape[1]), int(image_bgr.shape[0])],
+            **measurement_meta,
         },
     }
     output_path = output_dir / f"{image_path.stem}.body_canonical.json"
     output_path.write_text(json.dumps(artifact, indent=2, ensure_ascii=False), encoding="utf-8")
+    register_artifact_manifest(
+        artifact_path=output_path.resolve(),
+        artifact_family="body_canonical",
+        artifact_role=str(artifact.get("source_role") or "candidate"),
+        provider_name=str(artifact.get("provider_name") or "body_canonical_hmr2"),
+        provider_family=str(artifact.get("provider_family") or "body_canonical"),
+        provider_version=str(artifact.get("provider_version") or "hmr2_xiaona_export_v1"),
+        model_id=str(artifact.get("model_id") or Path(args.checkpoint).name),
+        schema_version=str(artifact.get("schema_version") or "body_canonical_artifact_v1"),
+        source_path=image_path,
+        device=str(device),
+        repo_dir=HMR2_REPO,
+        entrypoint=str(Path(__file__).resolve()),
+        conversion_meta=dict(artifact.get("conversion_meta") or {}),
+        extra={"notes": artifact.get("notes")},
+    )
     print(json.dumps({"ok": True, "output_path": str(output_path), "device": str(device), "repo_dir": str(HMR2_REPO)}, ensure_ascii=False))
 
 

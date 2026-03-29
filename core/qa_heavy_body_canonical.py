@@ -13,17 +13,19 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from .qa_artifact_manifest import register_artifact_manifest
 from .providers import HeavyEvidenceProvider
 from .qa_utils import dedupe_keep_order
 
 _PROVIDER_NAME = "body_canonical_hmr2"
 _PROVIDER_FAMILY = "body_canonical"
-_PROVIDER_VERSION = "body_canonical_hmr2_direct_bridge_v1"
-_MODEL_ID = "hmr2_direct_bridge_v1"
+_PROVIDER_VERSION = "body_canonical_hmr2_direct_bridge_v2"
+_MODEL_ID = "hmr2_direct_bridge_v2"
 _ARTIFACT_SCHEMA = "body_canonical_artifact_v1"
 _CACHE_SCHEMA = "body_canonical_cache_v1"
 _MASTER_ARTIFACT_NAME = "body_master_shape_only.json"
 _DEFAULT_MEASUREMENT_SCALE = 0.08
+_MIN_CANONICAL_MEASUREMENTS = 6
 _DEFAULT_SMPL_MODEL = "basicModel_neutral_lbs_10_207_0_v1.0.0.pkl"
 _ALT_SMPL_MODELS = [
     "basicModel_neutral_lbs_10_207_0_v1.1.0.pkl",
@@ -434,6 +436,24 @@ def _load_master_artifact(runtime: Any) -> tuple[Optional[Dict[str, Any]], Optio
     return _normalize_artifact(payload, source_path=master_path, source_role="master_truth"), master_path
 
 
+def _artifact_is_current(artifact: Optional[Dict[str, Any]], *, min_measurements: int = 0) -> bool:
+    if not isinstance(artifact, dict):
+        return False
+    if str(artifact.get("schema_version") or "") != _ARTIFACT_SCHEMA:
+        return False
+    if str(artifact.get("provider_name") or "") != _PROVIDER_NAME:
+        return False
+    if str(artifact.get("provider_version") or "") != _PROVIDER_VERSION:
+        return False
+    if _normalize_vector(artifact.get("shape_beta")) is None:
+        return False
+    if min_measurements > 0:
+        measurements = _measurement_mapping(artifact.get("canonical_measurements") or {})
+        if len(measurements) < int(min_measurements):
+            return False
+    return True
+
+
 def _load_cached_candidate(runtime: Any, image_path: Path) -> tuple[Optional[Dict[str, Any]], str, Path]:
     cache_key, _ = _build_cache_key(runtime, image_path)
     cache_file = _cache_dir(runtime) / f"{cache_key}.json"
@@ -685,8 +705,9 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
 
     def _ensure_master_artifact(self, runtime: Any) -> bool:
         master_artifact, _ = _load_master_artifact(runtime)
-        if master_artifact is not None:
+        if _artifact_is_current(master_artifact, min_measurements=_MIN_CANONICAL_MEASUREMENTS):
             return False
+        settings = _resolve_settings()
         master_body_path = _resolve_master_body_path(runtime)
         if not master_body_path.exists():
             raise FileNotFoundError(f"Body truth anchor not found: {master_body_path}")
@@ -701,12 +722,30 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
         master_path = _master_truth_dir(runtime) / _MASTER_ARTIFACT_NAME
         master_path.parent.mkdir(parents=True, exist_ok=True)
         master_path.write_text(json.dumps(_json_ready(artifact), indent=2, ensure_ascii=False), encoding="utf-8")
+        register_artifact_manifest(
+            artifact_path=master_path,
+            manifest_root=_master_truth_dir(runtime),
+            artifact_family="body_canonical",
+            artifact_role="master_truth",
+            provider_name=str(artifact.get("provider_name") or self.provider_name),
+            provider_family=str(artifact.get("provider_family") or self.provider_family),
+            provider_version=str(artifact.get("provider_version") or self.provider_version),
+            model_id=str(artifact.get("model_id") or _MODEL_ID),
+            schema_version=str(artifact.get("schema_version") or _ARTIFACT_SCHEMA),
+            source_path=master_body_path,
+            device=str(settings["resolved_device"]),
+            repo_dir=Path(settings["repo_dir"]),
+            entrypoint=str(settings["entrypoint"]),
+            conversion_meta=dict(artifact.get("conversion_meta") or {}),
+            extra={"notes": artifact.get("notes"), "direct_export_path": str(export_path)},
+        )
         return True
 
     def _ensure_candidate_artifact(self, runtime: Any, image_path: Path) -> bool:
         candidate_artifact, cache_key, cache_file = _load_candidate_artifact(runtime, image_path)
         if candidate_artifact is not None:
             return False
+        settings = _resolve_settings()
         export_path = self._run_direct_export(image_path)
         artifact = _build_direct_artifact(
             source_path=image_path,
@@ -715,7 +754,30 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
         )
         if _normalize_vector(artifact.get("shape_beta")) is None:
             raise ValueError("HMR2 candidate export did not produce shape_beta")
-        return bool(_write_cached_candidate(cache_file, cache_key, artifact))
+        cache_written = bool(_write_cached_candidate(cache_file, cache_key, artifact))
+        if cache_written:
+            register_artifact_manifest(
+                artifact_path=cache_file,
+                manifest_root=_master_truth_dir(runtime),
+                artifact_family="body_canonical",
+                artifact_role="candidate",
+                provider_name=str(artifact.get("provider_name") or self.provider_name),
+                provider_family=str(artifact.get("provider_family") or self.provider_family),
+                provider_version=str(artifact.get("provider_version") or self.provider_version),
+                model_id=str(artifact.get("model_id") or _MODEL_ID),
+                schema_version=str(artifact.get("schema_version") or _ARTIFACT_SCHEMA),
+                source_path=image_path,
+                device=str(settings["resolved_device"]),
+                repo_dir=Path(settings["repo_dir"]),
+                entrypoint=str(settings["entrypoint"]),
+                conversion_meta=dict(artifact.get("conversion_meta") or {}),
+                extra={
+                    "notes": artifact.get("notes"),
+                    "cache_key": cache_key,
+                    "direct_export_path": str(export_path),
+                },
+            )
+        return cache_written
 
     def get_heavy_evidence_metrics(
         self,
@@ -764,6 +826,47 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
 
         master_artifact, master_path = _load_master_artifact(runtime)
         candidate_artifact, cache_key, cache_file = _load_candidate_artifact(runtime, resolved_path)
+        if master_artifact is not None and master_path is not None and Path(master_path).exists():
+            register_artifact_manifest(
+                artifact_path=Path(master_path),
+                manifest_root=_master_truth_dir(runtime),
+                artifact_family="body_canonical",
+                artifact_role="master_truth",
+                provider_name=str(master_artifact.get("provider_name") or self.provider_name),
+                provider_family=str(master_artifact.get("provider_family") or self.provider_family),
+                provider_version=str(master_artifact.get("provider_version") or self.provider_version),
+                model_id=str(master_artifact.get("model_id") or _MODEL_ID),
+                schema_version=str(master_artifact.get("schema_version") or _ARTIFACT_SCHEMA),
+                source_path=_resolve_master_body_path(runtime),
+                device=str(settings["resolved_device"]),
+                repo_dir=Path(settings["repo_dir"]),
+                entrypoint=str(settings["entrypoint"]),
+                conversion_meta=dict(master_artifact.get("conversion_meta") or {}),
+                extra={"notes": master_artifact.get("notes")},
+            )
+        if candidate_artifact is not None:
+            candidate_artifact_path = candidate_artifact.get("sidecar_file") or candidate_artifact.get("cache_file")
+            if candidate_artifact_path:
+                register_artifact_manifest(
+                    artifact_path=Path(str(candidate_artifact_path)),
+                    manifest_root=_master_truth_dir(runtime),
+                    artifact_family="body_canonical",
+                    artifact_role="candidate",
+                    provider_name=str(candidate_artifact.get("provider_name") or self.provider_name),
+                    provider_family=str(candidate_artifact.get("provider_family") or self.provider_family),
+                    provider_version=str(candidate_artifact.get("provider_version") or self.provider_version),
+                    model_id=str(candidate_artifact.get("model_id") or _MODEL_ID),
+                    schema_version=str(candidate_artifact.get("schema_version") or _ARTIFACT_SCHEMA),
+                    source_path=resolved_path,
+                    device=str(settings["resolved_device"]),
+                    repo_dir=Path(settings["repo_dir"]),
+                    entrypoint=str(settings["entrypoint"]),
+                    conversion_meta=dict(candidate_artifact.get("conversion_meta") or {}),
+                    extra={
+                        "notes": candidate_artifact.get("notes"),
+                        "cache_key": candidate_artifact.get("cache_key") or cache_key,
+                    },
+                )
 
         reasons: List[str] = []
         if master_artifact is None:
