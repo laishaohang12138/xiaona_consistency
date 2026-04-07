@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from .providers import build_provider_bundle
+from .qa_admission import resolve_target_bucket
 from .qa_artifact_manifest import artifact_manifest_path, load_artifact_manifest_summary
 from .qa_consistency import (
     apply_consistency_soft_gate,
@@ -38,6 +39,7 @@ from .qa_outfit import (
     infer_layer_tag_from_profile,
     parse_collection_metadata,
 )
+from .qa_review_only_score import apply_review_only_score_v2
 from .qa_review_packet import build_review_packet
 from .qa_runtime import (
     AnchorSet,
@@ -52,6 +54,10 @@ from .qa_runtime import (
     load_thresholds_from_file as load_runtime_thresholds_from_file,
     resolve_anchor_paths,
     save_thresholds_to_file,
+)
+from .qa_training_admission import (
+    load_training_admission_manifest_summary,
+    training_admission_manifest_path,
 )
 from .qa_scoring import (
     build_tone_reference_stats,
@@ -266,8 +272,26 @@ def _build_report_meta(
     master_reference: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     profile_policy = get_profile_policy(runtime, target_profile)
+    target_bucket = resolve_target_bucket(target_profile)
     anchor_snapshot = anchor_registry_snapshot(runtime.config)
     truth_anchors = anchor_snapshot.get("truth_anchors", {}) if isinstance(anchor_snapshot, dict) else {}
+    release_gates = runtime.config.release_gates if isinstance(runtime.config.release_gates, dict) else {}
+    active_release_gate = dict((release_gates.get("release_gates") or {}).get(target_bucket) or {})
+    release_gate_summary = {
+        "schema_version": str(release_gates.get("schema_version") or "").strip(),
+        "target_bucket": target_bucket,
+        "release_state": str(active_release_gate.get("release_state") or "review").strip() or "review",
+        "machine_status_ceiling": str(active_release_gate.get("machine_status_ceiling") or "WARN").strip().upper() or "WARN",
+        "training_admission_allowed": bool(active_release_gate.get("training_admission_allowed")),
+        "manual_training_admission_required": bool(active_release_gate.get("manual_training_admission_required", True)),
+        "optuna_fit_allowed": bool(active_release_gate.get("optuna_fit_allowed")),
+        "requires_frozen_benchmark": bool(active_release_gate.get("requires_frozen_benchmark")),
+        "requires_curated_winner_bank": bool(active_release_gate.get("requires_curated_winner_bank")),
+        "required_lane_families": list(active_release_gate.get("required_lane_families") or []),
+        "notes": str(active_release_gate.get("notes") or "").strip(),
+    }
+    training_manifest_file = training_admission_manifest_path(runtime.config.paths.dir_output)
+    training_manifest_summary = load_training_admission_manifest_summary(training_manifest_file)
     heavy_provider_status = (
         runtime.providers.describe_heavy_evidence()
         if hasattr(runtime.providers, "describe_heavy_evidence")
@@ -292,7 +316,7 @@ def _build_report_meta(
         "source_of_truth": "view_detector.back_180_readiness",
     }
     return {
-        "schema_version": "qa_report_v2_9",
+        "schema_version": "qa_report_v2_10",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "run_status": "engine_fatal" if runtime.engines.fatal else "ok",
         "active_profile": target_profile,
@@ -327,6 +351,12 @@ def _build_report_meta(
         "artifact_manifest_summary": load_artifact_manifest_summary(runtime.config.paths.dir_master_truth),
         "anchor_paths_resolved": _json_ready(anchors.meta),
         "layer_quotas": _json_ready(runtime.config.layer_quotas),
+        "release_gate": _json_ready(release_gate_summary),
+        "release_gates": {
+            "schema_version": str(release_gates.get("schema_version") or "").strip(),
+            "active_target_bucket": target_bucket,
+            "active_gate": _json_ready(release_gate_summary),
+        },
         "threshold_snapshot": _build_threshold_snapshot(runtime, target_profile),
         "engine": {
             "face": runtime.engines.face_mode,
@@ -452,6 +482,14 @@ def _build_report_meta(
             "auto_promote_machine_top1": False,
             "final_decision_owner": "custom_gpt_plus_human",
         },
+        "training_admission_governance": {
+            "enabled": True,
+            "mode": "manual_seal_required",
+            "manifest_file": str(training_manifest_file),
+            "manifest_summary": training_manifest_summary,
+            "winner_bank_equals_training_admission": False,
+            "final_decision_owner": "custom_gpt_plus_human",
+        },
         "review_packet": {
             "enabled": True,
             "output": "review_packet.json",
@@ -470,6 +508,14 @@ def _build_report_meta(
 def _refresh_report_meta_artifacts(runtime: RuntimeContext, report_meta: Dict[str, Any]) -> Dict[str, Any]:
     report_meta["artifact_manifest_file"] = str(artifact_manifest_path(runtime.config.paths.dir_master_truth))
     report_meta["artifact_manifest_summary"] = load_artifact_manifest_summary(runtime.config.paths.dir_master_truth)
+    training_manifest_file = training_admission_manifest_path(runtime.config.paths.dir_output)
+    report_meta["training_admission_governance"] = _deep_merge_dict(
+        report_meta.get("training_admission_governance") or {},
+        {
+            "manifest_file": str(training_manifest_file),
+            "manifest_summary": load_training_admission_manifest_summary(training_manifest_file),
+        },
+    )
     return report_meta
 
 
@@ -1742,8 +1788,21 @@ def _run_pipeline_impl(
     else:
         for item in report_items:
             item.setdefault("debug", {})["batch_gate"] = batch_gate
+    heavy_full_group_profiles = {
+        "body_gold_side90_shadow",
+        "body_gold_threequarter_review",
+    }
+    heavy_review_mode = "full_group" if str(target_profile or "").strip() in heavy_full_group_profiles else "shortlist"
+    heavy_review_max_candidates = len(report_items) if heavy_review_mode == "full_group" else 5
     shot_selection = apply_shortlist_heavy_review(
         runtime,
+        report_items,
+        shot_selection,
+        target_profile=target_profile,
+        max_candidates=heavy_review_max_candidates,
+        review_candidate_mode=heavy_review_mode,
+    )
+    shot_selection = apply_review_only_score_v2(
         report_items,
         shot_selection,
         target_profile=target_profile,

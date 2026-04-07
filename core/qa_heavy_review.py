@@ -1189,8 +1189,14 @@ def apply_shortlist_heavy_review(
     shot_selection: Dict[str, Any],
     target_profile: Optional[str] = None,
     max_candidates: int = 5,
+    review_candidate_mode: str = "shortlist",
 ) -> Dict[str, Any]:
     del target_profile
+    candidate_mode = str(review_candidate_mode or "shortlist").strip().lower()
+    if candidate_mode not in {"shortlist", "full_group"}:
+        candidate_mode = "shortlist"
+    summary_mode = "full_group" if candidate_mode == "full_group" else "shortlist_only"
+    evidence_mode = "full_group_advisory" if candidate_mode == "full_group" else "shortlist_only_advisory"
     groups = shot_selection.get("groups") or []
     provider_status = (
         runtime.providers.describe_heavy_evidence()
@@ -1200,7 +1206,7 @@ def apply_shortlist_heavy_review(
     summary: Dict[str, Any] = {
         "enabled": bool(provider_status.get("enabled")),
         "advisory_only": True,
-        "mode": "shortlist_only",
+        "mode": summary_mode,
         "evidence_schema_version": str(provider_status.get("evidence_schema_version") or HEAVY_EVIDENCE_SCHEMA),
         "provider_name": str(provider_status.get("provider_name") or _HEAVY_PROVIDER_NAME),
         "provider_family": str(provider_status.get("provider_family") or _HEAVY_PROVIDER_FAMILY),
@@ -1230,7 +1236,7 @@ def apply_shortlist_heavy_review(
             },
             lane_scope="shot_selection",
             advisory_only=True,
-            mode="shortlist_only_advisory",
+            mode=evidence_mode,
         )
         for group in groups:
             group["heavy_review"] = {
@@ -1249,7 +1255,7 @@ def apply_shortlist_heavy_review(
                 },
                 lane_scope="shortlist_group",
                 advisory_only=True,
-                mode="shortlist_only_advisory",
+                mode=evidence_mode,
             )
         return shot_selection
 
@@ -1268,7 +1274,8 @@ def apply_shortlist_heavy_review(
 
     for group in groups:
         shortlist = list(group.get("shortlist") or [])
-        if len(shortlist) == 0:
+        candidate_source_rows = list(group.get("candidates") or []) if candidate_mode == "full_group" else shortlist
+        if len(candidate_source_rows) == 0:
             group["heavy_review"] = {"enabled": False, "reason": "empty_shortlist"}
             batch_failure_reasons.append("HEAVY_REVIEW_EMPTY_SHORTLIST")
             group["heavy_evidence"] = build_heavy_evidence_bundle(
@@ -1283,13 +1290,13 @@ def apply_shortlist_heavy_review(
                 },
                 lane_scope="shortlist_group",
                 advisory_only=True,
-                mode="shortlist_only_advisory",
+                mode=evidence_mode,
             )
             continue
-        process_count = min(len(shortlist), max(1, max_candidates))
+        process_count = min(len(candidate_source_rows), max(1, max_candidates))
         candidate_rows: List[Dict[str, Any]] = []
         group_failure_reasons: List[str] = []
-        for row in shortlist[:process_count]:
+        for row in candidate_source_rows[:process_count]:
             image_path = _resolve_candidate_path(runtime, row)
             if image_path is None:
                 group_failure_reasons.extend(list(row.get("reasons") or []))
@@ -1384,10 +1391,10 @@ def apply_shortlist_heavy_review(
         if consensus_top and consensus_top == group.get("top_ranked_image"):
             consensus_matches += 1
 
-        shortlist_index = {str(row.get("record_key") or ""): row for row in shortlist}
+        candidate_row_index = {str(row.get("record_key") or ""): row for row in candidate_source_rows}
         group_evidence_bundles: List[Dict[str, Any]] = []
         for rank, advisory in enumerate(advisory_rows, start=1):
-            shortlist_row = shortlist_index.get(str(advisory.get("record_key") or ""))
+            candidate_row = candidate_row_index.get(str(advisory.get("record_key") or ""))
             evidence_bundle = build_heavy_evidence_bundle(
                 {
                     **advisory,
@@ -1395,7 +1402,7 @@ def apply_shortlist_heavy_review(
                 },
                 lane_scope="shortlist_candidate",
                 advisory_only=True,
-                mode="shortlist_only_advisory",
+                mode=evidence_mode,
                 record_key=str(advisory.get("record_key") or ""),
                 image=str(advisory.get("image") or ""),
             )
@@ -1423,9 +1430,9 @@ def apply_shortlist_heavy_review(
                 "cache_state": evidence_bundle.get("cache_state"),
                 "reasons": list(advisory.get("reasons") or []),
             }
-            if shortlist_row is not None:
-                shortlist_row["heavy_review"] = heavy_node
-                shortlist_row["heavy_evidence"] = evidence_bundle
+            if candidate_row is not None:
+                candidate_row["heavy_review"] = heavy_node
+                candidate_row["heavy_evidence"] = evidence_bundle
             item = item_by_key.get(str(advisory.get("record_key") or ""))
             if item is not None:
                 item_debug = item.setdefault("debug", {})
@@ -1529,7 +1536,7 @@ def apply_shortlist_heavy_review(
             summary=group_metrics,
             extra_metric_specs=group_extra_metric_specs,
             advisory_only=True,
-            mode="shortlist_only_advisory",
+            mode=evidence_mode,
             reasons=group_failure_reasons,
         )
         group["heavy_review"]["provider_name"] = group["heavy_evidence"].get("provider_name")
@@ -1594,7 +1601,7 @@ def apply_shortlist_heavy_review(
         },
         extra_metric_specs=shot_summary_extra_metric_specs,
         advisory_only=True,
-        mode="shortlist_only_advisory",
+        mode=evidence_mode,
         reasons=(
             batch_failure_reasons
             if len(batch_failure_reasons) > 0

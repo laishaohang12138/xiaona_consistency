@@ -1,0 +1,134 @@
+schema_version: qa_release_gates_v1
+
+release_gates:
+  BODY_GOLD.front_core:
+    release_state: primary
+    machine_status_ceiling: PASS
+    training_admission_allowed: true
+    manual_training_admission_required: true
+    optuna_fit_allowed: true
+    requires_frozen_benchmark: false
+    requires_curated_winner_bank: false
+    required_lane_families:
+      - front
+    notes: >
+      Primary front-core lane. A candidate may be sealed into the training bank
+      only after explicit GPT-plus-human review.
+
+  BODY_GOLD.three_quarter_review:
+    release_state: review
+    machine_status_ceiling: WARN
+    training_admission_allowed: false
+    manual_training_admission_required: true
+    optuna_fit_allowed: false
+    requires_frozen_benchmark: true
+    requires_curated_winner_bank: false
+    required_lane_families:
+      - three_quarter
+    notes: >
+      Three-quarter remains a review lane until canonical truth evidence and
+      frozen benchmark coverage are stronger.
+
+  BODY_GOLD.side90_shadow:
+    release_state: shadow
+    machine_status_ceiling: WARN
+    training_admission_allowed: false
+    manual_training_admission_required: true
+    optuna_fit_allowed: false
+    requires_frozen_benchmark: true
+    requires_curated_winner_bank: false
+    required_lane_families:
+      - side
+    notes: >
+      Side-90 is a shadow lane and must not be promoted into the sealed
+      training bank.
+
+  BODY_GOLD.back180_shadow:
+    release_state: shadow
+    machine_status_ceiling: WARN
+    training_admission_allowed: false
+    manual_training_admission_required: true
+    optuna_fit_allowed: false
+    requires_frozen_benchmark: true
+    requires_curated_winner_bank: false
+    required_lane_families:
+      - back
+    notes: >
+      Back-180 is a shadow lane and must not be promoted into the sealed
+      training bank.
+
+  BRIDGE.simple_outfit:
+    release_state: primary
+    machine_status_ceiling: PASS
+    training_admission_allowed: true
+    manual_training_admission_required: true
+    optuna_fit_allowed: false
+    requires_frozen_benchmark: false
+    requires_curated_winner_bank: false
+    required_lane_families:
+      - front
+      - three_quarter
+    notes: >
+      Bridge simple-outfit may enter the training bank only after manual seal
+      confirms that identity continuity stays stable under clothing transition.
+
+  BRIDGE.review:
+    release_state: review
+    machine_status_ceiling: WARN
+    training_admission_allowed: false
+    manual_training_admission_required: true
+    optuna_fit_allowed: false
+    requires_frozen_benchmark: false
+    requires_curated_winner_bank: false
+    required_lane_families:
+      - front
+      - three_quarter
+      - side
+      - back
+    notes: >
+      Generic full-body outfit review remains advisory only and cannot be
+      sealed as a release lane.
+
+  UPPER_BODY_PRODUCT:
+    release_state: review
+    machine_status_ceiling: WARN
+    training_admission_allowed: false
+    manual_training_admission_required: true
+    optuna_fit_allowed: false
+    requires_frozen_benchmark: false
+    requires_curated_winner_bank: false
+    required_lane_families:
+      - front
+      - three_quarter
+    notes: >
+      Upper-body product is not a final XiaoNa training-admission lane.
+
+  IDENTITY_LOCK:
+    release_state: review
+    machine_status_ceiling: WARN
+    training_admission_allowed: false
+    manual_training_admission_required: true
+    optuna_fit_allowed: false
+    requires_frozen_benchmark: false
+    requires_curated_winner_bank: false
+    required_lane_families:
+      - front
+      - three_quarter
+      - side
+    notes: >
+      Identity-lock is for review and filtering, not direct training admission.
+
+  IDENTITY_FILTER_ONLY:
+    release_state: filter_only
+    machine_status_ceiling: WARN
+    training_admission_allowed: false
+    manual_training_admission_required: true
+    optuna_fit_allowed: false
+    requires_frozen_benchmark: false
+    requires_curated_winner_bank: false
+    required_lane_families:
+      - front
+      - three_quarter
+      - side
+    notes: >
+      Identity-filter-only is not a sealed release lane.

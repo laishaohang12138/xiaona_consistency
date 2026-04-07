@@ -10,26 +10,66 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from core.qa_pipeline import (
-    calibrate_quality_thresholds,
-    create_runtime,
-    load_anchor_set,
-    load_thresholds_from_file,
-    main as pipeline_main,
-    print_runtime_config,
-    run_pipeline,
-)
-from core.qa_runtime import (
-    AnchorSet,
-    EngineState,
-    FaceFeat,
-    PoseFeat,
-    ProjectPaths,
-    QualityThresholds,
-    RuntimeConfig,
-    RuntimeContext,
-    save_thresholds_to_file,
-)
+_PIPELINE_IMPORT_ERROR: Optional[ModuleNotFoundError] = None
+try:
+    from core.qa_pipeline import (
+        calibrate_quality_thresholds,
+        create_runtime,
+        load_anchor_set,
+        load_thresholds_from_file,
+        main as pipeline_main,
+        print_runtime_config,
+        run_pipeline,
+    )
+except ModuleNotFoundError as exc:
+    _PIPELINE_IMPORT_ERROR = exc
+
+    def _pipeline_unavailable(*args: Any, **kwargs: Any) -> Any:
+        missing_name = str(getattr(_PIPELINE_IMPORT_ERROR, "name", "") or "unknown")
+        raise RuntimeError(
+            f"QA pipeline dependencies are unavailable because module '{missing_name}' is missing. "
+            "Install the full runtime dependencies before running shot_review or advanced CLI modes."
+        ) from _PIPELINE_IMPORT_ERROR
+
+    calibrate_quality_thresholds = _pipeline_unavailable
+    create_runtime = _pipeline_unavailable
+    load_anchor_set = _pipeline_unavailable
+    load_thresholds_from_file = _pipeline_unavailable
+    pipeline_main = _pipeline_unavailable
+    print_runtime_config = _pipeline_unavailable
+    run_pipeline = _pipeline_unavailable
+_RUNTIME_IMPORT_ERROR: Optional[ModuleNotFoundError] = None
+try:
+    from core.qa_runtime import (
+        AnchorSet,
+        EngineState,
+        FaceFeat,
+        PoseFeat,
+        ProjectPaths,
+        QualityThresholds,
+        RuntimeConfig,
+        RuntimeContext,
+        save_thresholds_to_file,
+    )
+except ModuleNotFoundError as exc:
+    _RUNTIME_IMPORT_ERROR = exc
+
+    def _runtime_unavailable(*args: Any, **kwargs: Any) -> Any:
+        missing_name = str(getattr(_RUNTIME_IMPORT_ERROR, "name", "") or "unknown")
+        raise RuntimeError(
+            f"QA runtime dependencies are unavailable because module '{missing_name}' is missing. "
+            "Install the runtime stack before running calibration or pipeline-backed modes."
+        ) from _RUNTIME_IMPORT_ERROR
+
+    AnchorSet = Any
+    EngineState = Any
+    FaceFeat = Any
+    PoseFeat = Any
+    ProjectPaths = Any
+    QualityThresholds = Any
+    RuntimeConfig = Any
+    RuntimeContext = Any
+    save_thresholds_to_file = _runtime_unavailable
 
 BASE_DIR = Path(__file__).resolve().parent
 main = pipeline_main
@@ -91,9 +131,17 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
         "label": "确认 winner",
         "summary": "把人工确认通过的 winner 写入 winner bank，不等于主训练集自动准入。",
     },
+    "seal_training_admission": {
+        "label": "封印训练准入",
+        "summary": "把通过 release gate 的候选写入 training admission manifest，和 winner bank 彻底分开。",
+    },
     "winner_bank_status": {
         "label": "查看 winner bank",
         "summary": "查看已确认样本、最新漂移和下一步人工动作。",
+    },
+    "training_admission_status": {
+        "label": "查看训练准入",
+        "summary": "查看 training admission manifest 的已封印样本、bucket 分布和最近 seal 记录。",
     },
     "setup_external_models": {
         "label": "准备外部模型",
@@ -282,7 +330,9 @@ def _select_workflow_interactively(default: str = "shot_review") -> str:
             ("shot_review", "审一轮 shot 批次，输出 QA、排序和 review packet"),
             ("inspect_review_packet", "查看最近一次 review packet 的批次摘要和复核提示"),
             ("promote_winner", "把人工确认的 winner 写入 winner bank"),
+            ("seal_training_admission", "把通过 release gate 的候选写入 training admission manifest"),
             ("winner_bank_status", "查看 winner bank 状态与最新跨批次漂移报告"),
+            ("training_admission_status", "查看 training admission manifest 的最新封印状态"),
             ("setup_external_models", "自动准备 external/3DDFA-V3 与 external/4D-Humans 及补丁"),
             ("advanced_cli", "进入高级工程模式（qa / benchmark / optuna / calibrate）"),
         ],
@@ -389,9 +439,12 @@ def _default_review_paths(base_dir: Path) -> Dict[str, Path]:
     output_dir = (base_dir / "outputs").resolve()
     return {
         "review_packet": output_dir / "review_packet.json",
+        "gpt_review_packet": output_dir / "gpt_review_packet.json",
+        "review_artifacts": output_dir / "review_artifacts.json",
         "winner_bank_candidate": output_dir / "winner_bank_candidate.json",
         "winner_bank_report": output_dir / "winner_bank_report.json",
         "winner_bank": output_dir / "winner_bank.json",
+        "training_admission_manifest": output_dir / "training_admission_manifest.json",
     }
 
 
@@ -482,6 +535,9 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
     identity = batch.get("identity_summary") or {}
     geometry = batch.get("geometry_summary") or {}
     admission = batch.get("admission_advice") or {}
+    release_gate = batch.get("release_gate") or admission.get("release_gate") or {}
+    training_admission = packet.get("training_admission_status") or batch.get("training_admission_governance") or {}
+    training_manifest_summary = training_admission.get("manifest_summary") or {}
     ranked = packet.get("ranked_review_packet") or {}
     groups = list(ranked.get("groups") or [])
     primary_group = groups[0] if len(groups) > 0 and isinstance(groups[0], dict) else {}
@@ -547,6 +603,21 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
     print(f"  第一名: {selection.get('top_ranked_image')}")
     print(f"  复核窗: top {selection.get('manual_review_window')}")
     print(f"  批次闸门: {batch_gate.get('status')} | reasons={batch_gate.get('reasons') or []}")
+    if release_gate:
+        print(
+            "  Release Gate: "
+            f"bucket={release_gate.get('target_bucket')} "
+            f"| state={release_gate.get('release_state')} "
+            f"| ceiling={release_gate.get('machine_status_ceiling')} "
+            f"| seal_allowed={release_gate.get('training_admission_allowed')}"
+        )
+    if training_admission:
+        print(
+            "  准入封印: "
+            f"entries={training_manifest_summary.get('entry_count')} "
+            f"| last={training_manifest_summary.get('last_sealed_at_utc')} "
+            f"| file={training_admission.get('manifest_file')}"
+        )
     if heavy_evidence:
         heavy_summary = heavy_evidence.get("summary") or {}
         heavy_ui = _heavy_provider_ui(heavy_evidence.get("provider_name"))
@@ -663,7 +734,9 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
         print(f"  主要风险: {batch.get('primary_risks') or []}")
     print(
         f"  复核建议: target={admission.get('target_bucket')} "
-        f"| action={admission.get('suggested_action')} | blockers={admission.get('blockers') or []}"
+        f"| action={admission.get('suggested_action')} "
+        f"| seal={admission.get('eligible_for_training_seal')} "
+        f"| blockers={admission.get('blockers') or []}"
     )
     print(f"  人工提示: {batch.get('review_guidance') or []}")
 
@@ -689,6 +762,23 @@ def _print_winner_bank_summary(report: Dict[str, Any]) -> None:
         focus = list(row.get("manual_focus") or [])[:2]
         if focus:
             print(f"  复核重点: {focus}")
+
+
+def _print_training_admission_summary(summary: Dict[str, Any]) -> None:
+    print("\n[Training Admission 摘要]")
+    print(f"  可用    : {summary.get('available')} | entries={summary.get('entry_count')}")
+    print(f"  原因    : {summary.get('reason')}")
+    print(f"  文件    : {summary.get('manifest_file')}")
+    print(f"  最近封印: {summary.get('last_sealed_at_utc')}")
+    bucket_counts = summary.get("bucket_counts") or {}
+    if bucket_counts:
+        print(f"  Bucket 分布: {bucket_counts}")
+    recent_entries = list(summary.get("recent_entries") or [])
+    for row in recent_entries[:3]:
+        print(
+            f"  已封印样本: {row.get('image')} | bucket={row.get('target_bucket')} "
+            f"| owner={row.get('owner')} | at={row.get('sealed_at_utc')}"
+        )
 
 
 def _describe_alignment_bucket(value: Any) -> str:
@@ -1089,7 +1179,13 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
     if workflow == "setup_external_models":
         return
 
-    if workflow in {"inspect_review_packet", "promote_winner", "winner_bank_status"}:
+    if workflow in {
+        "inspect_review_packet",
+        "promote_winner",
+        "seal_training_admission",
+        "winner_bank_status",
+        "training_admission_status",
+    }:
         return
 
     if args.mode is None:
@@ -1229,13 +1325,28 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         _print_review_packet_summary(packet)
         _describe_canonical_truth_state(packet)
         print(f"[复核摘要文件] {paths['review_packet']}")
-        print("[交互引导] 如需继续深挖，请直接基于这份 review_packet.json 做分析。")
+        if paths["gpt_review_packet"].exists():
+            print(f"[GPT 分析包] {paths['gpt_review_packet']}")
+            if paths["review_artifacts"].exists():
+                print(f"[产物索引] {paths['review_artifacts']}")
+            print("[交互引导] 默认发 gpt_review_packet.json 给 GPT 做批次分析。")
+            print("[交互引导] 只有做跨批次漂移分析时，再额外附带 winner_bank_report.json。")
+        else:
+            print("[交互引导] 当前尚未生成 gpt_review_packet.json，请先重跑本轮 QA。")
         return 0
 
     if workflow == "winner_bank_status":
         report = _load_json_file(paths["winner_bank_report"], "winner bank report")
         _print_winner_bank_summary(report)
         print(f"[Winner Bank 报告] {paths['winner_bank_report']}")
+        return 0
+
+    if workflow == "training_admission_status":
+        from core.qa_training_admission import load_training_admission_manifest_summary
+
+        summary = load_training_admission_manifest_summary(paths["training_admission_manifest"])
+        _print_training_admission_summary(summary)
+        print(f"[Training Admission 清单] {paths['training_admission_manifest']}")
         return 0
 
     if workflow == "promote_winner":
@@ -1285,6 +1396,86 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         print("[交互引导] 已写入 winner bank。建议下一次重新跑 shot review，让系统用新的 curated bank 做跨批次漂移检查。")
+        return 0
+
+    if workflow == "seal_training_admission":
+        from core.qa_training_admission import (
+            load_training_admission_manifest_summary,
+            seal_training_admission_entry,
+        )
+        from core.qa_winner_bank import load_winner_bank_candidates
+
+        candidate_payload = load_winner_bank_candidates(paths["winner_bank_candidate"])
+        if not candidate_payload.get("available"):
+            raise ValueError(
+                f"winner bank candidate file is not ready: {paths['winner_bank_candidate']} "
+                f"({candidate_payload.get('reason')})"
+            )
+        entries = list(candidate_payload.get("entries") or [])
+        review_packet = _load_json_file(paths["review_packet"], "review packet") if paths["review_packet"].exists() else {}
+        if review_packet:
+            _print_review_packet_summary(review_packet)
+            _describe_canonical_truth_state(review_packet)
+            _print_shortlist_review_for_promotion(review_packet)
+        selected_entry: Optional[Dict[str, Any]] = None
+        if args.winner_rank is not None:
+            selected_entry = _select_winner_candidate_by_rank(entries, args.winner_rank)
+        elif args.winner_image:
+            needle = str(args.winner_image).strip()
+            for entry in entries:
+                if needle in {
+                    str(entry.get("image") or "").strip(),
+                    str(entry.get("record_key") or "").strip(),
+                }:
+                    selected_entry = dict(entry)
+                    break
+            if selected_entry is None:
+                raise ValueError(f"winner candidate not found: {needle}")
+        elif len(entries) == 1 and not args.interactive:
+            selected_entry = dict(entries[0])
+        elif args.interactive:
+            selected_entry = _select_winner_candidate_interactively(entries)
+        else:
+            raise ValueError(
+                "seal_training_admission requires --winner-rank or --winner-image when multiple candidates exist"
+            )
+
+        manual_owner = str(args.admission_owner or "").strip()
+        if args.interactive and not manual_owner:
+            manual_owner = _prompt_text("请输入这次 training admission seal 的负责人", os.environ.get("USERNAME", ""))
+        if not manual_owner:
+            raise ValueError("seal_training_admission requires --admission-owner")
+
+        manual_note = args.admission_note
+        if args.interactive and not manual_note:
+            manual_note = _prompt_text("可选：为这次 training admission seal 写一句备注", "")
+
+        batch_summary = (review_packet.get("batch_summary") or {}) if review_packet else {}
+        admission = batch_summary.get("admission_advice") or {}
+        report_meta = ((review_packet.get("debug") or {}).get("report_meta") or {}) if review_packet else {}
+        result = seal_training_admission_entry(
+            selected_entry,
+            paths["training_admission_manifest"],
+            release_gate=admission.get("release_gate") or batch_summary.get("release_gate") or {},
+            threshold_hash=((report_meta.get("threshold_snapshot") or {}).get("hash")),
+            anchor_snapshot=report_meta.get("anchor_registry_snapshot") or {},
+            source_batch={
+                "target_profile": batch_summary.get("target_profile"),
+                "review_packet_generated_at_utc": review_packet.get("generated_at_utc") if review_packet else None,
+                "report_generated_at_utc": report_meta.get("generated_at_utc"),
+                "top_ranked_image": ((batch_summary.get("selection") or {}).get("top_ranked_image")),
+            },
+            source_files=(review_packet.get("source_files") or {}) if review_packet else {},
+            manual_owner=manual_owner,
+            manual_note=manual_note,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        if result.get("status") != "ok":
+            print("[交互引导] 当前 release gate 不允许封印 training admission。请先看 review packet 的 release gate 和 blockers。")
+            return 1
+        summary = load_training_admission_manifest_summary(paths["training_admission_manifest"])
+        _print_training_admission_summary(summary)
+        print("[交互引导] 已写入 training admission manifest。winner bank 与正式训练准入现已物理分开。")
         return 0
 
     raise ValueError(f"unsupported workflow: {workflow}")
@@ -1397,7 +1588,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "shot_review",
             "inspect_review_packet",
             "promote_winner",
+            "seal_training_admission",
             "winner_bank_status",
+            "training_admission_status",
             "setup_external_models",
             "advanced_cli",
         ],
@@ -1436,16 +1629,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--winner-image",
-        help="Image name or record_key promoted into outputs/winner_bank.json in promote_winner workflow.",
+        help="Image name or record_key selected in promote_winner / seal_training_admission workflow.",
     )
     parser.add_argument(
         "--winner-rank",
         type=int,
-        help="Shortlist rank promoted into outputs/winner_bank.json in promote_winner workflow.",
+        help="Shortlist rank selected in promote_winner / seal_training_admission workflow.",
     )
     parser.add_argument(
         "--winner-note",
         help="Optional manual note attached when promoting a winner into outputs/winner_bank.json.",
+    )
+    parser.add_argument(
+        "--admission-owner",
+        help="Manual owner recorded when sealing a candidate into outputs/training_admission_manifest.json.",
+    )
+    parser.add_argument(
+        "--admission-note",
+        help="Optional manual note attached when sealing a candidate into outputs/training_admission_manifest.json.",
     )
     parser.add_argument(
         "--benchmark-report",

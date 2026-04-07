@@ -228,6 +228,99 @@ def _load_json_if_exists(path_str: Any) -> Optional[Dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
+def _clean_dict(payload: Dict[str, Any]) -> Dict[str, Any]:
+    cleaned: Dict[str, Any] = {}
+    for key, value in payload.items():
+        if value in (None, "", [], {}):
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
+def _compact_selection_comparison(payload: Any) -> Dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    production_method = str(
+        data.get("production_method") or data.get("preferred_method") or ""
+    ).strip()
+    legacy_retired = bool(data.get("legacy_retired_for_production")) or production_method == "review_only_score_v2"
+    comparison_mode = str(data.get("comparison_mode") or "").strip()
+    if legacy_retired and comparison_mode == "unlabeled_truth_proxy":
+        comparison_mode = "legacy_monitor_only"
+    compact = {
+        "comparison_mode": comparison_mode,
+        "production_method": production_method,
+        "legacy_retired_for_production": legacy_retired,
+        "legacy_monitor_preferred_method": str(data.get("legacy_monitor_preferred_method") or "").strip(),
+        "truth_proxy_coverage": _round_or_none(data.get("truth_proxy_coverage")),
+        "decision_reasons": list(data.get("decision_reasons") or [])[:4],
+    }
+    return _clean_dict(compact)
+
+
+def _compact_release_gate(payload: Any) -> Dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    return _clean_dict(
+        {
+            "target_bucket": str(data.get("target_bucket") or "").strip(),
+            "release_state": str(data.get("release_state") or "").strip(),
+            "machine_status_ceiling": str(data.get("machine_status_ceiling") or "").strip(),
+            "training_admission_allowed": bool(data.get("training_admission_allowed")),
+            "required_lane_families": list(data.get("required_lane_families") or []),
+            "notes": str(data.get("notes") or "").strip(),
+        }
+    )
+
+
+def _compact_admission_advice(payload: Any) -> Dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    suggested_action = str(
+        data.get("suggested_action") or data.get("suggestion") or ""
+    ).strip()
+    return _clean_dict(
+        {
+            "target_bucket": str(data.get("target_bucket") or "").strip(),
+            "suggested_action": suggested_action,
+            "machine_ceiling": str(data.get("machine_ceiling") or "").strip(),
+            "eligible_for_training_seal": data.get("eligible_for_training_seal"),
+            "blockers": list(data.get("blockers") or [])[:6],
+            "supports": list(data.get("supports") or [])[:4],
+        }
+    )
+
+
+def _strip_legacy_review_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    cleaned = dict(row)
+    for key in (
+        "selection_score_legacy",
+        "legacy_review_only_status",
+        "legacy_review_only_confidence",
+        "rank_legacy",
+        "review_bucket_legacy",
+    ):
+        cleaned.pop(key, None)
+    delta_vs_top = cleaned.get("delta_vs_top")
+    if isinstance(delta_vs_top, dict):
+        delta_cleaned = dict(delta_vs_top)
+        delta_cleaned.pop("selection_score_legacy", None)
+        cleaned["delta_vs_top"] = delta_cleaned
+    return cleaned
+
+
+def _compact_heavy_review_summary(payload: Any) -> Dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    compact = {
+        "provider_name": str(data.get("provider_name") or "").strip(),
+        "provider_version": str(data.get("provider_version") or "").strip(),
+        "cache_state": str(data.get("cache_state") or "").strip(),
+        "coverage": _round_or_none(data.get("coverage")),
+        "parser_confidence": _round_or_none(data.get("parser_confidence")),
+        "parser_consensus_score": _round_or_none(data.get("parser_consensus_score")),
+        "enhanced_selection_score": _round_or_none(data.get("enhanced_selection_score")),
+        "rank_in_heavy_review": data.get("rank_in_heavy_review"),
+    }
+    return _clean_dict(compact)
+
+
 def _extract_canonical_truth_summary(heavy_evidence: Any) -> Dict[str, Any]:
     bundle = heavy_evidence if isinstance(heavy_evidence, dict) else {}
     metrics = list(bundle.get("metrics") or [])
@@ -331,6 +424,8 @@ def _build_batch_summary(report_payload: Dict[str, Any]) -> Dict[str, Any]:
         "heavy_provider_status": report_meta.get("heavy_provider_status") or {},
         "view_classifier_status": report_meta.get("view_classifier_status") or {},
         "face_canonical_status": report_meta.get("face_canonical_status") or {},
+        "release_gate": report_meta.get("release_gate") or {},
+        "training_admission_governance": report_meta.get("training_admission_governance") or {},
         "heavy_evidence_summary": shot_selection.get("heavy_evidence_summary") or {},
         "canonical_truth_summary": _extract_canonical_truth_summary(shot_selection.get("heavy_evidence_summary") or {}),
         "group_count": shot_selection.get("group_count"),
@@ -347,10 +442,14 @@ def _build_batch_summary(report_payload: Dict[str, Any]) -> Dict[str, Any]:
             "recommendation": batch_gate.get("recommendation"),
         },
         "selection": {
+            "selection_method": primary_group.get("selection_method") or shot_selection.get("selection_method"),
             "top_ranked_image": primary_group.get("top_ranked_image"),
             "selection_gap_top2": primary_group.get("selection_gap_top2"),
             "manual_review_window": primary_group.get("manual_review_window"),
             "shortlist_size": primary_group.get("shortlist_size"),
+            "selection_comparison": _compact_selection_comparison(
+                primary_group.get("selection_comparison") or shot_selection.get("review_only_score_v2_summary") or {}
+            ),
         },
         "identity_summary": {
             "identity_continuity": batch_reference.get("identity_continuity"),
@@ -382,9 +481,11 @@ def _build_ranked_review_packet(
     for group in shot_selection.get("groups") or []:
         shortlist_rows: List[Dict[str, Any]] = []
         for row in group.get("shortlist") or []:
-            enriched = dict(row)
+            enriched = _strip_legacy_review_fields(dict(row))
             record_key = str(row.get("record_key") or row.get("image") or "").strip()
             item_row = item_lookup.get(record_key) or {}
+            enriched["heavy_review"] = _compact_heavy_review_summary(enriched.get("heavy_review") or {})
+            enriched.pop("heavy_evidence", None)
             enriched["canonical_truth_summary"] = _extract_canonical_truth_summary(
                 row.get("heavy_evidence") or (item_row.get("canonical_truth_summary") if isinstance(item_row, dict) else {})
             )
@@ -425,10 +526,12 @@ def _build_ranked_review_packet(
                 "look_key": group.get("look_key"),
                 "image_count": group.get("image_count"),
                 "top_ranked_image": group.get("top_ranked_image"),
+                "selection_method": group.get("selection_method") or shot_selection.get("selection_method"),
                 "selection_gap_top2": group.get("selection_gap_top2"),
                 "manual_review_window": group.get("manual_review_window"),
                 "shortlist_size": group.get("shortlist_size"),
                 "review_guidance": list(group.get("review_guidance") or []),
+                "selection_comparison": _compact_selection_comparison(group.get("selection_comparison") or {}),
                 "batch_reference": dict(group.get("batch_reference") or {}),
                 "shortlist": shortlist_rows,
                 "pairwise_compare_cards": pairwise_rows,
@@ -470,8 +573,17 @@ def _summarize_item(
         "task_profile": item.get("task_profile"),
         "rank": (candidate_row or {}).get("rank"),
         "review_bucket": (candidate_row or {}).get("review_bucket"),
+        "selection_method": (candidate_row or {}).get("selection_score_method"),
         "selection_score": (candidate_row or {}).get("selection_score"),
-        "delta_vs_top": (candidate_row or {}).get("delta_vs_top"),
+        "review_only_score_v2": (candidate_row or {}).get("review_only_score_v2"),
+        "review_only_confidence_v2": (candidate_row or {}).get("review_only_confidence_v2"),
+        "review_only_status_v2": (candidate_row or {}).get("review_only_status_v2"),
+        "review_only_breakdown_v2": (candidate_row or {}).get("review_only_breakdown_v2"),
+        "review_only_hard_vetoes_v2": list((candidate_row or {}).get("review_only_hard_vetoes_v2") or []),
+        "review_only_soft_flags_v2": list((candidate_row or {}).get("review_only_soft_flags_v2") or []),
+        "review_only_policy_note_v2": (candidate_row or {}).get("review_only_policy_note_v2"),
+        "why_not_high_confidence_v2": list((candidate_row or {}).get("why_not_high_confidence_v2") or []),
+        "delta_vs_top": (_strip_legacy_review_fields({"delta_vs_top": (candidate_row or {}).get("delta_vs_top")}).get("delta_vs_top")),
         "lane": {
             "view_lane": debug.get("view_lane"),
             "view_lane_detail": debug.get("view_lane_detail"),
@@ -559,6 +671,200 @@ def _build_item_analysis(
     return rows
 
 
+def _compact_face_canonical_for_gpt(payload: Any) -> Dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    return _clean_dict(
+        {
+            "available": data.get("available"),
+            "canonical_face_identity_similarity": _round_or_none(data.get("canonical_face_identity_similarity")),
+            "canonical_face_landmark_similarity": _round_or_none(data.get("canonical_face_landmark_similarity")),
+            "pose_delta_deg": _round_or_none(data.get("pose_delta_deg")),
+            "face_pose_normalization_confidence": _round_or_none(data.get("face_pose_normalization_confidence")),
+        }
+    )
+
+
+def _compact_candidate_for_gpt(row: Dict[str, Any]) -> Dict[str, Any]:
+    breakdown = row.get("review_only_breakdown_v2") or {}
+    lane = row.get("lane") or {}
+    truth_center = {
+        "face_truth_support": _round_or_none((breakdown or {}).get("face_truth_support")),
+        "body_truth_support": _round_or_none((breakdown or {}).get("body_truth_support")),
+        "truth_center_score": _round_or_none((breakdown or {}).get("truth_center_score")),
+        "support_only_score": _round_or_none((breakdown or {}).get("support_only_score")),
+    }
+    compact = {
+        "image": row.get("image"),
+        "rank": row.get("rank"),
+        "review_bucket": row.get("review_bucket"),
+        "review_only_status": row.get("review_only_status_v2"),
+        "selection_score": _round_or_none(row.get("selection_score")),
+        "review_only_confidence": _round_or_none(row.get("review_only_confidence_v2")),
+        "lane": _clean_dict(
+            {
+                "view_lane": str((lane or {}).get("view_lane") or "").strip(),
+                "view_lane_detail": str((lane or {}).get("view_lane_detail") or "").strip(),
+            }
+        ),
+        "truth_center": _clean_dict(truth_center),
+        "canonical_truth_summary": _clean_dict(dict(row.get("canonical_truth_summary") or {})),
+        "face_canonical_summary": _compact_face_canonical_for_gpt(row.get("face_canonical_summary") or {}),
+        "hard_vetoes": list(row.get("review_only_hard_vetoes_v2") or [])[:6],
+        "soft_flags": list(row.get("review_only_soft_flags_v2") or [])[:6],
+        "why_not_high_confidence": list(row.get("why_not_high_confidence_v2") or [])[:4],
+        "review_focus": list(((row.get("review_focus") or {}).get("manual_focus")) or [])[:4],
+        "top_reasons": list(row.get("top_reasons") or [])[:6],
+        "admission_advice": _compact_admission_advice(row.get("admission_advice") or {}),
+    }
+    policy_note = str(row.get("review_only_policy_note_v2") or "").strip()
+    if policy_note:
+        compact["policy_note"] = policy_note
+    return _clean_dict(compact)
+
+
+def _first_rows_by_status(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    status: str,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    picked = [
+        row
+        for row in rows
+        if str(row.get("review_only_status_v2") or "").strip().upper() == status
+    ]
+    picked.sort(
+        key=lambda row: (
+            9999 if row.get("rank") is None else int(row.get("rank")),
+            str(row.get("image") or ""),
+        )
+    )
+    return [_compact_candidate_for_gpt(row) for row in picked[:limit]]
+
+
+def _build_gpt_review_packet(
+    review_packet: Dict[str, Any],
+    *,
+    review_packet_file: Path,
+    gpt_review_packet_file: Path,
+) -> Dict[str, Any]:
+    batch_summary = dict(review_packet.get("batch_summary") or {})
+    ranked_review_packet = review_packet.get("ranked_review_packet") or {}
+    items = list(review_packet.get("items") or [])
+    selection = batch_summary.get("selection") or {}
+    gpt_packet = {
+        "schema_version": "gpt_review_packet_v1",
+        "generated_at_utc": review_packet.get("generated_at_utc"),
+        "system_role": review_packet.get("system_role"),
+        "final_decision_owner": review_packet.get("final_decision_owner"),
+        "analysis_scope": {
+            "default_send_to_gpt": ["gpt_review_packet.json"],
+            "optional_companion_files": {
+                "winner_bank_report.json": "only when analyzing cross-batch drift",
+                "training_admission_manifest.json": "only when analyzing sealed training admissions",
+            },
+            "do_not_send_by_default": [
+                "qa_report.json",
+                "ranked_candidates.json",
+                "winner_bank_candidate.json",
+                "outputs/heavy_evidence_cache/**",
+            ],
+        },
+        "source_files": _clean_dict(
+            {
+                "review_packet": str(review_packet_file),
+                "gpt_review_packet": str(gpt_review_packet_file),
+                "winner_bank_report": (review_packet.get("source_files") or {}).get("winner_bank_report"),
+                "training_admission_manifest": (review_packet.get("source_files") or {}).get("training_admission_manifest"),
+            }
+        ),
+        "batch": {
+            "target_profile": batch_summary.get("target_profile"),
+            "run_status": batch_summary.get("run_status"),
+            "input_count": batch_summary.get("input_count"),
+            "selection_method": selection.get("selection_method"),
+            "top_ranked_image": selection.get("top_ranked_image"),
+            "selection_gap_top2": selection.get("selection_gap_top2"),
+            "manual_review_window": selection.get("manual_review_window"),
+            "shortlist_size": selection.get("shortlist_size"),
+            "selection_monitor": _compact_selection_comparison(selection.get("selection_comparison") or {}),
+            "review_only_status_counts": _status_counts(items, "review_only_status_v2"),
+            "main_status_counts": batch_summary.get("status_counts") or {},
+            "lane_detail_counts": batch_summary.get("lane_detail_counts") or {},
+            "primary_risks": list(batch_summary.get("primary_risks") or [])[:6],
+            "lane_risk_focus": _clean_dict(dict(batch_summary.get("lane_risk_focus") or {})),
+            "release_gate": _compact_release_gate(batch_summary.get("release_gate") or {}),
+            "admission_advice": _compact_admission_advice(batch_summary.get("admission_advice") or {}),
+        },
+        "priority_review_queue": {
+            "pass_candidates": _first_rows_by_status(items, status="PASS", limit=12),
+            "warn_watchlist": _first_rows_by_status(items, status="WARN", limit=8),
+            "fail_watchlist": _first_rows_by_status(items, status="FAIL", limit=8),
+        },
+        "top_candidates": [
+            _compact_candidate_for_gpt(row)
+            for row in list(ranked_review_packet.get("top_candidates") or [])[:5]
+            if isinstance(row, dict)
+        ],
+    }
+    return gpt_packet
+
+
+def _build_review_artifacts_index(
+    *,
+    output_dir: Path,
+    review_packet_file: Path,
+    gpt_review_packet_file: Path,
+    report_file: Path,
+    ranked_candidates_file: Path,
+    winner_bank_report_file: Any,
+    training_admission_manifest_file: Any,
+) -> Dict[str, Any]:
+    return {
+        "schema_version": "review_artifacts_v1",
+        "default_send_to_gpt": [
+            {
+                "file": str(gpt_review_packet_file),
+                "purpose": "default compact packet for GPT batch analysis",
+            }
+        ],
+        "human_deep_review": [
+            {
+                "file": str(review_packet_file),
+                "purpose": "rich structured packet for human or deep GPT review",
+            }
+        ],
+        "optional_companion_files": [
+            {
+                "file": str(winner_bank_report_file or ""),
+                "purpose": "attach only for cross-batch drift analysis",
+            },
+            {
+                "file": str(training_admission_manifest_file or ""),
+                "purpose": "attach only for training admission or seal analysis",
+            },
+        ],
+        "internal_debug_only": [
+            {
+                "file": str(report_file),
+                "purpose": "full internal replay/debug ledger",
+            },
+            {
+                "file": str(ranked_candidates_file),
+                "purpose": "full machine ranking and component details",
+            },
+            {
+                "file": str((output_dir / "winner_bank_candidate.json")),
+                "purpose": "machine candidate export, not for default GPT analysis",
+            },
+            {
+                "file": str((output_dir / "heavy_evidence_cache")),
+                "purpose": "heavy cache directory, never send by default",
+            },
+        ],
+    }
+
+
 def build_review_packet(
     report_payload: Dict[str, Any],
     output_dir: Path,
@@ -577,8 +883,10 @@ def build_review_packet(
         for row in item_rows
         if str(row.get("record_key") or row.get("image") or "").strip()
     }
+    review_packet_file = output_dir / "review_packet.json"
+    gpt_review_packet_file = output_dir / "gpt_review_packet.json"
     review_packet = {
-        "schema_version": "review_packet_v1_5",
+        "schema_version": "review_packet_v1_7",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "system_role": "evidence_only",
         "final_decision_owner": "custom_gpt_plus_human",
@@ -590,13 +898,16 @@ def build_review_packet(
                 "compare top candidates in ranked_review_packet and pairwise cards",
                 "confirm the final winner manually",
                 "promote the human-approved winner into winner_bank if needed",
+                "seal the approved training item into training_admission_manifest if the release gate allows it",
             ],
         },
         "source_files": {
             "qa_report": str(report_file),
             "ranked_candidates": str(ranked_candidates_file),
+            "gpt_review_packet": str(gpt_review_packet_file),
             "winner_bank_candidate": winner_meta.get("candidate_file"),
             "winner_bank_report": winner_meta.get("drift_report_file"),
+            "training_admission_manifest": ((report_payload.get("report_meta") or {}).get("training_admission_governance") or {}).get("manifest_file"),
         },
         "batch_summary": {
             **batch_summary,
@@ -627,12 +938,29 @@ def build_review_packet(
                 "target_profile": (winner_bank_candidate or {}).get("target_profile"),
             },
         },
+        "training_admission_status": (batch_summary.get("training_admission_governance") or {}),
         "items": item_rows,
         "debug": {
             "report_meta": report_payload.get("report_meta"),
             "collection_summary": (report_payload.get("collection_aggregates") or {}).get("summary"),
         },
     }
-    review_packet_file = output_dir / "review_packet.json"
     review_packet_file.write_text(json.dumps(review_packet, indent=2, ensure_ascii=False), encoding="utf-8")
+    gpt_review_packet = _build_gpt_review_packet(
+        review_packet,
+        review_packet_file=review_packet_file,
+        gpt_review_packet_file=gpt_review_packet_file,
+    )
+    gpt_review_packet_file.write_text(json.dumps(gpt_review_packet, indent=2, ensure_ascii=False), encoding="utf-8")
+    review_artifacts = _build_review_artifacts_index(
+        output_dir=output_dir,
+        review_packet_file=review_packet_file,
+        gpt_review_packet_file=gpt_review_packet_file,
+        report_file=report_file,
+        ranked_candidates_file=ranked_candidates_file,
+        winner_bank_report_file=winner_meta.get("drift_report_file"),
+        training_admission_manifest_file=((report_payload.get("report_meta") or {}).get("training_admission_governance") or {}).get("manifest_file"),
+    )
+    review_artifacts_file = output_dir / "review_artifacts.json"
+    review_artifacts_file.write_text(json.dumps(review_artifacts, indent=2, ensure_ascii=False), encoding="utf-8")
     return review_packet

@@ -5,6 +5,7 @@ __pycache__/
 
 # Local runtime and batch artifacts
 outputs/
+outputs_snapshots/
 input/
 calib_pass/
 external/
