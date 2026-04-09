@@ -112,6 +112,8 @@ def _normalize_face_canonical_result(node: Any) -> Dict[str, Any]:
         "face_pose_normalization_confidence": raw.get("face_pose_normalization_confidence"),
         "canonical_face_landmark_similarity": raw.get("canonical_face_landmark_similarity"),
         "canonical_face_identity_similarity": raw.get("canonical_face_identity_similarity"),
+        "canonical_face_topology_similarity": raw.get("canonical_face_topology_similarity"),
+        "canonical_face_topology_delta": raw.get("canonical_face_topology_delta"),
         "pose_delta_similarity": raw.get("pose_delta_similarity"),
         "pose_delta_deg": raw.get("pose_delta_deg"),
         "yaw_deg": raw.get("yaw_deg"),

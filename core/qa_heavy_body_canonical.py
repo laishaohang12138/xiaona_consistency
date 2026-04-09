@@ -26,6 +26,16 @@ _CACHE_SCHEMA = "body_canonical_cache_v1"
 _MASTER_ARTIFACT_NAME = "body_master_shape_only.json"
 _DEFAULT_MEASUREMENT_SCALE = 0.08
 _MIN_CANONICAL_MEASUREMENTS = 6
+_BODY_TOPOLOGY_MEASUREMENT_ORDER = [
+    "shoulder_width_to_torso",
+    "hip_width_to_torso",
+    "shoulder_to_hip_ratio",
+    "leg_length_to_torso",
+    "upper_to_lower_leg_ratio",
+    "left_right_leg_balance",
+    "foot_length_to_leg",
+    "left_right_foot_balance",
+]
 _DEFAULT_SMPL_MODEL = "basicModel_neutral_lbs_10_207_0_v1.0.0.pkl"
 _ALT_SMPL_MODELS = [
     "basicModel_neutral_lbs_10_207_0_v1.1.0.pkl",
@@ -68,6 +78,16 @@ def _vector_signature_ref(name: str, value: Any) -> Dict[str, Any]:
     }
 
 
+def _topology_signature_ref(name: str, value: Any) -> Dict[str, Any]:
+    vector = _normalize_vector(value)
+    return {
+        "kind": "signature",
+        "name": str(name),
+        "available": vector is not None and vector.size > 0,
+        "dimension": int(vector.shape[0]) if vector is not None else 0,
+    }
+
+
 def _measurement_mapping(value: Any) -> Dict[str, float]:
     if not isinstance(value, dict):
         return {}
@@ -78,6 +98,58 @@ def _measurement_mapping(value: Any) -> Dict[str, float]:
         if key and numeric is not None:
             out[key] = float(numeric)
     return out
+
+
+def _measurement_vector(measurements: Dict[str, float]) -> Optional[np.ndarray]:
+    if len(measurements) == 0:
+        return None
+    preferred = [key for key in _BODY_TOPOLOGY_MEASUREMENT_ORDER if key in measurements]
+    if len(preferred) >= _MIN_CANONICAL_MEASUREMENTS:
+        keys = preferred
+    else:
+        keys = sorted(measurements.keys())
+        if len(keys) < _MIN_CANONICAL_MEASUREMENTS:
+            return None
+    values = [float(measurements[key]) for key in keys]
+    try:
+        return np.asarray(values, dtype=np.float32)
+    except Exception:
+        return None
+
+
+def _body_topology_signature(shape_beta: Any, measurements: Dict[str, float]) -> Optional[np.ndarray]:
+    beta = _normalize_vector(shape_beta)
+    measurement_vector = _measurement_vector(measurements)
+    if beta is None and measurement_vector is None:
+        return None
+
+    parts: List[np.ndarray] = []
+    if beta is not None:
+        beta_centered = beta - np.mean(beta)
+        beta_norm = float(np.linalg.norm(beta_centered))
+        if beta_norm > 1e-8:
+            beta_centered = beta_centered / beta_norm
+        parts.append(beta_centered.astype(np.float32))
+        parts.append(np.asarray(np.quantile(beta, [0.1, 0.5, 0.9]), dtype=np.float32))
+
+    if measurement_vector is not None:
+        measure_scale = max(float(np.mean(np.abs(measurement_vector))), 1e-6)
+        measurement_normalized = measurement_vector / measure_scale
+        parts.append(measurement_normalized.astype(np.float32))
+        parts.append(np.asarray(np.quantile(measurement_normalized, [0.1, 0.25, 0.5, 0.75, 0.9]), dtype=np.float32))
+        parts.append(
+            np.asarray(
+                [
+                    float(np.max(measurement_normalized) - np.min(measurement_normalized)),
+                    float(np.std(measurement_normalized)),
+                ],
+                dtype=np.float32,
+            )
+        )
+
+    if len(parts) == 0:
+        return None
+    return np.concatenate(parts, axis=0)
 
 
 def _json_ready(value: Any) -> Any:
@@ -336,6 +408,10 @@ def _build_direct_artifact(
         _pick_field(record, aliases=["coverage", "visible_ratio", "mask_coverage"]),
         None,
     )
+    topology_signature = _body_topology_signature(
+        _pick_field(record, aliases=["betas", "shape_beta", "pred_betas", "smpl_betas", "shape"]),
+        measurements,
+    )
     return {
         "schema_version": _ARTIFACT_SCHEMA,
         "provider_name": _PROVIDER_NAME,
@@ -347,6 +423,7 @@ def _build_direct_artifact(
         "shape_beta": _normalize_vector(
             _pick_field(record, aliases=["betas", "shape_beta", "pred_betas", "smpl_betas", "shape"])
         ),
+        "body_topology_signature": topology_signature,
         "pose_vector": _compose_pose_vector(record),
         "canonical_measurements": measurements,
         "measurement_scales": measurement_scales,
@@ -416,6 +493,7 @@ def _normalize_artifact(raw: Dict[str, Any], *, source_path: Path, source_role: 
         "source_path": str(raw.get("source_path") or source_path),
         "source_role": str(raw.get("source_role") or source_role),
         "shape_beta": _normalize_vector(raw.get("shape_beta") or raw.get("betas") or raw.get("shape")),
+        "body_topology_signature": _normalize_vector(raw.get("body_topology_signature")),
         "pose_vector": _normalize_vector(raw.get("pose_vector") or raw.get("pose_theta") or raw.get("theta")),
         "canonical_measurements": measurements,
         "measurement_scales": measurement_scales,
@@ -423,6 +501,8 @@ def _normalize_artifact(raw: Dict[str, Any], *, source_path: Path, source_role: 
         "coverage": _safe_float(raw.get("coverage"), None),
         "notes": str(raw.get("notes") or "").strip(),
     }
+    if artifact["body_topology_signature"] is None:
+        artifact["body_topology_signature"] = _body_topology_signature(artifact.get("shape_beta"), measurements)
     return artifact
 
 
@@ -520,6 +600,16 @@ def _shape_beta_similarity(master_beta: Any, candidate_beta: Any) -> tuple[Optio
         return None, None
     delta = float(np.mean(np.abs(master - candidate)))
     similarity = float(np.exp(-delta))
+    return similarity, delta
+
+
+def _signature_similarity(master_signature: Any, candidate_signature: Any) -> tuple[Optional[float], Optional[float]]:
+    master = _normalize_vector(master_signature)
+    candidate = _normalize_vector(candidate_signature)
+    if master is None or candidate is None or master.shape != candidate.shape:
+        return None, None
+    delta = float(np.mean(np.abs(master - candidate)))
+    similarity = float(np.exp(-(delta * 3.0)))
     return similarity, delta
 
 
@@ -912,6 +1002,10 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
             master_artifact.get("shape_beta"),
             candidate_artifact.get("shape_beta"),
         )
+        topology_similarity, topology_delta = _signature_similarity(
+            master_artifact.get("body_topology_signature"),
+            candidate_artifact.get("body_topology_signature"),
+        )
         measurement_diag = _measurement_similarity(
             dict(master_artifact.get("canonical_measurements") or {}),
             dict(candidate_artifact.get("canonical_measurements") or {}),
@@ -991,6 +1085,13 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
                     signature_ref=_vector_signature_ref("shape_beta", candidate_artifact.get("shape_beta")),
                 ),
                 _metric_spec(
+                    "body_topology_signature_similarity",
+                    topology_similarity,
+                    confidence=confidence,
+                    coverage=coverage,
+                    signature_ref=_topology_signature_ref("body_topology_signature", candidate_artifact.get("body_topology_signature")),
+                ),
+                _metric_spec(
                     "canonical_measurement_similarity",
                     _safe_float(measurement_diag.get("score"), None),
                     confidence=confidence,
@@ -1012,11 +1113,13 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
             ],
             "signature_refs": {
                 "shape_beta": _vector_signature_ref("shape_beta", candidate_artifact.get("shape_beta")),
+                "body_topology_signature": _topology_signature_ref("body_topology_signature", candidate_artifact.get("body_topology_signature")),
                 "pose_vector": _vector_signature_ref("pose_vector", candidate_artifact.get("pose_vector")),
             },
             "summary": {
                 **summary,
                 "shape_beta_delta_l1": _round_or_none(beta_delta),
+                "body_topology_delta_l1": _round_or_none(topology_delta),
                 "pose_delta_l1": _round_or_none(pose_delta),
             },
         }

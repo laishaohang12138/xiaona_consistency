@@ -368,6 +368,7 @@ def _extract_canonical_truth_summary(heavy_evidence: Any) -> Dict[str, Any]:
         "body_canonical_provider_state": body_canonical_component or {},
         "body_shape_truth_alignment": _round_or_none(_metric_value("body_shape_truth_alignment")),
         "body_shape_beta_similarity": _round_or_none(_metric_value("body_shape_beta_similarity")),
+        "body_topology_signature_similarity": _round_or_none(_metric_value("body_topology_signature_similarity")),
         "canonical_measurement_similarity": _round_or_none(_metric_value("canonical_measurement_similarity")),
         "body_pose_delta_similarity": _round_or_none(_metric_value("body_pose_delta_similarity")),
         "body_mesh_fit_confidence": _round_or_none(_metric_value("body_mesh_fit_confidence")),
@@ -387,10 +388,45 @@ def _extract_face_canonical_summary(debug: Any) -> Dict[str, Any]:
         "pose_fit_confidence": _round_or_none(shadow.get("pose_fit_confidence")),
         "canonical_face_landmark_similarity": _round_or_none(shadow.get("canonical_face_landmark_similarity")),
         "canonical_face_identity_similarity": _round_or_none(shadow.get("canonical_face_identity_similarity")),
+        "canonical_face_topology_similarity": _round_or_none(shadow.get("canonical_face_topology_similarity")),
+        "canonical_face_topology_delta": _round_or_none(shadow.get("canonical_face_topology_delta")),
         "pose_delta_similarity": _round_or_none(shadow.get("pose_delta_similarity")),
         "pose_delta_deg": _round_or_none(shadow.get("pose_delta_deg")),
         "guidance": list(shadow.get("guidance") or [])[:4] if shadow else [],
         "reasons": list(shadow.get("reasons") or [])[:6] if shadow else [],
+    }
+
+
+def _topology_review_focus(
+    lane: Dict[str, Any],
+    face_summary: Dict[str, Any],
+    truth_summary: Dict[str, Any],
+    breakdown: Dict[str, Any],
+) -> Dict[str, List[str]]:
+    lane_detail = str((lane or {}).get("view_lane_detail") or (lane or {}).get("view_lane") or "").strip().lower()
+    manual_focus: List[str] = []
+    prompts: List[str] = []
+
+    face_topology = _round_or_none((face_summary or {}).get("canonical_face_topology_similarity"))
+    body_topology_metric = _round_or_none((truth_summary or {}).get("body_topology_signature_similarity"))
+    body_topology_support = _round_or_none((breakdown or {}).get("body_topology_support"))
+
+    if face_topology is not None:
+        face_floor = 0.64 if "side" in lane_detail else 0.70 if "three_quarter" in lane_detail else 0.74
+        if float(face_topology) < face_floor:
+            manual_focus.append("check nose bridge, lip-chin contour, and jawline continuity against A-Core_01")
+            prompts.append("Face topology is weak. Judge the same head structure before trusting frontal resemblance.")
+
+    if body_topology_metric is not None or body_topology_support is not None:
+        body_signal = body_topology_support if body_topology_support is not None else body_topology_metric
+        body_floor = 0.68 if "side" in lane_detail else 0.72
+        if body_signal is not None and float(body_signal) < body_floor:
+            manual_focus.append("check shoulder-hip span, leg-to-torso ratio, and lower-body volume against 116-1")
+            prompts.append("Body topology is weak. Compare 116-1 shape structure first, then treat pose/gait as secondary.")
+
+    return {
+        "manual_focus": _dedupe_keep_order(manual_focus, limit=4),
+        "manual_review_prompts": _dedupe_keep_order(prompts, limit=3),
     }
 
 
@@ -493,6 +529,7 @@ def _build_ranked_review_packet(
                 enriched["master_consistency_card"] = item_row.get("master_consistency_card")
                 enriched["admission_advice"] = item_row.get("admission_advice")
                 enriched["face_canonical_summary"] = item_row.get("face_canonical_summary")
+                enriched["review_focus"] = item_row.get("review_focus")
             shortlist_rows.append(enriched)
         pairwise_rows: List[Dict[str, Any]] = []
         for card in group.get("pairwise_compare_cards") or []:
@@ -565,6 +602,18 @@ def _summarize_item(
     depth_metrics = debug.get("depth_3d_metrics") or {}
     master_consistency_card = debug.get("master_consistency_card") or {}
     heavy_evidence = debug.get("heavy_evidence") or {}
+    face_summary = _extract_face_canonical_summary(debug)
+    truth_summary = _extract_canonical_truth_summary(heavy_evidence)
+    breakdown = (candidate_row or {}).get("review_only_breakdown_v2") or {}
+    topology_focus = _topology_review_focus(
+        {
+            "view_lane": debug.get("view_lane"),
+            "view_lane_detail": debug.get("view_lane_detail"),
+        },
+        face_summary,
+        truth_summary,
+        breakdown,
+    )
     record_key = (item.get("collection") or {}).get("input_relative_path") or item.get("image")
     row = {
         "image": item.get("image"),
@@ -597,7 +646,7 @@ def _summarize_item(
                 "disagrees_with_primary": debug.get("view_classifier_shadow_disagrees"),
             },
         },
-        "face_canonical_summary": _extract_face_canonical_summary(debug),
+        "face_canonical_summary": face_summary,
         "scores": {
             "face": (item.get("scores") or {}).get("face"),
             "upper": (item.get("scores") or {}).get("upper"),
@@ -626,15 +675,21 @@ def _summarize_item(
             "primary_bottleneck": depth_metrics.get("primary_bottleneck"),
             "reasons": list(depth_metrics.get("reasons") or []),
         },
-        "canonical_truth_summary": _extract_canonical_truth_summary(heavy_evidence),
+        "canonical_truth_summary": truth_summary,
         "outliers": {
             "score": diagnostics.get("outlier_score"),
             "reasons": list(diagnostics.get("outlier_reasons") or []),
         },
         "master_consistency_card": master_consistency_card,
         "review_focus": {
-            "manual_focus": list(master_consistency_card.get("manual_focus") or []),
-            "manual_review_prompts": list(master_consistency_card.get("manual_review_prompts") or []),
+            "manual_focus": _dedupe_keep_order(
+                list(master_consistency_card.get("manual_focus") or []) + list(topology_focus.get("manual_focus") or []),
+                limit=8,
+            ),
+            "manual_review_prompts": _dedupe_keep_order(
+                list(master_consistency_card.get("manual_review_prompts") or []) + list(topology_focus.get("manual_review_prompts") or []),
+                limit=6,
+            ),
         },
         "top_reasons": list(item.get("reasons") or [])[:10],
         "recommendations": list(item.get("recommendations") or [])[:6],
@@ -678,6 +733,7 @@ def _compact_face_canonical_for_gpt(payload: Any) -> Dict[str, Any]:
             "available": data.get("available"),
             "canonical_face_identity_similarity": _round_or_none(data.get("canonical_face_identity_similarity")),
             "canonical_face_landmark_similarity": _round_or_none(data.get("canonical_face_landmark_similarity")),
+            "canonical_face_topology_similarity": _round_or_none(data.get("canonical_face_topology_similarity")),
             "pose_delta_deg": _round_or_none(data.get("pose_delta_deg")),
             "face_pose_normalization_confidence": _round_or_none(data.get("face_pose_normalization_confidence")),
         }
@@ -689,6 +745,8 @@ def _compact_candidate_for_gpt(row: Dict[str, Any]) -> Dict[str, Any]:
     lane = row.get("lane") or {}
     truth_center = {
         "face_truth_support": _round_or_none((breakdown or {}).get("face_truth_support")),
+        "face_topology_support": _round_or_none((breakdown or {}).get("face_topology_support")),
+        "body_topology_support": _round_or_none((breakdown or {}).get("body_topology_support")),
         "body_truth_support": _round_or_none((breakdown or {}).get("body_truth_support")),
         "truth_center_score": _round_or_none((breakdown or {}).get("truth_center_score")),
         "support_only_score": _round_or_none((breakdown or {}).get("support_only_score")),

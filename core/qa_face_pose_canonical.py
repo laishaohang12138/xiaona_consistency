@@ -44,6 +44,16 @@ def _normalize_vector(value: Any) -> Optional[np.ndarray]:
     return vector
 
 
+def _landmark_points(value: Any) -> Optional[np.ndarray]:
+    vector = _normalize_vector(value)
+    if vector is None or vector.size < 6 or vector.size % 2 != 0:
+        return None
+    try:
+        return vector.reshape(-1, 2)
+    except Exception:
+        return None
+
+
 def _json_ready(value: Any) -> Any:
     if isinstance(value, np.ndarray):
         return [float(item) for item in value.reshape(-1).tolist()]
@@ -73,6 +83,73 @@ def _normalize_pose_euler(value: Any) -> Dict[str, Optional[float]]:
         "pitch": float(vector[1]),
         "roll": float(vector[2]),
     }
+
+
+def _landmark_topology_signature(value: Any) -> Optional[np.ndarray]:
+    points = _landmark_points(value)
+    if points is None or points.shape[0] < 5:
+        return None
+
+    centered = points - np.mean(points, axis=0, keepdims=True)
+    scale = float(np.linalg.norm(centered))
+    if scale <= 1e-8:
+        return None
+    normalized = centered / scale
+
+    xs = normalized[:, 0]
+    ys = normalized[:, 1]
+    abs_x = np.abs(xs)
+    radii = np.linalg.norm(normalized, axis=1)
+    pairwise = np.linalg.norm(normalized[:, None, :] - normalized[None, :, :], axis=2)
+    tri_upper = pairwise[np.triu_indices(normalized.shape[0], k=1)]
+    if tri_upper.size == 0:
+        return None
+
+    try:
+        covariance = np.cov(normalized.T)
+        eigenvalues = np.sort(np.asarray(np.linalg.eigvalsh(covariance), dtype=np.float32))[::-1]
+    except Exception:
+        eigenvalues = np.asarray([], dtype=np.float32)
+
+    eig_ratio = None
+    if eigenvalues.size >= 2 and float(eigenvalues[0]) > 1e-8:
+        eig_ratio = float(eigenvalues[1] / eigenvalues[0])
+
+    y_q25, y_q50, y_q75 = np.quantile(ys, [0.25, 0.50, 0.75]).tolist()
+
+    def _band_width(mask: np.ndarray) -> Optional[float]:
+        if int(np.count_nonzero(mask)) == 0:
+            return None
+        return float(np.mean(abs_x[mask]))
+
+    upper_width = _band_width(ys <= y_q25)
+    mid_width = _band_width((ys > y_q25) & (ys < y_q75))
+    lower_width = _band_width(ys >= y_q75)
+    upper_radius = _band_width(ys <= y_q50)
+    lower_radius = _band_width(ys > y_q50)
+
+    width = float(np.max(xs) - np.min(xs))
+    height = float(np.max(ys) - np.min(ys))
+    width_height_ratio = width / max(height, 1e-8)
+
+    signature_parts: List[float] = [
+        width,
+        height,
+        width_height_ratio,
+        float(np.std(xs)),
+        float(np.std(ys)),
+        float(eig_ratio if eig_ratio is not None else 0.0),
+        float(upper_width if upper_width is not None else 0.0),
+        float(mid_width if mid_width is not None else 0.0),
+        float(lower_width if lower_width is not None else 0.0),
+        float(upper_radius if upper_radius is not None else 0.0),
+        float(lower_radius if lower_radius is not None else 0.0),
+    ]
+    signature_parts.extend(float(node) for node in np.quantile(radii, [0.10, 0.25, 0.50, 0.75, 0.90]).tolist())
+    signature_parts.extend(float(node) for node in np.quantile(tri_upper, [0.05, 0.25, 0.50, 0.75, 0.95]).tolist())
+    signature_parts.extend(float(node) for node in np.quantile(abs_x, [0.25, 0.50, 0.75, 0.90]).tolist())
+    signature_parts.extend(float(node) for node in np.quantile(ys, [0.10, 0.25, 0.50, 0.75, 0.90]).tolist())
+    return np.asarray(signature_parts, dtype=np.float32)
 
 
 def _cache_dir(runtime: Any) -> Path:
@@ -119,6 +196,12 @@ def _sidecar_candidates(image_path: Path) -> List[Path]:
 
 
 def _normalize_artifact(raw: Dict[str, Any], *, source_path: Path, source_role: str) -> Dict[str, Any]:
+    canonical_landmarks = _normalize_vector(raw.get("canonical_landmarks") or raw.get("landmarks_2d") or raw.get("landmarks"))
+    topology_signature = _normalize_vector(
+        raw.get("canonical_face_topology_signature") or raw.get("face_topology_signature")
+    )
+    if topology_signature is None:
+        topology_signature = _landmark_topology_signature(canonical_landmarks)
     return {
         "schema_version": _ARTIFACT_SCHEMA,
         "provider_name": str(raw.get("provider_name") or _PROVIDER_NAME),
@@ -126,7 +209,8 @@ def _normalize_artifact(raw: Dict[str, Any], *, source_path: Path, source_role: 
         "provider_version": str(raw.get("provider_version") or _PROVIDER_VERSION),
         "source_path": str(raw.get("source_path") or source_path),
         "source_role": str(raw.get("source_role") or source_role),
-        "canonical_landmarks": _normalize_vector(raw.get("canonical_landmarks") or raw.get("landmarks_2d") or raw.get("landmarks")),
+        "canonical_landmarks": canonical_landmarks,
+        "canonical_face_topology_signature": topology_signature,
         "canonical_identity_vector": _normalize_vector(raw.get("canonical_identity_vector") or raw.get("identity_vector") or raw.get("face_embedding")),
         "pose_euler_deg": _normalize_pose_euler(raw.get("pose_euler_deg") or raw.get("pose_euler") or raw.get("pose")),
         "visible_face_coverage": _safe_float(raw.get("visible_face_coverage"), None),
@@ -212,15 +296,10 @@ def _vector_similarity(reference: Any, candidate: Any) -> tuple[Optional[float],
 
 
 def _landmark_similarity(reference: Any, candidate: Any) -> tuple[Optional[float], Optional[float]]:
-    ref_vector = _normalize_vector(reference)
-    cand_vector = _normalize_vector(candidate)
-    if ref_vector is None or cand_vector is None or ref_vector.shape != cand_vector.shape:
+    ref_points = _landmark_points(reference)
+    cand_points = _landmark_points(candidate)
+    if ref_points is None or cand_points is None or ref_points.shape != cand_points.shape:
         return None, None
-    if ref_vector.size % 2 != 0 or cand_vector.size % 2 != 0:
-        return None, None
-
-    ref_points = ref_vector.reshape(-1, 2)
-    cand_points = cand_vector.reshape(-1, 2)
 
     ref_centered = ref_points - np.mean(ref_points, axis=0, keepdims=True)
     cand_centered = cand_points - np.mean(cand_points, axis=0, keepdims=True)
@@ -236,6 +315,10 @@ def _landmark_similarity(reference: Any, candidate: Any) -> tuple[Optional[float
     delta = float(np.mean(np.abs(ref_normalized - cand_normalized)))
     similarity = float(np.exp(-(delta * 8.0)))
     return similarity, delta
+
+
+def _topology_signature_similarity(reference: Any, candidate: Any) -> tuple[Optional[float], Optional[float]]:
+    return _vector_similarity(reference, candidate)
 
 
 def _pose_delta_similarity(master_pose: Dict[str, Optional[float]], candidate_pose: Dict[str, Optional[float]]) -> tuple[Optional[float], Optional[float]]:
@@ -310,6 +393,8 @@ class FacePoseCanonicalProvider(FaceCanonicalProvider):
         pose_fit_confidence = None
         canonical_face_landmark_similarity = None
         canonical_face_identity_similarity = None
+        canonical_face_topology_similarity = None
+        canonical_face_topology_delta = None
         pose_delta_similarity = None
         pose_delta_deg = None
         pose_euler = {"yaw": None, "pitch": None, "roll": None}
@@ -328,6 +413,10 @@ class FacePoseCanonicalProvider(FaceCanonicalProvider):
                 master_artifact.get("canonical_identity_vector"),
                 candidate_artifact.get("canonical_identity_vector"),
             )
+            canonical_face_topology_similarity, canonical_face_topology_delta = _topology_signature_similarity(
+                master_artifact.get("canonical_face_topology_signature"),
+                candidate_artifact.get("canonical_face_topology_signature"),
+            )
             pose_delta_similarity, pose_delta_deg = _pose_delta_similarity(
                 dict(master_artifact.get("pose_euler_deg") or {}),
                 dict(candidate_artifact.get("pose_euler_deg") or {}),
@@ -336,6 +425,8 @@ class FacePoseCanonicalProvider(FaceCanonicalProvider):
                 reasons.append("FACE_CANONICAL_LANDMARK_ALIGNMENT_UNAVAILABLE")
             if canonical_face_identity_similarity is None:
                 reasons.append("FACE_CANONICAL_IDENTITY_ALIGNMENT_UNAVAILABLE")
+            if canonical_face_topology_similarity is None:
+                reasons.append("FACE_CANONICAL_TOPOLOGY_ALIGNMENT_UNAVAILABLE")
             if pose_delta_similarity is None:
                 reasons.append("FACE_CANONICAL_POSE_DELTA_UNAVAILABLE")
 
@@ -355,6 +446,8 @@ class FacePoseCanonicalProvider(FaceCanonicalProvider):
         available = bool(master_artifact is not None and candidate_artifact is not None)
         if available:
             guidance.append("这是一条 shadow-only 脸部 canonical 证据，不会改写当前主 face 分数。")
+            if canonical_face_topology_similarity is not None and canonical_face_topology_similarity < 0.74:
+                guidance.append("canonical 脸部 3D 拓扑支撑偏弱，人工复核时优先看鼻梁-嘴-下巴关系与下颌线走势。")
             if canonical_face_landmark_similarity is not None and canonical_face_landmark_similarity < 0.72:
                 guidance.append("canonical 脸部拓扑相似度偏低，人工复核时优先看眼鼻口与下颌线。")
             if normalization_confidence is not None and normalization_confidence < 0.65:
@@ -390,6 +483,8 @@ class FacePoseCanonicalProvider(FaceCanonicalProvider):
             "face_pose_normalization_confidence": _round_or_none(normalization_confidence),
             "canonical_face_landmark_similarity": _round_or_none(canonical_face_landmark_similarity),
             "canonical_face_identity_similarity": _round_or_none(canonical_face_identity_similarity),
+            "canonical_face_topology_similarity": _round_or_none(canonical_face_topology_similarity),
+            "canonical_face_topology_delta": _round_or_none(canonical_face_topology_delta),
             "pose_delta_similarity": _round_or_none(pose_delta_similarity),
             "pose_delta_deg": _round_or_none(pose_delta_deg),
             "yaw_deg": _round_or_none(pose_euler.get("yaw")),

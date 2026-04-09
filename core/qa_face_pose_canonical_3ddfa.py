@@ -231,6 +231,8 @@ def _build_direct_artifact(
     identity_vector: Optional[np.ndarray],
     face_confidence: Optional[float],
 ) -> Dict[str, Any]:
+    from . import qa_face_pose_canonical as bridge_mod
+
     payload = _load_payload(export_path)
     if isinstance(payload, dict) and str(payload.get("schema_version") or "") == _ARTIFACT_SCHEMA:
         artifact = dict(payload)
@@ -246,6 +248,10 @@ def _build_direct_artifact(
         artifact.setdefault("provider_family", _PROVIDER_FAMILY)
         artifact.setdefault("provider_version", _PROVIDER_VERSION)
         artifact.setdefault("model_id", _MODEL_ID)
+        if artifact.get("canonical_face_topology_signature") is None:
+            topology_signature = bridge_mod._landmark_topology_signature(artifact.get("canonical_landmarks"))
+            if topology_signature is not None:
+                artifact["canonical_face_topology_signature"] = _json_ready(topology_signature)
         return artifact
 
     record = _select_record(payload)
@@ -286,6 +292,7 @@ def _build_direct_artifact(
         _pick_field(record, aliases=["pose_fit_confidence", "fit_confidence", "confidence", "score"]),
         face_confidence,
     )
+    topology_signature = bridge_mod._landmark_topology_signature(landmarks)
     return {
         "schema_version": _ARTIFACT_SCHEMA,
         "provider_name": _PROVIDER_NAME,
@@ -295,6 +302,7 @@ def _build_direct_artifact(
         "source_path": str(source_path),
         "source_role": source_role,
         "canonical_landmarks": _to_vector(landmarks),
+        "canonical_face_topology_signature": topology_signature,
         "canonical_identity_vector": identity_vector,
         "pose_euler_deg": _normalize_pose(pose_value),
         "visible_face_coverage": visible_face_coverage,

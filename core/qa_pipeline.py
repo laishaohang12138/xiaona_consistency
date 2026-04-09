@@ -40,6 +40,7 @@ from .qa_outfit import (
     parse_collection_metadata,
 )
 from .qa_review_only_score import apply_review_only_score_v2
+from .qa_review_refresh import refresh_review_topology_state
 from .qa_review_packet import build_review_packet
 from .qa_runtime import (
     AnchorSet,
@@ -1802,6 +1803,7 @@ def _run_pipeline_impl(
         max_candidates=heavy_review_max_candidates,
         review_candidate_mode=heavy_review_mode,
     )
+    review_topology_refresh = refresh_review_topology_state(report_items)
     shot_selection = apply_review_only_score_v2(
         report_items,
         shot_selection,
@@ -1818,6 +1820,7 @@ def _run_pipeline_impl(
     for item in report_items:
         item["recommendations"] = make_recommendations(runtime, item, target_profile)
     _refresh_report_meta_artifacts(runtime, report_meta)
+    report_meta["review_artifact_refresh"] = review_topology_refresh
     report_payload = {
         "report_meta": report_meta,
         "collection_aggregates": collection_aggregates,

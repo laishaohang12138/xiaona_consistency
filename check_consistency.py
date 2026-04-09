@@ -123,6 +123,10 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
         "label": "批次复核",
         "summary": "对当前 input 图集运行 QA，输出排序、review packet 和 winner 候选。",
     },
+    "refresh_review_artifacts": {
+        "label": "刷新复核产物",
+        "summary": "基于现有 qa_report 与缓存，回填 topology 字段并重建 review packet / GPT 分析包。",
+    },
     "inspect_review_packet": {
         "label": "查看复核摘要",
         "summary": "直接读取最近一次 review packet，快速看批次状态、Top1、风险和人工提示。",
@@ -328,6 +332,7 @@ def _select_workflow_interactively(default: str = "shot_review") -> str:
         "请选择当前要完成的任务",
         [
             ("shot_review", "审一轮 shot 批次，输出 QA、排序和 review packet"),
+            ("refresh_review_artifacts", "基于现有 qa_report 和缓存刷新 review packet / GPT 包"),
             ("inspect_review_packet", "查看最近一次 review packet 的批次摘要和复核提示"),
             ("promote_winner", "把人工确认的 winner 写入 winner bank"),
             ("seal_training_admission", "把通过 release gate 的候选写入 training admission manifest"),
@@ -438,6 +443,8 @@ def _prompt_heavy_provider_compare_targets(
 def _default_review_paths(base_dir: Path) -> Dict[str, Path]:
     output_dir = (base_dir / "outputs").resolve()
     return {
+        "qa_report": output_dir / "qa_report.json",
+        "ranked_candidates": output_dir / "ranked_candidates.json",
         "review_packet": output_dir / "review_packet.json",
         "gpt_review_packet": output_dir / "gpt_review_packet.json",
         "review_artifacts": output_dir / "review_artifacts.json",
@@ -643,6 +650,7 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
             "canonical_truth_available",
             "body_shape_truth_alignment",
             "body_shape_beta_similarity",
+            "body_topology_signature_similarity",
             "canonical_measurement_similarity",
             "body_mesh_fit_confidence",
         ]
@@ -654,6 +662,7 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
             f"available={canonical_truth.get('canonical_truth_available')} "
             f"| align={canonical_truth.get('body_shape_truth_alignment')} "
             f"| beta={canonical_truth.get('body_shape_beta_similarity')} "
+            f"| topo={canonical_truth.get('body_topology_signature_similarity')} "
             f"| meas={canonical_truth.get('canonical_measurement_similarity')} "
             f"| fit={canonical_truth.get('body_mesh_fit_confidence')}"
             + (f" | provider={provider_state.get('provider_name')}" if provider_state else "")
@@ -676,6 +685,7 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
                 "canonical_truth_available",
                 "body_shape_truth_alignment",
                 "body_shape_beta_similarity",
+                "body_topology_signature_similarity",
                 "canonical_measurement_similarity",
                 "body_mesh_fit_confidence",
             ]
@@ -686,6 +696,7 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
                 f"available={top_truth.get('canonical_truth_available')} "
                 f"| align={top_truth.get('body_shape_truth_alignment')} "
                 f"| beta={top_truth.get('body_shape_beta_similarity')} "
+                f"| topo={top_truth.get('body_topology_signature_similarity')} "
                 f"| meas={top_truth.get('canonical_measurement_similarity')} "
                 f"| fit={top_truth.get('body_mesh_fit_confidence')}"
             )
@@ -696,6 +707,7 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
                 "face_pose_normalization_confidence",
                 "canonical_face_landmark_similarity",
                 "canonical_face_identity_similarity",
+                "canonical_face_topology_similarity",
             ]
         ) or str((face_canonical_status or {}).get("provider_name") or "") in {"face_pose_canonical_bridge", "face_pose_canonical_3ddfa"}
         if show_top_face:
@@ -705,6 +717,7 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
                 f"| normalize={top_face_canonical.get('face_pose_normalization_confidence')} "
                 f"| landmark={top_face_canonical.get('canonical_face_landmark_similarity')} "
                 f"| identity={top_face_canonical.get('canonical_face_identity_similarity')} "
+                f"| topo={top_face_canonical.get('canonical_face_topology_similarity')} "
                 f"| pose_delta={top_face_canonical.get('pose_delta_deg')}"
             )
     print(
@@ -833,13 +846,17 @@ def _describe_canonical_truth_state(packet: Dict[str, Any]) -> None:
     if canonical_available is True:
         align = top_truth.get("body_shape_truth_alignment")
         beta = top_truth.get("body_shape_beta_similarity")
+        topology = top_truth.get("body_topology_signature_similarity")
         measurement = top_truth.get("canonical_measurement_similarity")
         fit = top_truth.get("body_mesh_fit_confidence")
+        face_topology = top_face.get("canonical_face_topology_similarity")
         print(
             "  116-1 真相链: 已接入 canonical body truth "
             f"| align={align}（{_describe_alignment_bucket(align)}）"
-            f" | beta={beta} | meas={measurement} | fit={fit}"
+            f" | beta={beta} | topo={topology} | meas={measurement} | fit={fit}"
         )
+        if face_topology is not None:
+            print(f"  脸部拓扑: canonical face topology={face_topology}")
         return
 
     batch_canonical_available = canonical_truth.get("canonical_truth_available")
@@ -1180,6 +1197,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         return
 
     if workflow in {
+        "refresh_review_artifacts",
         "inspect_review_packet",
         "promote_winner",
         "seal_training_admission",
@@ -1318,6 +1336,21 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         print("  1. 运行批次复核，确认 3DDFA/HMR2 真相链状态。")
         print("  2. 如 3DDFA 仍缺资产，请按上面的缺失清单补齐 external/3DDFA-V3/assets。")
         print("  3. 如 HMR2 仍缺 SMPL，请确认 basicModel_neutral_lbs_10_207_0_v1.0.0.pkl 路径。")
+        return 0
+
+    if workflow == "refresh_review_artifacts":
+        from core.qa_review_refresh import rebuild_review_artifacts_from_report
+
+        result = rebuild_review_artifacts_from_report(paths["qa_report"], output_dir=paths["qa_report"].parent)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        packet = _load_json_file(paths["review_packet"], "review packet")
+        _print_review_packet_summary(packet)
+        _describe_canonical_truth_state(packet)
+        print(f"[报告] {paths['qa_report']}")
+        print(f"[排序] {paths['ranked_candidates']}")
+        print(f"[复核摘要文件] {paths['review_packet']}")
+        print(f"[GPT 分析包] {paths['gpt_review_packet']}")
+        print("[交互引导] 当整轮 heavy QA 超时，或只想回填 topology 字段时，优先用这个工作流刷新复审产物。")
         return 0
 
     if workflow == "inspect_review_packet":
@@ -1586,6 +1619,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--workflow",
         choices=[
             "shot_review",
+            "refresh_review_artifacts",
             "inspect_review_packet",
             "promote_winner",
             "seal_training_admission",

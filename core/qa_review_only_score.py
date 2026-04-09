@@ -233,36 +233,64 @@ def _compute_review_only_v2(
     lane_family = _lane_family(item, candidate_row)
     thresholds = _lane_thresholds(lane_family)
 
+    face_topology_support = _safe_float(face_shadow.get("canonical_face_topology_similarity"))
+    face_support_weights = {
+        "front": {"canonical": 0.42, "topology": 0.28, "landmark": 0.18, "frontal": 0.12},
+        "three_quarter": {"canonical": 0.34, "topology": 0.34, "landmark": 0.20, "frontal": 0.12},
+        "side": {"canonical": 0.18, "topology": 0.46, "landmark": 0.22, "frontal": 0.14},
+        "back": {"canonical": 0.00, "topology": 0.00, "landmark": 0.00, "frontal": 0.00},
+    }
+    support_weights = face_support_weights.get(lane_family, face_support_weights["three_quarter"])
     face_support_score = _weighted_mean(
         [
-            (face_shadow.get("canonical_face_identity_similarity"), 0.62),
-            (face_shadow.get("canonical_face_landmark_similarity"), 0.23),
-            (face_shadow.get("frontalization_quality"), 0.15),
+            (face_shadow.get("canonical_face_identity_similarity"), support_weights["canonical"]),
+            (face_topology_support, support_weights["topology"]),
+            (face_shadow.get("canonical_face_landmark_similarity"), support_weights["landmark"]),
+            (face_shadow.get("frontalization_quality"), support_weights["frontal"]),
         ]
     )
     face_truth_weights = {
-        "front": {"absolute": 0.50, "canonical": 0.32, "landmark": 0.12, "frontal": 0.06},
-        "three_quarter": {"absolute": 0.34, "canonical": 0.42, "landmark": 0.16, "frontal": 0.08},
-        "side": {"absolute": 0.18, "canonical": 0.48, "landmark": 0.24, "frontal": 0.10},
-        "back": {"absolute": 0.00, "canonical": 0.00, "landmark": 0.00, "frontal": 0.00},
+        "front": {"absolute": 0.46, "canonical": 0.24, "topology": 0.20, "landmark": 0.06, "frontal": 0.04},
+        "three_quarter": {"absolute": 0.30, "canonical": 0.26, "topology": 0.26, "landmark": 0.10, "frontal": 0.08},
+        "side": {"absolute": 0.12, "canonical": 0.18, "topology": 0.40, "landmark": 0.20, "frontal": 0.10},
+        "back": {"absolute": 0.00, "canonical": 0.00, "topology": 0.00, "landmark": 0.00, "frontal": 0.00},
     }
     face_weights = face_truth_weights.get(lane_family, face_truth_weights["three_quarter"])
     face_truth_support = _weighted_mean(
         [
             (master.get("face_master_alignment"), face_weights["absolute"]),
             (face_shadow.get("canonical_face_identity_similarity"), face_weights["canonical"]),
+            (face_topology_support, face_weights["topology"]),
             (face_shadow.get("canonical_face_landmark_similarity"), face_weights["landmark"]),
             (face_shadow.get("frontalization_quality"), face_weights["frontal"]),
         ]
     )
 
+    body_topology_metric = _safe_float(heavy_metrics.get("body_topology_signature_similarity"))
+    body_topology_weights = {
+        "front": {"topology": 0.34, "shape": 0.24, "measure": 0.18, "world3d": 0.14, "mesh": 0.10},
+        "three_quarter": {"topology": 0.38, "shape": 0.22, "measure": 0.18, "world3d": 0.12, "mesh": 0.10},
+        "side": {"topology": 0.46, "shape": 0.20, "measure": 0.14, "world3d": 0.12, "mesh": 0.08},
+        "back": {"topology": 0.42, "shape": 0.22, "measure": 0.14, "world3d": 0.14, "mesh": 0.08},
+    }
+    body_topology_weight = body_topology_weights.get(lane_family, body_topology_weights["three_quarter"])
+    body_topology_support = _weighted_mean(
+        [
+            (body_topology_metric, body_topology_weight["topology"]),
+            (heavy_metrics.get("body_shape_truth_alignment"), body_topology_weight["shape"]),
+            (heavy_metrics.get("canonical_measurement_similarity"), body_topology_weight["measure"]),
+            (master.get("world3d_master_alignment"), body_topology_weight["world3d"]),
+            (heavy_metrics.get("body_mesh_fit_confidence"), body_topology_weight["mesh"]),
+        ]
+    )
     body_truth_support = _weighted_mean(
         [
-            (master.get("body_master_alignment"), 0.26),
-            (heavy_metrics.get("body_shape_truth_alignment"), 0.28),
-            (heavy_metrics.get("canonical_measurement_similarity"), 0.22),
-            (master.get("world3d_master_alignment"), 0.14),
-            (heavy_metrics.get("body_mesh_fit_confidence"), 0.10),
+            (master.get("body_master_alignment"), 0.24),
+            (body_topology_support, 0.34),
+            (heavy_metrics.get("body_shape_truth_alignment"), 0.18),
+            (heavy_metrics.get("canonical_measurement_similarity"), 0.12),
+            (master.get("world3d_master_alignment"), 0.08),
+            (heavy_metrics.get("body_mesh_fit_confidence"), 0.04),
         ]
     )
     absolute_truth_support = _weighted_mean(
@@ -274,11 +302,12 @@ def _compute_review_only_v2(
     )
     canonical_invariant_score = _weighted_mean(
         [
-            (heavy_metrics.get("body_shape_truth_alignment"), 0.30),
-            (heavy_metrics.get("canonical_measurement_similarity"), 0.24),
+            (body_topology_support, 0.34),
+            (heavy_metrics.get("body_shape_truth_alignment"), 0.20),
+            (heavy_metrics.get("canonical_measurement_similarity"), 0.16),
             (heavy_metrics.get("body_pose_delta_similarity"), 0.08),
-            (heavy_metrics.get("body_mesh_fit_confidence"), 0.10),
-            (face_truth_support, 0.28 if lane_family in {"front", "three_quarter"} else 0.14 if lane_family == "side" else 0.0),
+            (heavy_metrics.get("body_mesh_fit_confidence"), 0.08),
+            (face_truth_support, 0.14 if lane_family in {"front", "three_quarter"} else 0.08 if lane_family == "side" else 0.0),
         ]
     )
     outfit_invariant_score = _weighted_mean(
@@ -352,7 +381,8 @@ def _compute_review_only_v2(
     truth_proxy = _weighted_mean(
         [
             (face_truth_support, 0.28 if lane_family in {"front", "three_quarter"} else 0.10 if lane_family == "side" else 0.0),
-            (body_truth_support, 0.50 if lane_family in {"front", "three_quarter"} else 0.78 if lane_family == "side" else 0.88),
+            (body_truth_support, 0.40 if lane_family in {"front", "three_quarter"} else 0.56 if lane_family == "side" else 0.62),
+            (body_topology_support, 0.10 if lane_family in {"front", "three_quarter"} else 0.22 if lane_family == "side" else 0.26),
             (master.get("world3d_master_alignment"), 0.12),
             (heavy_metrics.get("body_pose_delta_similarity"), 0.06),
             (lane_validity, 0.04),
@@ -380,12 +410,18 @@ def _compute_review_only_v2(
     if lane_family in {"front", "three_quarter", "side"}:
         face_master_alignment = _safe_float(master.get("face_master_alignment"))
         canonical_face_alignment = _safe_float(face_shadow.get("canonical_face_identity_similarity"))
+        topology_gate = face_topology_support
+        if topology_gate is None:
+            topology_gate = canonical_face_alignment
         if face_master_alignment is not None and canonical_face_alignment is not None:
-            if face_master_alignment < 0.48 and canonical_face_alignment < 0.54:
+            topology_floor = 0.60 if lane_family in {"front", "three_quarter"} else 0.57
+            if face_master_alignment < 0.48 and canonical_face_alignment < 0.54 and topology_gate is not None and topology_gate < topology_floor:
                 hard_vetoes.append("FACE_TRUTH_STRONG_CONFLICT")
     if mesh_confidence is not None and mesh_confidence >= 0.60:
         if body_truth_alignment is not None and body_truth_alignment < 0.50:
             hard_vetoes.append("BODY_SHAPE_TRUTH_STRONG_CONFLICT")
+        if body_topology_support is not None and body_topology_support < (0.56 if lane_family in {"front", "three_quarter"} else 0.54):
+            hard_vetoes.append("BODY_TOPOLOGY_TRUTH_STRONG_CONFLICT")
         if body_measurement_similarity is not None and body_measurement_similarity < 0.50:
             hard_vetoes.append("BODY_MEASUREMENT_TRUTH_STRONG_CONFLICT")
         if world3d_master_alignment is not None and world3d_master_alignment < 0.50:
@@ -399,8 +435,26 @@ def _compute_review_only_v2(
         soft_flags.append("BODY_MESH_CONFIDENCE_LOW")
     if heavy_coverage is not None and heavy_coverage < 0.60:
         soft_flags.append("HEAVY_EVIDENCE_COVERAGE_LOW")
+    body_topology_soft_floors = {
+        "front": 0.76,
+        "three_quarter": 0.72,
+        "side": 0.68,
+        "back": 0.70,
+    }
+    body_topology_floor = float(body_topology_soft_floors.get(lane_family, 0.72))
+    if body_topology_support is not None and body_topology_support < body_topology_floor:
+        soft_flags.append("BODY_TOPOLOGY_SUPPORT_WEAK")
     if face_support_score is not None and face_support_score < 0.56 and lane_family in {"front", "three_quarter", "side"}:
         soft_flags.append("FACE_CANONICAL_SUPPORT_WEAK")
+    topology_soft_floors = {
+        "front": 0.74,
+        "three_quarter": 0.70,
+        "side": 0.64,
+        "back": 0.00,
+    }
+    topology_floor = float(topology_soft_floors.get(lane_family, 0.70))
+    if face_topology_support is not None and lane_family != "back" and face_topology_support < topology_floor:
+        soft_flags.append("FACE_CANONICAL_TOPOLOGY_WEAK")
     truth_soft_floors = {
         "front": {"face": 0.70, "body": 0.70},
         "three_quarter": {"face": 0.64, "body": 0.68},
@@ -452,6 +506,7 @@ def _compute_review_only_v2(
         "review_only_status_v2": status,
         "review_only_breakdown_v2": {
             "face_truth_support": _round_or_none(face_truth_support),
+            "body_topology_support": _round_or_none(body_topology_support),
             "body_truth_support": _round_or_none(body_truth_support),
             "truth_center_score": _round_or_none(truth_center_score),
             "support_only_score": _round_or_none(support_only_score),
@@ -461,6 +516,7 @@ def _compute_review_only_v2(
             "batch_relative_score": _round_or_none(batch_relative_score),
             "lane_validity": _round_or_none(lane_validity),
             "face_support_score": _round_or_none(face_support_score),
+            "face_topology_support": _round_or_none(face_topology_support),
             "evidence_agreement_score": _round_or_none(evidence_agreement_score),
             "truth_proxy": _round_or_none(truth_proxy),
             "truth_proxy_confidence": _round_or_none(truth_proxy_confidence),
