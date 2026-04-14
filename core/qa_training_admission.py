@@ -102,6 +102,9 @@ def seal_training_admission_entry(
     manifest_file: Path,
     *,
     release_gate: Optional[Dict[str, Any]] = None,
+    admission_advice: Optional[Dict[str, Any]] = None,
+    batch_preflight: Optional[Dict[str, Any]] = None,
+    evidence_completeness: Optional[Dict[str, Any]] = None,
     threshold_hash: Optional[str] = None,
     anchor_snapshot: Optional[Dict[str, Any]] = None,
     source_batch: Optional[Dict[str, Any]] = None,
@@ -116,12 +119,51 @@ def seal_training_admission_entry(
     target_profile = str(candidate_entry.get("target_profile") or "").strip()
     target_bucket = resolve_target_bucket(target_profile)
     gate_summary = _gate_summary(release_gate, target_bucket)
+    batch_advice = admission_advice or {}
+    preflight_summary = batch_preflight or {}
+    evidence_summary = evidence_completeness or {}
     if not bool(gate_summary.get("training_admission_allowed")):
         return {
             "status": "blocked",
             "reason": "release_gate_training_admission_denied",
             "manifest_file": str(manifest_file),
             "target_bucket": target_bucket,
+        }
+    if batch_advice and not bool(batch_advice.get("eligible_for_training_seal")):
+        return {
+            "status": "blocked",
+            "reason": "batch_admission_policy_denied",
+            "manifest_file": str(manifest_file),
+            "target_bucket": target_bucket,
+            "blockers": list(batch_advice.get("blockers") or [])[:8],
+            "suggested_action": batch_advice.get("suggested_action"),
+        }
+    preflight_status = str(preflight_summary.get("status") or "").strip().upper()
+    if preflight_status == "FAIL":
+        return {
+            "status": "blocked",
+            "reason": "batch_preflight_failed",
+            "manifest_file": str(manifest_file),
+            "target_bucket": target_bucket,
+            "blockers": list(preflight_summary.get("reasons") or [])[:8],
+            "suggested_action": preflight_summary.get("recommended_action"),
+        }
+    evidence_status = str(evidence_summary.get("status") or "").strip().upper()
+    if evidence_status == "FAIL":
+        return {
+            "status": "blocked",
+            "reason": "evidence_completeness_failed",
+            "manifest_file": str(manifest_file),
+            "target_bucket": target_bucket,
+            "blockers": list(evidence_summary.get("reasons") or [])[:8],
+        }
+    if evidence_summary and not bool(evidence_summary.get("replay_ready")):
+        return {
+            "status": "blocked",
+            "reason": "evidence_not_replay_ready",
+            "manifest_file": str(manifest_file),
+            "target_bucket": target_bucket,
+            "blockers": list(evidence_summary.get("reasons") or [])[:8],
         }
 
     payload = _load_manifest_payload(manifest_file)
@@ -144,6 +186,9 @@ def seal_training_admission_entry(
         "winner_reasons": list(candidate_entry.get("winner_reasons") or [])[:6],
         "caution_reasons": list(candidate_entry.get("caution_reasons") or [])[:6],
         "release_gate": gate_summary,
+        "admission_advice": batch_advice,
+        "batch_preflight": preflight_summary,
+        "evidence_completeness": evidence_summary,
         "threshold_hash": str(threshold_hash or "").strip(),
         "anchor_snapshot": anchor_snapshot or {},
         "source_batch": source_batch or {},
@@ -180,6 +225,8 @@ def seal_training_admission_entry(
             "winner_bank_equals_training_admission": False,
             "final_decision_owner": "custom_gpt_plus_human",
             "release_gate_enforced": True,
+            "batch_preflight_enforced": True,
+            "evidence_completeness_enforced": True,
         },
     }
     manifest_file.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=False), encoding="utf-8")

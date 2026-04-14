@@ -543,6 +543,8 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
     geometry = batch.get("geometry_summary") or {}
     admission = batch.get("admission_advice") or {}
     release_gate = batch.get("release_gate") or admission.get("release_gate") or {}
+    batch_preflight = batch.get("batch_preflight") or admission.get("batch_preflight") or {}
+    evidence_completeness = batch.get("evidence_completeness") or admission.get("evidence_completeness") or {}
     training_admission = packet.get("training_admission_status") or batch.get("training_admission_governance") or {}
     training_manifest_summary = training_admission.get("manifest_summary") or {}
     ranked = packet.get("ranked_review_packet") or {}
@@ -610,6 +612,33 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
     print(f"  第一名: {selection.get('top_ranked_image')}")
     print(f"  复核窗: top {selection.get('manual_review_window')}")
     print(f"  批次闸门: {batch_gate.get('status')} | reasons={batch_gate.get('reasons') or []}")
+    if batch_preflight:
+        print(
+            "  批次预检: "
+            f"status={batch_preflight.get('status')} "
+            f"| purity={batch_preflight.get('lane_purity_score')} "
+            f"| dominant={batch_preflight.get('dominant_lane_family')} "
+            f"| inside_gate={batch_preflight.get('inside_release_gate_share')} "
+            f"| split={batch_preflight.get('split_batch_recommended')}"
+        )
+        if batch_preflight.get("governance_lane_source"):
+            print(
+                "  预检治理: "
+                f"lane_source={batch_preflight.get('governance_lane_source')} "
+                f"| prompt_is_weak_prior={batch_preflight.get('prompt_intent_is_weak_prior')}"
+            )
+        if batch_preflight.get("intended_lane_coverage") is not None:
+            print(
+                "  意图对照: "
+                f"coverage={batch_preflight.get('intended_lane_coverage')} "
+                f"| dominant_intended={batch_preflight.get('dominant_intended_lane_family')} "
+                f"| observed_match={batch_preflight.get('intended_observed_lane_match_share')} "
+                f"| center_dist_mean={batch_preflight.get('observed_lane_center_distance_mean_deg')}"
+            )
+        if batch_preflight.get("reasons"):
+            print(f"  预检原因: {batch_preflight.get('reasons')}")
+        if batch_preflight.get("recommended_action"):
+            print(f"  预检动作: {batch_preflight.get('recommended_action')}")
     if release_gate:
         print(
             "  Release Gate: "
@@ -644,6 +673,25 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
             f"{f' | 组件={component_names}' if component_names else ''}"
         )
         print(f"  说明  : {heavy_ui.get('summary')}")
+    if evidence_completeness:
+        print(
+            "  证据完备: "
+            f"status={evidence_completeness.get('status')} "
+            f"| completeness={evidence_completeness.get('completeness_score')} "
+            f"| replay_ready={evidence_completeness.get('replay_ready')} "
+            f"| gpt_ready={evidence_completeness.get('gpt_review_ready')}"
+        )
+        coverage = evidence_completeness.get("coverage") or {}
+        if coverage:
+            print(
+                "  证据覆盖: "
+                f"face_canonical={coverage.get('face_canonical_coverage')} "
+                f"| body_canonical={coverage.get('body_canonical_coverage')} "
+                f"| surface={coverage.get('surface_evidence_coverage')} "
+                f"| master={coverage.get('master_consistency_coverage')}"
+            )
+        if evidence_completeness.get("reasons"):
+            print(f"  证据原因: {evidence_completeness.get('reasons')}")
     show_batch_truth = any(
         canonical_truth.get(key) is not None
         for key in [
@@ -1490,6 +1538,9 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             selected_entry,
             paths["training_admission_manifest"],
             release_gate=admission.get("release_gate") or batch_summary.get("release_gate") or {},
+            admission_advice=admission,
+            batch_preflight=batch_summary.get("batch_preflight") or admission.get("batch_preflight") or {},
+            evidence_completeness=batch_summary.get("evidence_completeness") or admission.get("evidence_completeness") or {},
             threshold_hash=((report_meta.get("threshold_snapshot") or {}).get("hash")),
             anchor_snapshot=report_meta.get("anchor_registry_snapshot") or {},
             source_batch={
@@ -1504,7 +1555,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         if result.get("status") != "ok":
-            print("[交互引导] 当前 release gate 不允许封印 training admission。请先看 review packet 的 release gate 和 blockers。")
+            print("[交互引导] 当前批次不满足 training admission 硬门。请先看 review packet 的 release gate、batch_preflight、evidence_completeness 和 blockers。")
             return 1
         summary = load_training_admission_manifest_summary(paths["training_admission_manifest"])
         _print_training_admission_summary(summary)

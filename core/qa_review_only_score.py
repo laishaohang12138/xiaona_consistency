@@ -219,6 +219,302 @@ def _component_deltas(
     return rows
 
 
+def _angle_delta_deg(value: Optional[float], center: float) -> Optional[float]:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return None
+    delta = abs(float(numeric) - float(center))
+    return float(min(delta, abs(360.0 - delta)))
+
+
+def _deviation_score(
+    deviation_deg: Optional[float],
+    *,
+    soft_band: float,
+    hard_band: float,
+    floor: float = 0.20,
+) -> Optional[float]:
+    deviation = _safe_float(deviation_deg)
+    if deviation is None:
+        return None
+    if deviation <= float(soft_band):
+        return 1.0
+    if deviation >= float(hard_band):
+        return float(max(0.0, floor))
+    ratio = (float(deviation) - float(soft_band)) / max(1e-6, float(hard_band - soft_band))
+    return float(max(floor, 1.0 - (1.0 - floor) * ratio))
+
+
+def _body_lane_center(lane_family: str) -> Optional[float]:
+    mapping = {
+        "front": 0.0,
+        "three_quarter": 45.0,
+        "side": 90.0,
+        "back": 180.0,
+    }
+    return mapping.get(lane_family)
+
+
+def _body_lane_bands(lane_family: str) -> Tuple[float, float]:
+    mapping = {
+        "front": (18.0, 48.0),
+        "three_quarter": (20.0, 58.0),
+        "side": (18.0, 44.0),
+        "back": (22.0, 46.0),
+    }
+    return mapping.get(lane_family, mapping["three_quarter"])
+
+
+def _face_lane_center(lane_family: str) -> Optional[float]:
+    mapping = {
+        "front": 0.0,
+        "three_quarter": 35.0,
+        "side": 70.0,
+    }
+    return mapping.get(lane_family)
+
+
+def _face_lane_bands(lane_family: str) -> Tuple[float, float]:
+    mapping = {
+        "front": (10.0, 30.0),
+        "three_quarter": (15.0, 36.0),
+        "side": (18.0, 32.0),
+    }
+    return mapping.get(lane_family, mapping["three_quarter"])
+
+
+def _angle_tolerance_features(
+    debug: Dict[str, Any],
+    face_shadow: Dict[str, Any],
+    lane_family: str,
+    lane_validity: Optional[float],
+) -> Dict[str, Optional[float]]:
+    view_router = debug.get("view_router_v2") or {}
+    body_yaw_deg = _safe_float(view_router.get("body_yaw_deg"))
+    face_yaw_deg = _safe_float(face_shadow.get("yaw_deg"))
+    pose_delta_deg = _safe_float(face_shadow.get("pose_delta_deg"))
+    lane_detail_confidence = _safe_float(
+        debug.get("view_lane_detail_confidence", view_router.get("lane_detail_confidence"))
+    )
+    lane_strictness_score = _safe_float(
+        debug.get("view_lane_strictness_score", view_router.get("lane_strictness_score"))
+    )
+    route_confidence = _safe_float(view_router.get("confidence"))
+
+    body_center = _body_lane_center(lane_family)
+    body_soft, body_hard = _body_lane_bands(lane_family)
+    body_angle_delta_deg = _angle_delta_deg(body_yaw_deg, body_center) if body_center is not None else None
+    body_angle_score = _deviation_score(body_angle_delta_deg, soft_band=body_soft, hard_band=body_hard, floor=0.24)
+
+    face_center = _face_lane_center(lane_family)
+    face_soft, face_hard = _face_lane_bands(lane_family)
+    face_angle_delta_deg = _angle_delta_deg(abs(face_yaw_deg) if face_yaw_deg is not None else None, face_center) if face_center is not None else None
+    face_angle_score = _deviation_score(face_angle_delta_deg, soft_band=face_soft, hard_band=face_hard, floor=0.24)
+
+    pose_delta_score = _deviation_score(pose_delta_deg, soft_band=8.0, hard_band=28.0, floor=0.28)
+
+    lane_membership_confidence = _weighted_mean(
+        [
+            (route_confidence, 0.42),
+            (lane_detail_confidence, 0.28),
+            (lane_strictness_score, 0.18),
+            (lane_validity, 0.12),
+        ]
+    )
+
+    angle_tolerance_weights = {
+        "front": {"body": 0.28, "face": 0.28, "pose": 0.12, "membership": 0.20, "validity": 0.12},
+        "three_quarter": {"body": 0.34, "face": 0.22, "pose": 0.10, "membership": 0.22, "validity": 0.12},
+        "side": {"body": 0.40, "face": 0.12, "pose": 0.08, "membership": 0.26, "validity": 0.14},
+        "back": {"body": 0.48, "face": 0.00, "pose": 0.00, "membership": 0.34, "validity": 0.18},
+    }
+    weights = angle_tolerance_weights.get(lane_family, angle_tolerance_weights["three_quarter"])
+    angle_tolerance_score = _weighted_mean(
+        [
+            (body_angle_score, weights["body"]),
+            (face_angle_score, weights["face"]),
+            (pose_delta_score, weights["pose"]),
+            (lane_membership_confidence, weights["membership"]),
+            (lane_validity, weights["validity"]),
+        ]
+    )
+    observed_lane_center_distance_deg = body_angle_delta_deg
+    observed_lane_source = "body_yaw_deg"
+    if observed_lane_center_distance_deg is None:
+        observed_lane_center_distance_deg = face_angle_delta_deg
+        observed_lane_source = "face_yaw_deg"
+    if observed_lane_center_distance_deg is None:
+        observed_lane_source = "unavailable"
+
+    return {
+        "body_yaw_deg": _round_or_none(body_yaw_deg),
+        "face_yaw_deg": _round_or_none(face_yaw_deg),
+        "pose_delta_deg": _round_or_none(pose_delta_deg),
+        "body_angle_delta_deg": _round_or_none(body_angle_delta_deg),
+        "face_angle_delta_deg": _round_or_none(face_angle_delta_deg),
+        "body_angle_score": _round_or_none(body_angle_score),
+        "face_angle_score": _round_or_none(face_angle_score),
+        "pose_delta_score": _round_or_none(pose_delta_score),
+        "lane_membership_confidence": _round_or_none(lane_membership_confidence),
+        "lane_detail_confidence": _round_or_none(lane_detail_confidence),
+        "lane_strictness_score": _round_or_none(lane_strictness_score),
+        "route_confidence": _round_or_none(route_confidence),
+        "angle_tolerance_score": _round_or_none(angle_tolerance_score),
+        "observed_lane_center_distance_deg": _round_or_none(observed_lane_center_distance_deg),
+        "observed_lane_source": observed_lane_source,
+    }
+
+
+def _first_float(*values: Any) -> Optional[float]:
+    for value in values:
+        numeric = _safe_float(value)
+        if numeric is not None:
+            return numeric
+    return None
+
+
+def _range_score(value: Optional[float], low: float, high: float) -> Optional[float]:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return None
+    if high <= low:
+        return None
+    return _clamp((numeric - float(low)) / (float(high) - float(low)), 0.0, 1.0)
+
+
+def _inverse_range_score(value: Optional[float], low: float, high: float) -> Optional[float]:
+    score = _range_score(value, low, high)
+    return None if score is None else 1.0 - score
+
+
+def _clothing_invariant_features(
+    debug: Dict[str, Any],
+    diagnostics: Dict[str, Any],
+    heavy_metrics: Dict[str, Optional[float]],
+    *,
+    lane_family: str,
+    face_truth_support: Optional[float],
+    body_truth_support: Optional[float],
+    body_topology_support: Optional[float],
+    truth_center_score: Optional[float],
+    heavy_confidence: Optional[float],
+    heavy_coverage: Optional[float],
+) -> Dict[str, Optional[float]]:
+    garment = debug.get("garment_metrics") or {}
+    garment_coverage = _first_float(heavy_metrics.get("garment_coverage_ratio"), garment.get("clothing_coverage_ratio"))
+    upper_cloth = _first_float(heavy_metrics.get("upper_cloth_coverage"), garment.get("upper_cloth_coverage"))
+    lower_cloth = _first_float(heavy_metrics.get("lower_cloth_coverage"), garment.get("lower_cloth_coverage"))
+    parser_confidence = _first_float(heavy_metrics.get("parser_confidence"), garment.get("confidence"))
+    parser_boundary_alignment = _safe_float(heavy_metrics.get("parser_boundary_alignment"))
+    parser_visible_body_alignment = _safe_float(heavy_metrics.get("parser_visible_body_alignment"))
+    parser_consensus_score = _safe_float(heavy_metrics.get("parser_consensus_score"))
+    surface_visible_alignment = _safe_float(heavy_metrics.get("visible_body_surface_alignment"))
+    visible_body_ratio = _safe_float(heavy_metrics.get("visible_body_ratio"))
+    visible_face_ratio = _safe_float(heavy_metrics.get("visible_face_ratio"))
+    visible_arm_ratio = _safe_float(heavy_metrics.get("visible_arm_ratio"))
+    visible_leg_ratio = _safe_float(heavy_metrics.get("visible_leg_ratio"))
+    clothfree_alignment = _safe_float(diagnostics.get("clothfree_identity_alignment"))
+    body_under_clothes = _safe_float(diagnostics.get("body_under_clothes_continuity"))
+
+    visible_body_score = _range_score(visible_body_ratio, 0.18, 0.72)
+    visible_face_score = _range_score(visible_face_ratio, 0.04, 0.16)
+    visible_arm_score = _range_score(visible_arm_ratio, 0.04, 0.18)
+    visible_leg_score = _range_score(visible_leg_ratio, 0.05, 0.24)
+    visible_structure_score = _weighted_mean(
+        [
+            (visible_body_score, 0.48),
+            (visible_face_score, 0.20 if lane_family != "back" else 0.02),
+            (visible_arm_score, 0.14),
+            (visible_leg_score, 0.18),
+        ]
+    )
+    inferred_occlusion_index = _weighted_mean(
+        [
+            (_range_score(garment_coverage, 0.52, 0.90), 0.30),
+            (_range_score(upper_cloth, 0.58, 0.94), 0.18),
+            (_range_score(lower_cloth, 0.58, 0.94), 0.14),
+            (_inverse_range_score(visible_body_ratio, 0.16, 0.72), 0.24),
+            (_inverse_range_score(visible_face_ratio, 0.04, 0.16), 0.08 if lane_family != "back" else 0.0),
+            (_inverse_range_score(visible_leg_ratio, 0.05, 0.24), 0.06),
+        ]
+    )
+    garment_occlusion_index = _weighted_mean(
+        [
+            (_safe_float(heavy_metrics.get("garment_occlusion_index")), 0.58),
+            (inferred_occlusion_index, 0.42),
+        ]
+    )
+    garment_boundary_stability = _weighted_mean(
+        [
+            (parser_boundary_alignment, 0.46),
+            (parser_visible_body_alignment, 0.28),
+            (parser_consensus_score, 0.18),
+            (parser_confidence, 0.08),
+        ]
+    )
+    garment_boundary_risk = _weighted_mean(
+        [
+            (_safe_float(heavy_metrics.get("garment_boundary_risk")), 0.58),
+            (None if garment_boundary_stability is None else 1.0 - garment_boundary_stability, 0.42),
+        ]
+    )
+
+    surface_evidence_support = _weighted_mean(
+        [
+            (surface_visible_alignment, 0.34),
+            (visible_structure_score, 0.18),
+            (parser_visible_body_alignment, 0.14),
+            (_safe_float(heavy_metrics.get("clothing_surface_confidence")), 0.14),
+            (0.0 if garment_occlusion_index is None else 1.0 - garment_occlusion_index, 0.12),
+            (None if garment_boundary_risk is None else 1.0 - garment_boundary_risk, 0.08),
+        ]
+    )
+    clothing_invariant_score = _weighted_mean(
+        [
+            (body_truth_support, 0.25),
+            (body_topology_support, 0.20),
+            (heavy_metrics.get("body_shape_truth_alignment"), 0.12),
+            (heavy_metrics.get("canonical_measurement_similarity"), 0.09),
+            (surface_evidence_support, 0.16),
+            (clothfree_alignment, 0.08),
+            (body_under_clothes, 0.04),
+            (face_truth_support, 0.02 if lane_family != "back" else 0.0),
+            (parser_visible_body_alignment, 0.04),
+        ]
+    )
+    clothing_invariant_confidence = _weighted_mean(
+        [
+            (heavy_confidence, 0.18),
+            (heavy_coverage, 0.16),
+            (parser_confidence, 0.14),
+            (surface_evidence_support, 0.20),
+            (visible_structure_score, 0.10),
+            (_safe_float(heavy_metrics.get("clothing_surface_confidence")), 0.12),
+            (0.0 if garment_occlusion_index is None else 1.0 - garment_occlusion_index, 0.06),
+            (None if garment_boundary_risk is None else 1.0 - garment_boundary_risk, 0.04),
+        ]
+    )
+    occlusion_adjusted_truth = _weighted_mean(
+        [
+            (truth_center_score, 0.68),
+            (clothing_invariant_score, 0.24),
+            (0.0 if garment_occlusion_index is None else 1.0 - garment_occlusion_index, 0.08),
+        ]
+    )
+    return {
+        "clothing_invariant_score": _round_or_none(clothing_invariant_score),
+        "clothing_invariant_confidence": _round_or_none(clothing_invariant_confidence),
+        "garment_occlusion_index": _round_or_none(garment_occlusion_index),
+        "garment_boundary_risk": _round_or_none(garment_boundary_risk),
+        "surface_evidence_support": _round_or_none(surface_evidence_support),
+        "visible_body_surface_alignment": _round_or_none(_first_float(surface_visible_alignment, parser_visible_body_alignment)),
+        "visible_body_structure_score": _round_or_none(visible_structure_score),
+        "clothfree_identity_alignment": _round_or_none(clothfree_alignment),
+        "body_under_clothes_continuity": _round_or_none(body_under_clothes),
+        "occlusion_adjusted_truth_score": _round_or_none(occlusion_adjusted_truth),
+    }
+
+
 def _compute_review_only_v2(
     item: Dict[str, Any],
     candidate_row: Dict[str, Any],
@@ -327,6 +623,9 @@ def _compute_review_only_v2(
         ]
     )
     lane_validity = _safe_float(master.get("lane_validity"))
+    angle_features = _angle_tolerance_features(debug, face_shadow, lane_family, lane_validity)
+    angle_tolerance_score = _safe_float(angle_features.get("angle_tolerance_score"))
+    lane_membership_confidence = _safe_float(angle_features.get("lane_membership_confidence"))
     truth_center_weights = {
         "front": {"face": 0.54, "body": 0.46},
         "three_quarter": {"face": 0.42, "body": 0.58},
@@ -340,14 +639,34 @@ def _compute_review_only_v2(
             (body_truth_support, truth_weights["body"]),
         ]
     )
+    heavy_confidence = _safe_float((heavy_bundle or {}).get("confidence"))
+    heavy_coverage = _safe_float((heavy_bundle or {}).get("coverage"))
+    clothing_features = _clothing_invariant_features(
+        debug,
+        diagnostics,
+        heavy_metrics,
+        lane_family=lane_family,
+        face_truth_support=face_truth_support,
+        body_truth_support=body_truth_support,
+        body_topology_support=body_topology_support,
+        truth_center_score=truth_center_score,
+        heavy_confidence=heavy_confidence,
+        heavy_coverage=heavy_coverage,
+    )
+    clothing_invariant_score = _safe_float(clothing_features.get("clothing_invariant_score"))
+    clothing_invariant_confidence = _safe_float(clothing_features.get("clothing_invariant_confidence"))
+    garment_occlusion_index = _safe_float(clothing_features.get("garment_occlusion_index"))
+    garment_boundary_risk = _safe_float(clothing_features.get("garment_boundary_risk"))
 
     support_only_score = _weighted_mean(
         [
-            (canonical_invariant_score, 0.42),
-            (outfit_invariant_score, 0.20),
-            (lane_validity, 0.20),
-            (batch_relative_score, 0.10),
-            (face_support_score, 0.08 if lane_family != "back" else 0.0),
+            (canonical_invariant_score, 0.34),
+            (clothing_invariant_score, 0.24),
+            (outfit_invariant_score, 0.08),
+            (angle_tolerance_score, 0.16),
+            (lane_validity, 0.10),
+            (batch_relative_score, 0.02),
+            (face_support_score, 0.06 if lane_family != "back" else 0.0),
         ]
     )
     review_only_score = _weighted_mean(
@@ -357,25 +676,27 @@ def _compute_review_only_v2(
         ]
     )
 
-    heavy_confidence = _safe_float((heavy_bundle or {}).get("confidence"))
-    heavy_coverage = _safe_float((heavy_bundle or {}).get("coverage"))
     evidence_agreement_score = _weighted_mean(
         [
-            (truth_center_score, 0.46),
-            (canonical_invariant_score, 0.24),
-            (lane_validity, 0.12),
-            (outfit_invariant_score, 0.10),
-            (batch_relative_score, 0.08),
+            (truth_center_score, 0.38),
+            (canonical_invariant_score, 0.22),
+            (clothing_invariant_score, 0.14),
+            (angle_tolerance_score, 0.14),
+            (lane_validity, 0.08),
+            (outfit_invariant_score, 0.02),
+            (batch_relative_score, 0.04),
         ]
     )
     review_only_confidence = _weighted_mean(
         [
-            (evidence_agreement_score, 0.58),
-            (truth_center_score, 0.14),
+            (evidence_agreement_score, 0.42),
+            (truth_center_score, 0.12),
+            (clothing_invariant_confidence, 0.12),
+            (angle_tolerance_score, 0.16),
             (heavy_confidence, 0.10),
             (heavy_coverage, 0.10),
             (heavy_metrics.get("body_mesh_fit_confidence"), 0.04),
-            (face_shadow.get("face_pose_normalization_confidence"), 0.04),
+            (face_shadow.get("face_pose_normalization_confidence"), 0.00 if lane_family == "back" else 0.04),
         ]
     )
     truth_proxy = _weighted_mean(
@@ -385,7 +706,9 @@ def _compute_review_only_v2(
             (body_topology_support, 0.10 if lane_family in {"front", "three_quarter"} else 0.22 if lane_family == "side" else 0.26),
             (master.get("world3d_master_alignment"), 0.12),
             (heavy_metrics.get("body_pose_delta_similarity"), 0.06),
-            (lane_validity, 0.04),
+            (clothing_invariant_score, 0.04),
+            (angle_tolerance_score, 0.02),
+            (lane_validity, 0.02),
         ]
     )
     truth_proxy_confidence = _weighted_mean(
@@ -394,7 +717,7 @@ def _compute_review_only_v2(
             (heavy_confidence, 0.28),
             (heavy_coverage, 0.18),
             (face_shadow.get("face_pose_normalization_confidence"), 0.12),
-            (lane_validity, 0.10),
+            (lane_membership_confidence, 0.10),
         ]
     )
 
@@ -405,8 +728,15 @@ def _compute_review_only_v2(
     world3d_master_alignment = _safe_float(master.get("world3d_master_alignment"))
     mesh_confidence = _safe_float(heavy_metrics.get("body_mesh_fit_confidence"))
 
-    if lane_validity is not None and lane_validity < 0.42:
-        hard_vetoes.append("LANE_INVALID_FOR_REVIEW")
+    if (
+        lane_validity is not None
+        and lane_validity < 0.28
+        and angle_tolerance_score is not None
+        and angle_tolerance_score < 0.28
+        and truth_center_score is not None
+        and truth_center_score < 0.60
+    ):
+        hard_vetoes.append("LANE_SEVERE_MISMATCH")
     if lane_family in {"front", "three_quarter", "side"}:
         face_master_alignment = _safe_float(master.get("face_master_alignment"))
         canonical_face_alignment = _safe_float(face_shadow.get("canonical_face_identity_similarity"))
@@ -428,6 +758,14 @@ def _compute_review_only_v2(
             hard_vetoes.append("WORLD3D_MASTER_STRONG_CONFLICT")
         if body_truth_support is not None and body_truth_support < 0.56:
             hard_vetoes.append("BODY_TRUTH_COMPOSITE_STRONG_CONFLICT")
+    if (
+        clothing_invariant_score is not None
+        and clothing_invariant_score < 0.48
+        and truth_center_score is not None
+        and truth_center_score < 0.62
+        and (garment_occlusion_index is None or garment_occlusion_index < 0.70)
+    ):
+        hard_vetoes.append("CLOTHING_INVARIANT_STRONG_CONFLICT")
     if review_only_score is None:
         hard_vetoes.append("REVIEW_ONLY_SCORE_UNAVAILABLE")
 
@@ -435,6 +773,18 @@ def _compute_review_only_v2(
         soft_flags.append("BODY_MESH_CONFIDENCE_LOW")
     if heavy_coverage is not None and heavy_coverage < 0.60:
         soft_flags.append("HEAVY_EVIDENCE_COVERAGE_LOW")
+    if lane_validity is not None and lane_validity < 0.42:
+        soft_flags.append("LANE_VALIDITY_LOW")
+    if angle_tolerance_score is not None and angle_tolerance_score < 0.56:
+        soft_flags.append("ANGLE_TOLERANCE_LOW")
+    if lane_membership_confidence is not None and lane_membership_confidence < 0.48:
+        soft_flags.append("LANE_MEMBERSHIP_CONFIDENCE_LOW")
+    body_angle_delta_deg = _safe_float(angle_features.get("body_angle_delta_deg"))
+    face_angle_delta_deg = _safe_float(angle_features.get("face_angle_delta_deg"))
+    if body_angle_delta_deg is not None and body_angle_delta_deg > 24.0:
+        soft_flags.append("BODY_ANGLE_DEVIATION_HIGH")
+    if face_angle_delta_deg is not None and face_angle_delta_deg > 18.0 and lane_family in {"front", "three_quarter", "side"}:
+        soft_flags.append("FACE_ANGLE_DEVIATION_HIGH")
     body_topology_soft_floors = {
         "front": 0.76,
         "three_quarter": 0.72,
@@ -455,6 +805,21 @@ def _compute_review_only_v2(
     topology_floor = float(topology_soft_floors.get(lane_family, 0.70))
     if face_topology_support is not None and lane_family != "back" and face_topology_support < topology_floor:
         soft_flags.append("FACE_CANONICAL_TOPOLOGY_WEAK")
+    clothing_soft_floors = {
+        "front": 0.72,
+        "three_quarter": 0.70,
+        "side": 0.66,
+        "back": 0.64,
+    }
+    clothing_floor = float(clothing_soft_floors.get(lane_family, 0.70))
+    if clothing_invariant_score is not None and clothing_invariant_score < clothing_floor:
+        soft_flags.append("CLOTHING_INVARIANT_SUPPORT_WEAK")
+    if clothing_invariant_confidence is not None and clothing_invariant_confidence < 0.50:
+        soft_flags.append("CLOTHING_INVARIANT_CONFIDENCE_LOW")
+    if garment_occlusion_index is not None and garment_occlusion_index > 0.72:
+        soft_flags.append("GARMENT_OCCLUSION_HIGH")
+    if garment_boundary_risk is not None and garment_boundary_risk > 0.42:
+        soft_flags.append("GARMENT_BOUNDARY_RISK_HIGH")
     truth_soft_floors = {
         "front": {"face": 0.70, "body": 0.70},
         "three_quarter": {"face": 0.64, "body": 0.68},
@@ -498,6 +863,12 @@ def _compute_review_only_v2(
         why_not_high.append("REVIEW_CONFIDENCE_BELOW_PASS_RANGE")
     if review_only_score is not None and review_only_score < thresholds["pass_score"]:
         why_not_high.append("REVIEW_SCORE_BELOW_PASS_RANGE")
+    if angle_tolerance_score is not None and angle_tolerance_score < 0.60:
+        why_not_high.append("ANGLE_VARIATION_REDUCES_CONFIDENCE")
+    if clothing_invariant_confidence is not None and clothing_invariant_confidence < 0.56:
+        why_not_high.append("CLOTHING_INVARIANT_EVIDENCE_WEAK")
+    if garment_occlusion_index is not None and garment_occlusion_index > 0.72:
+        why_not_high.append("GARMENT_OCCLUSION_REQUIRES_MANUAL_CHECK")
 
     return {
         "lane_family": lane_family,
@@ -505,6 +876,7 @@ def _compute_review_only_v2(
         "review_only_confidence_v2": _round_or_none(review_only_confidence),
         "review_only_status_v2": status,
         "review_only_breakdown_v2": {
+            "observed_lane_family": lane_family,
             "face_truth_support": _round_or_none(face_truth_support),
             "body_topology_support": _round_or_none(body_topology_support),
             "body_truth_support": _round_or_none(body_truth_support),
@@ -513,8 +885,27 @@ def _compute_review_only_v2(
             "absolute_truth_support": _round_or_none(absolute_truth_support),
             "canonical_invariant_score": _round_or_none(canonical_invariant_score),
             "outfit_invariant_score": _round_or_none(outfit_invariant_score),
+            "clothing_invariant_score": _round_or_none(clothing_invariant_score),
+            "clothing_invariant_confidence": _round_or_none(clothing_invariant_confidence),
+            "garment_occlusion_index": _round_or_none(garment_occlusion_index),
+            "garment_boundary_risk": _round_or_none(garment_boundary_risk),
+            "surface_evidence_support": _round_or_none(clothing_features.get("surface_evidence_support")),
+            "visible_body_surface_alignment": _round_or_none(clothing_features.get("visible_body_surface_alignment")),
+            "visible_body_structure_score": _round_or_none(clothing_features.get("visible_body_structure_score")),
+            "clothfree_identity_alignment": _round_or_none(clothing_features.get("clothfree_identity_alignment")),
+            "body_under_clothes_continuity": _round_or_none(clothing_features.get("body_under_clothes_continuity")),
+            "occlusion_adjusted_truth_score": _round_or_none(clothing_features.get("occlusion_adjusted_truth_score")),
             "batch_relative_score": _round_or_none(batch_relative_score),
             "lane_validity": _round_or_none(lane_validity),
+            "lane_membership_confidence": _round_or_none(lane_membership_confidence),
+            "angle_tolerance_score": _round_or_none(angle_tolerance_score),
+            "body_angle_delta_deg": _round_or_none(angle_features.get("body_angle_delta_deg")),
+            "face_angle_delta_deg": _round_or_none(angle_features.get("face_angle_delta_deg")),
+            "observed_lane_center_distance_deg": _round_or_none(angle_features.get("observed_lane_center_distance_deg")),
+            "observed_lane_source": angle_features.get("observed_lane_source"),
+            "body_angle_score": _round_or_none(angle_features.get("body_angle_score")),
+            "face_angle_score": _round_or_none(angle_features.get("face_angle_score")),
+            "pose_delta_score": _round_or_none(angle_features.get("pose_delta_score")),
             "face_support_score": _round_or_none(face_support_score),
             "face_topology_support": _round_or_none(face_topology_support),
             "evidence_agreement_score": _round_or_none(evidence_agreement_score),
@@ -558,23 +949,47 @@ def _review_only_pass_guard_reasons(candidate_row: Dict[str, Any]) -> List[str]:
     reasons: List[str] = []
     face_truth = _safe_float(breakdown.get("face_truth_support"))
     body_truth = _safe_float(breakdown.get("body_truth_support"))
+    angle_tolerance = _safe_float(breakdown.get("angle_tolerance_score"))
+    clothing_invariant = _safe_float(breakdown.get("clothing_invariant_score"))
+    clothing_confidence = _safe_float(breakdown.get("clothing_invariant_confidence"))
+    garment_occlusion = _safe_float(breakdown.get("garment_occlusion_index"))
 
     if lane_family == "front":
         if face_truth is not None and face_truth < 0.72:
             reasons.append("FRONT_FACE_TRUTH_BELOW_PASS_FLOOR")
         if body_truth is not None and body_truth < 0.70:
             reasons.append("FRONT_BODY_TRUTH_BELOW_PASS_FLOOR")
+        if angle_tolerance is not None and angle_tolerance < 0.54:
+            reasons.append("FRONT_ANGLE_TOLERANCE_BELOW_PASS_FLOOR")
+        if clothing_invariant is not None and clothing_invariant < 0.70:
+            reasons.append("FRONT_CLOTHING_INVARIANT_BELOW_PASS_FLOOR")
     elif lane_family == "three_quarter":
         if face_truth is not None and face_truth < 0.64:
             reasons.append("THREE_QUARTER_FACE_TRUTH_BELOW_PASS_FLOOR")
         if body_truth is not None and body_truth < 0.68:
             reasons.append("THREE_QUARTER_BODY_TRUTH_BELOW_PASS_FLOOR")
+        if angle_tolerance is not None and angle_tolerance < 0.50:
+            reasons.append("THREE_QUARTER_ANGLE_TOLERANCE_BELOW_PASS_FLOOR")
+        if clothing_invariant is not None and clothing_invariant < 0.68:
+            reasons.append("THREE_QUARTER_CLOTHING_INVARIANT_BELOW_PASS_FLOOR")
     elif lane_family == "side":
         if body_truth is not None and body_truth < 0.66:
             reasons.append("SIDE_BODY_TRUTH_BELOW_PASS_FLOOR")
+        if angle_tolerance is not None and angle_tolerance < 0.48:
+            reasons.append("SIDE_ANGLE_TOLERANCE_BELOW_PASS_FLOOR")
+        if clothing_invariant is not None and clothing_invariant < 0.64:
+            reasons.append("SIDE_CLOTHING_INVARIANT_BELOW_PASS_FLOOR")
     elif lane_family == "back":
         if body_truth is not None and body_truth < 0.66:
             reasons.append("BACK_BODY_TRUTH_BELOW_PASS_FLOOR")
+        if angle_tolerance is not None and angle_tolerance < 0.46:
+            reasons.append("BACK_ANGLE_TOLERANCE_BELOW_PASS_FLOOR")
+        if clothing_invariant is not None and clothing_invariant < 0.62:
+            reasons.append("BACK_CLOTHING_INVARIANT_BELOW_PASS_FLOOR")
+    if garment_occlusion is not None and garment_occlusion > 0.78 and (
+        clothing_confidence is None or clothing_confidence < 0.62
+    ):
+        reasons.append("GARMENT_OCCLUSION_TOO_HIGH_FOR_PRIORITY_PASS")
     return reasons
 
 
@@ -584,6 +999,8 @@ def _review_only_fail_guard_reasons(candidate_row: Dict[str, Any]) -> List[str]:
     face_truth = _safe_float(breakdown.get("face_truth_support"))
     body_truth = _safe_float(breakdown.get("body_truth_support"))
     truth_center = _safe_float(breakdown.get("truth_center_score"))
+    clothing_invariant = _safe_float(breakdown.get("clothing_invariant_score"))
+    garment_occlusion = _safe_float(breakdown.get("garment_occlusion_index"))
     review_score = _safe_float(candidate_row.get("review_only_score_v2"))
     review_confidence = _safe_float(candidate_row.get("review_only_confidence_v2"))
     reasons: List[str] = []
@@ -639,6 +1056,17 @@ def _review_only_fail_guard_reasons(candidate_row: Dict[str, Any]) -> List[str]:
         and review_confidence < 0.76
     ):
         reasons.append("BACK_REVIEW_FAIL_GUARD")
+
+    if (
+        clothing_invariant is not None
+        and truth_center is not None
+        and review_score is not None
+        and clothing_invariant < 0.52
+        and truth_center < 0.66
+        and review_score < 0.72
+        and (garment_occlusion is None or garment_occlusion < 0.72)
+    ):
+        reasons.append("CLOTHING_INVARIANT_REVIEW_FAIL_GUARD")
 
     return reasons
 
@@ -1093,8 +1521,8 @@ def apply_review_only_score_v2(
             comparison_rows.append(
                 {
                     "image": row.get("image"),
-                    "selection_score_legacy": row.get("selection_score"),
-                    "legacy_review_only_status": legacy_status,
+                    "selection_score_legacy": row.get("selection_score_legacy"),
+                    "legacy_review_only_status": row.get("legacy_review_only_status"),
                     "legacy_review_only_confidence": row.get("legacy_review_only_confidence"),
                     "lane_family": row.get("lane_family"),
                     "review_only_score_v2": row.get("review_only_score_v2"),

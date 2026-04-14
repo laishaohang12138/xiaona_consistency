@@ -24,6 +24,10 @@ from .qa_consistency import (
 from .qa_features import extract_face_feat, extract_pose_feat, init_engines
 from .qa_garment import extract_garment_metrics
 from .qa_heavy_review import apply_shortlist_heavy_review
+from .qa_industrial_summary import (
+    build_batch_preflight_summary,
+    build_evidence_completeness_summary,
+)
 from .qa_master_consistency import (
     build_absolute_master_reference,
     build_body_identity_signature as _shared_body_identity_signature,
@@ -544,6 +548,8 @@ def _write_engine_fatal_outputs(
     report_meta = _build_report_meta(runtime, target_profile, AnchorSet(), input_count, master_reference=None)
     report_meta["run_status"] = "engine_fatal"
     _refresh_report_meta_artifacts(runtime, report_meta)
+    report_meta["batch_preflight"] = build_batch_preflight_summary([], report_meta)
+    report_meta["evidence_completeness"] = build_evidence_completeness_summary([], report_meta)
     collection_aggregates = {
         "summary": {},
         "batch_gate": {
@@ -1821,6 +1827,8 @@ def _run_pipeline_impl(
         item["recommendations"] = make_recommendations(runtime, item, target_profile)
     _refresh_report_meta_artifacts(runtime, report_meta)
     report_meta["review_artifact_refresh"] = review_topology_refresh
+    report_meta["batch_preflight"] = build_batch_preflight_summary(report_items, report_meta)
+    report_meta["evidence_completeness"] = build_evidence_completeness_summary(report_items, report_meta)
     report_payload = {
         "report_meta": report_meta,
         "collection_aggregates": collection_aggregates,

@@ -410,6 +410,13 @@ def _topology_review_focus(
     face_topology = _round_or_none((face_summary or {}).get("canonical_face_topology_similarity"))
     body_topology_metric = _round_or_none((truth_summary or {}).get("body_topology_signature_similarity"))
     body_topology_support = _round_or_none((breakdown or {}).get("body_topology_support"))
+    angle_tolerance_score = _round_or_none((breakdown or {}).get("angle_tolerance_score"))
+    body_angle_delta_deg = _round_or_none((breakdown or {}).get("body_angle_delta_deg"))
+    face_angle_delta_deg = _round_or_none((breakdown or {}).get("face_angle_delta_deg"))
+    clothing_invariant_score = _round_or_none((breakdown or {}).get("clothing_invariant_score"))
+    clothing_invariant_confidence = _round_or_none((breakdown or {}).get("clothing_invariant_confidence"))
+    garment_occlusion_index = _round_or_none((breakdown or {}).get("garment_occlusion_index"))
+    garment_boundary_risk = _round_or_none((breakdown or {}).get("garment_boundary_risk"))
 
     if face_topology is not None:
         face_floor = 0.64 if "side" in lane_detail else 0.70 if "three_quarter" in lane_detail else 0.74
@@ -423,6 +430,23 @@ def _topology_review_focus(
         if body_signal is not None and float(body_signal) < body_floor:
             manual_focus.append("check shoulder-hip span, leg-to-torso ratio, and lower-body volume against 116-1")
             prompts.append("Body topology is weak. Compare 116-1 shape structure first, then treat pose/gait as secondary.")
+    if angle_tolerance_score is not None and float(angle_tolerance_score) < 0.60:
+        manual_focus.append("treat exact angle as noisy and decide by topology before pose neatness")
+        prompts.append("Angle variation is noisy. Keep identity judgment centered on canonical topology, not exact pose bucket purity.")
+    if body_angle_delta_deg is not None and float(body_angle_delta_deg) > 24.0:
+        manual_focus.append("compare body topology first if this frame sits between lane centers")
+    if face_angle_delta_deg is not None and float(face_angle_delta_deg) > 18.0:
+        manual_focus.append("do not over-penalize face score when pose is between standard yaw buckets")
+    if clothing_invariant_score is not None and float(clothing_invariant_score) < 0.68:
+        manual_focus.append("verify identity under clothing using body topology before trusting garment shape")
+        prompts.append("Clothing-invariant support is weak. Treat garment silhouette as a risk, not as identity evidence.")
+    if clothing_invariant_confidence is not None and float(clothing_invariant_confidence) < 0.56:
+        manual_focus.append("check whether clothing hides waist, hip, shoulder, or leg evidence")
+    if garment_occlusion_index is not None and float(garment_occlusion_index) > 0.72:
+        manual_focus.append("high garment occlusion: do not use this as training proof without manual confirmation")
+        prompts.append("Garment occlusion is high. Keep this in review unless face/body topology still clearly supports both absolute truths.")
+    if garment_boundary_risk is not None and float(garment_boundary_risk) > 0.42:
+        manual_focus.append("check whether garment boundary is inventing a new body silhouette")
 
     return {
         "manual_focus": _dedupe_keep_order(manual_focus, limit=4),
@@ -462,6 +486,8 @@ def _build_batch_summary(report_payload: Dict[str, Any]) -> Dict[str, Any]:
         "face_canonical_status": report_meta.get("face_canonical_status") or {},
         "release_gate": report_meta.get("release_gate") or {},
         "training_admission_governance": report_meta.get("training_admission_governance") or {},
+        "batch_preflight": report_meta.get("batch_preflight") or {},
+        "evidence_completeness": report_meta.get("evidence_completeness") or {},
         "heavy_evidence_summary": shot_selection.get("heavy_evidence_summary") or {},
         "canonical_truth_summary": _extract_canonical_truth_summary(shot_selection.get("heavy_evidence_summary") or {}),
         "group_count": shot_selection.get("group_count"),
@@ -634,9 +660,17 @@ def _summarize_item(
         "why_not_high_confidence_v2": list((candidate_row or {}).get("why_not_high_confidence_v2") or []),
         "delta_vs_top": (_strip_legacy_review_fields({"delta_vs_top": (candidate_row or {}).get("delta_vs_top")}).get("delta_vs_top")),
         "lane": {
+            "intended_view": ((item.get("collection") or {}).get("view_expected")),
+            "intended_lane_family": ((item.get("collection") or {}).get("view_expected_family")),
+            "prompt_intent_is_weak_prior": ((item.get("collection") or {}).get("view_expected_is_weak_prior")),
             "view_lane": debug.get("view_lane"),
             "view_lane_detail": debug.get("view_lane_detail"),
+            "observed_lane_family": (breakdown or {}).get("observed_lane_family"),
+            "view_lane_detail_confidence": debug.get("view_lane_detail_confidence"),
             "view_lane_strictness_score": debug.get("view_lane_strictness_score"),
+            "body_yaw_deg": ((debug.get("view_router_v2") or {}).get("body_yaw_deg")),
+            "observed_lane_center_distance_deg": (breakdown or {}).get("observed_lane_center_distance_deg"),
+            "observed_lane_source": (breakdown or {}).get("observed_lane_source"),
             "shadow_classifier": {
                 "provider_name": ((debug.get("view_classifier_shadow") or {}).get("provider_name")),
                 "lane": ((debug.get("view_classifier_shadow") or {}).get("lane")),
@@ -750,6 +784,20 @@ def _compact_candidate_for_gpt(row: Dict[str, Any]) -> Dict[str, Any]:
         "body_truth_support": _round_or_none((breakdown or {}).get("body_truth_support")),
         "truth_center_score": _round_or_none((breakdown or {}).get("truth_center_score")),
         "support_only_score": _round_or_none((breakdown or {}).get("support_only_score")),
+        "angle_tolerance_score": _round_or_none((breakdown or {}).get("angle_tolerance_score")),
+        "lane_membership_confidence": _round_or_none((breakdown or {}).get("lane_membership_confidence")),
+    }
+    clothing_invariant = {
+        "clothing_invariant_score": _round_or_none((breakdown or {}).get("clothing_invariant_score")),
+        "clothing_invariant_confidence": _round_or_none((breakdown or {}).get("clothing_invariant_confidence")),
+        "garment_occlusion_index": _round_or_none((breakdown or {}).get("garment_occlusion_index")),
+        "garment_boundary_risk": _round_or_none((breakdown or {}).get("garment_boundary_risk")),
+        "surface_evidence_support": _round_or_none((breakdown or {}).get("surface_evidence_support")),
+        "visible_body_surface_alignment": _round_or_none((breakdown or {}).get("visible_body_surface_alignment")),
+        "visible_body_structure_score": _round_or_none((breakdown or {}).get("visible_body_structure_score")),
+        "clothfree_identity_alignment": _round_or_none((breakdown or {}).get("clothfree_identity_alignment")),
+        "body_under_clothes_continuity": _round_or_none((breakdown or {}).get("body_under_clothes_continuity")),
+        "occlusion_adjusted_truth_score": _round_or_none((breakdown or {}).get("occlusion_adjusted_truth_score")),
     }
     compact = {
         "image": row.get("image"),
@@ -760,11 +808,21 @@ def _compact_candidate_for_gpt(row: Dict[str, Any]) -> Dict[str, Any]:
         "review_only_confidence": _round_or_none(row.get("review_only_confidence_v2")),
         "lane": _clean_dict(
             {
+                "intended_view": str((lane or {}).get("intended_view") or "").strip(),
+                "intended_lane_family": str((lane or {}).get("intended_lane_family") or "").strip(),
+                "prompt_intent_is_weak_prior": (lane or {}).get("prompt_intent_is_weak_prior"),
                 "view_lane": str((lane or {}).get("view_lane") or "").strip(),
                 "view_lane_detail": str((lane or {}).get("view_lane_detail") or "").strip(),
+                "observed_lane_family": str((lane or {}).get("observed_lane_family") or "").strip(),
+                "view_lane_detail_confidence": _round_or_none((lane or {}).get("view_lane_detail_confidence")),
+                "view_lane_strictness_score": _round_or_none((lane or {}).get("view_lane_strictness_score")),
+                "body_yaw_deg": _round_or_none((lane or {}).get("body_yaw_deg")),
+                "observed_lane_center_distance_deg": _round_or_none((lane or {}).get("observed_lane_center_distance_deg")),
+                "observed_lane_source": str((lane or {}).get("observed_lane_source") or "").strip(),
             }
         ),
         "truth_center": _clean_dict(truth_center),
+        "clothing_invariant": _clean_dict(clothing_invariant),
         "canonical_truth_summary": _clean_dict(dict(row.get("canonical_truth_summary") or {})),
         "face_canonical_summary": _compact_face_canonical_for_gpt(row.get("face_canonical_summary") or {}),
         "hard_vetoes": list(row.get("review_only_hard_vetoes_v2") or [])[:6],
@@ -810,6 +868,23 @@ def _build_gpt_review_packet(
     ranked_review_packet = review_packet.get("ranked_review_packet") or {}
     items = list(review_packet.get("items") or [])
     selection = batch_summary.get("selection") or {}
+
+    clothing_rows = [
+        (row.get("review_only_breakdown_v2") or {})
+        for row in items
+        if isinstance(row, dict)
+    ]
+    surface_values = [value for value in (_round_or_none((row or {}).get("surface_evidence_support")) for row in clothing_rows) if value is not None]
+    surface_alignment_values = [value for value in (_round_or_none((row or {}).get("visible_body_surface_alignment")) for row in clothing_rows) if value is not None]
+    occlusion_values = [value for value in (_round_or_none((row or {}).get("garment_occlusion_index")) for row in clothing_rows) if value is not None]
+    boundary_risk_values = [value for value in (_round_or_none((row or {}).get("garment_boundary_risk")) for row in clothing_rows) if value is not None]
+    clothing_conf_values = [value for value in (_round_or_none((row or {}).get("clothing_invariant_confidence")) for row in clothing_rows) if value is not None]
+
+    def _mean_or_none(values: Sequence[float]) -> Optional[float]:
+        if not values:
+            return None
+        return _round_or_none(sum(float(value) for value in values) / max(1, len(values)))
+
     gpt_packet = {
         "schema_version": "gpt_review_packet_v1",
         "generated_at_utc": review_packet.get("generated_at_utc"),
@@ -850,9 +925,25 @@ def _build_gpt_review_packet(
             "main_status_counts": batch_summary.get("status_counts") or {},
             "lane_detail_counts": batch_summary.get("lane_detail_counts") or {},
             "primary_risks": list(batch_summary.get("primary_risks") or [])[:6],
+            "clothing_invariant_summary": _clean_dict(
+                {
+                    "batch_clothfree_identity_cohesion": (batch_summary.get("identity_summary") or {}).get("batch_clothfree_identity_cohesion"),
+                    "body_under_clothes_continuity": (batch_summary.get("geometry_summary") or {}).get("body_under_clothes_continuity"),
+                    "garment_boundary_stability": (batch_summary.get("garment_summary") or {}).get("garment_boundary_stability"),
+                    "surface_evidence_support_mean": _mean_or_none(surface_values),
+                    "visible_body_surface_alignment_mean": _mean_or_none(surface_alignment_values),
+                    "garment_occlusion_index_mean": _mean_or_none(occlusion_values),
+                    "garment_boundary_risk_mean": _mean_or_none(boundary_risk_values),
+                    "clothing_invariant_confidence_mean": _mean_or_none(clothing_conf_values),
+                    "surface_evidence_coverage": _round_or_none(len(surface_values) / max(1, len(items))),
+                }
+            ),
             "lane_risk_focus": _clean_dict(dict(batch_summary.get("lane_risk_focus") or {})),
             "release_gate": _compact_release_gate(batch_summary.get("release_gate") or {}),
             "admission_advice": _compact_admission_advice(batch_summary.get("admission_advice") or {}),
+            "batch_preflight": _clean_dict(dict(batch_summary.get("batch_preflight") or {})),
+            "evidence_completeness": _clean_dict(dict(batch_summary.get("evidence_completeness") or {})),
+            "lane_governance_note": "Use observed lane family for QA governance. Prompt/view intent remains a weak prior for diagnosis only.",
         },
         "priority_review_queue": {
             "pass_candidates": _first_rows_by_status(items, status="PASS", limit=12),

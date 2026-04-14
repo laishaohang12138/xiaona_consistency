@@ -11,6 +11,7 @@ from .qa_heavy_review import (
     build_heavy_evidence_bundle,
     normalize_heavy_evidence_bundle,
 )
+from .qa_heavy_surface_occlusion import ClothingSurfaceOcclusionBridgeProvider
 from .qa_utils import dedupe_keep_order
 
 _FUSION_SCHEMA = "heavy_evidence_v1"
@@ -297,17 +298,19 @@ class SegformerBodyTruthFusionHeavyEvidenceProvider(_MultiComponentFusionHeavyEv
     def __init__(self) -> None:
         super().__init__(
             components=[
-                (SegformerHeavyEvidenceProvider(), 0.22, 0.28, "segformer"),
-                (BodyMeasureHeavyEvidenceProvider(), 0.28, 0.28, "body_measure"),
-                (BodyCanonicalHeavyEvidenceProvider(), 0.50, 0.44, "body_canonical"),
+                (SegformerHeavyEvidenceProvider(), 0.20, 0.25, "segformer"),
+                (BodyMeasureHeavyEvidenceProvider(), 0.25, 0.25, "body_measure"),
+                (BodyCanonicalHeavyEvidenceProvider(), 0.45, 0.40, "body_canonical"),
+                (ClothingSurfaceOcclusionBridgeProvider(), 0.10, 0.10, "surface_occlusion"),
             ],
             positive_guidance=[
-                "Boundary, geometry, and canonical 116-1 body truth evidence are all available for review.",
+                "Boundary, geometry, canonical 116-1 body truth, and surface occlusion evidence are all available for review.",
             ],
             degraded_guidance=[
                 ("body_canonical", "Canonical 116-1 body truth evidence is missing; this fusion falls back to boundary and geometry only."),
                 ("segformer", "Segformer boundary evidence is missing; garment-edge review will be weaker."),
                 ("body_measure", "Body geometry evidence is missing; constitution review will be weaker."),
+                ("surface_occlusion", "DensePose/SAM2 surface occlusion sidecar is missing; clothing-invariant review falls back to parser and body topology."),
             ],
             unavailable_guidance="All heavy evidence components are unavailable for this image.",
         )

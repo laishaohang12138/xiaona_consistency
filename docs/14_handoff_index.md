@@ -7,6 +7,8 @@ Read in this order:
 1. [15_project_memory.md](./15_project_memory.md)
 2. [16_current_state.md](./16_current_state.md)
 3. [17_next_actions.md](./17_next_actions.md)
+4. [25_clothing_invariant_surface_bridge.md](./25_clothing_invariant_surface_bridge.md) when reviewing clothing-invariant surface evidence.
+5. [26_densepose_wsl_deployment.md](./26_densepose_wsl_deployment.md) when preparing official DensePose deployment.
 
 Use this pack when:
 

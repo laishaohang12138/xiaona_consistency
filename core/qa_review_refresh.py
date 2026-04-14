@@ -9,6 +9,10 @@ from .qa_face_pose_canonical import _load_json_object as _load_face_json_object
 from .qa_face_pose_canonical import _normalize_artifact as _normalize_face_artifact
 from .qa_face_pose_canonical import _topology_signature_similarity
 from .qa_review_only_score import apply_review_only_score_v2
+from .qa_industrial_summary import (
+    build_batch_preflight_summary,
+    build_evidence_completeness_summary,
+)
 from .qa_review_packet import build_review_packet
 
 
@@ -306,6 +310,8 @@ def rebuild_review_artifacts_from_report(
         target_profile=str(report_meta.get("active_profile") or "").strip() or None,
     )
     report_meta["review_artifact_refresh"] = refresh_summary
+    report_meta["batch_preflight"] = build_batch_preflight_summary(report_items, report_meta)
+    report_meta["evidence_completeness"] = build_evidence_completeness_summary(report_items, report_meta)
     payload["report_meta"] = report_meta
 
     resolved_output.mkdir(parents=True, exist_ok=True)

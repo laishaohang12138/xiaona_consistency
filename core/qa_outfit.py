@@ -16,10 +16,10 @@ _VIEW_ALIASES: Sequence[tuple[str, Sequence[str]]] = (
     ("side_like_right", ("side_like_right", "side-like-right")),
     ("strict_back_180", ("strict_back_180", "strict-back-180")),
     ("back_like", ("back_like", "back-like")),
-    ("three_quarter", ("three_quarter", "three-quarter", "3q", "threequarter")),
+    ("three_quarter", ("three_quarter", "three-quarter", "3q", "threequarter", "30deg", "30_deg", "60deg", "60_deg")),
     ("front", ("front",)),
-    ("side_90", ("side_90", "side-90")),
-    ("back_180", ("back_180", "back-180")),
+    ("side_90", ("side_90", "side-90", "90deg", "90_deg")),
+    ("back_180", ("back_180", "back-180", "180deg", "180_deg")),
 )
 _NECKLINE_SLOTS: Dict[str, Sequence[str]] = {
     "turtleneck": ("turtleneck", "highneck", "high_neck"),
@@ -112,6 +112,34 @@ def _detect_view_expected(tokens: Sequence[str]) -> Optional[str]:
     return None
 
 
+def _view_family_from_expected(view_expected: Optional[str]) -> Optional[str]:
+    value = str(view_expected or "").strip().lower()
+    if not value:
+        return None
+    if "back" in value:
+        return "back"
+    if "side" in value:
+        return "side"
+    if "three" in value or "3q" in value:
+        return "three_quarter"
+    if "front" in value:
+        return "front"
+    return None
+
+
+def _view_center_deg_from_expected(view_expected: Optional[str]) -> Optional[float]:
+    family = _view_family_from_expected(view_expected)
+    mapping = {
+        "front": 0.0,
+        "three_quarter": 45.0,
+        "side": 90.0,
+        "back": 180.0,
+    }
+    if family is None:
+        return None
+    return float(mapping.get(family, 0.0))
+
+
 def _detect_slot_from_keywords(layer_tag: Optional[str], tokens: Sequence[str]) -> Optional[str]:
     if layer_tag == "NECKLINE":
         mapping = _NECKLINE_SLOTS
@@ -137,6 +165,8 @@ def parse_collection_metadata(image_path: Path, input_dir: Optional[Path]) -> Di
     outfit_key = _extract_named_key(tokens, "outfit")
     slot_key = _extract_named_key(tokens, "slot")
     view_expected = _detect_view_expected(tokens)
+    view_expected_family = _view_family_from_expected(view_expected)
+    view_expected_center_deg = _view_center_deg_from_expected(view_expected)
 
     naming_source = "none"
     if look_key is None and layer_tag is not None:
@@ -183,6 +213,9 @@ def parse_collection_metadata(image_path: Path, input_dir: Optional[Path]) -> Di
         "outfit_key": outfit_key,
         "slot_key": slot_key,
         "view_expected": view_expected,
+        "view_expected_family": view_expected_family,
+        "view_expected_center_deg": view_expected_center_deg,
+        "view_expected_is_weak_prior": view_expected_family is not None,
         "groupable": bool(groupable),
         "naming_source": naming_source,
     }

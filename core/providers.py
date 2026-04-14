@@ -951,6 +951,12 @@ def build_provider_bundle(provider_policy: Dict[str, str]) -> ProviderBundle:
     except Exception as exc:
         heavy_import_errors["segformer_body_truth_fusion"] = str(exc)
     try:
+        from .qa_heavy_surface_occlusion import ClothingSurfaceOcclusionBridgeProvider
+
+        heavy_provider_map["clothing_surface_occlusion_bridge"] = ClothingSurfaceOcclusionBridgeProvider()
+    except Exception as exc:
+        heavy_import_errors["clothing_surface_occlusion_bridge"] = str(exc)
+    try:
         from .qa_view_classifier_lite import ViewClassifierLiteProvider
 
         view_classifier_provider_map["view_classifier_lite"] = ViewClassifierLiteProvider()
