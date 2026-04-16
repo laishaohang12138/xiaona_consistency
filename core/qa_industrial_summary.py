@@ -79,6 +79,12 @@ def _extract_intended_lane_family(item: Dict[str, Any]) -> str:
     return "unknown"
 
 
+def _extract_prompt_intent_source(item: Dict[str, Any]) -> str:
+    collection = _extract_collection(item)
+    value = str(collection.get("prompt_intent_metadata_source") or "").strip().lower()
+    return value or "none"
+
+
 def _extract_observed_lane_center_distance(item: Dict[str, Any]) -> Optional[float]:
     breakdown = _extract_breakdown(item)
     return _safe_float(
@@ -153,12 +159,15 @@ def build_batch_preflight_summary(
     release_gate = meta.get("release_gate") if isinstance(meta.get("release_gate"), dict) else {}
     lane_counts: Dict[str, int] = {}
     intended_lane_counts: Dict[str, int] = {}
+    prompt_intent_source_counts: Dict[str, int] = {}
     intended_pairs = 0
     intended_matches = 0
     observed_center_distances: List[float] = []
     for item in items:
         family = _extract_lane_family(item)
         lane_counts[family] = lane_counts.get(family, 0) + 1
+        prompt_source = _extract_prompt_intent_source(item)
+        prompt_intent_source_counts[prompt_source] = prompt_intent_source_counts.get(prompt_source, 0) + 1
         intended_family = _extract_intended_lane_family(item)
         if intended_family != "unknown":
             intended_lane_counts[intended_family] = intended_lane_counts.get(intended_family, 0) + 1
@@ -187,6 +196,12 @@ def build_batch_preflight_summary(
         )[0]
     intended_lane_share = float(dominant_intended_lane_count / max(1, total))
     intended_lane_coverage = float(sum(intended_lane_counts.values()) / max(1, total))
+    prompt_intent_source = "none"
+    if prompt_intent_source_counts:
+        prompt_intent_source, _ = sorted(
+            prompt_intent_source_counts.items(),
+            key=lambda row: (-int(row[1]), str(row[0])),
+        )[0]
     intended_observed_match_share = (
         float(intended_matches / max(1, intended_pairs))
         if intended_pairs > 0
@@ -267,7 +282,8 @@ def build_batch_preflight_summary(
         "schema_version": "industrial_batch_preflight_v1",
         "input_count": total,
         "governance_lane_source": "observed_lane_family",
-        "prompt_intent_source": "collection.view_expected",
+        "prompt_intent_source": prompt_intent_source,
+        "prompt_intent_source_counts": prompt_intent_source_counts,
         "prompt_intent_is_weak_prior": True,
         "lane_counts": lane_counts,
         "dominant_lane_family": dominant_lane_family,

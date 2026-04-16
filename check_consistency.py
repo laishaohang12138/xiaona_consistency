@@ -123,6 +123,10 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
         "label": "批次复核",
         "summary": "对当前 input 图集运行 QA，输出排序、review packet 和 winner 候选。",
     },
+    "preflight_batch": {
+        "label": "批次前置预检",
+        "summary": "在重型 QA 前先看 lane 纯度、混批风险和 prompt intent 元数据是否齐全。",
+    },
     "refresh_review_artifacts": {
         "label": "刷新复核产物",
         "summary": "基于现有 qa_report 与缓存，回填 topology 字段并重建 review packet / GPT 分析包。",
@@ -332,6 +336,7 @@ def _select_workflow_interactively(default: str = "shot_review") -> str:
         "请选择当前要完成的任务",
         [
             ("shot_review", "审一轮 shot 批次，输出 QA、排序和 review packet"),
+            ("preflight_batch", "在 heavy QA 前先做 lane 纯度、混批和元数据预检"),
             ("refresh_review_artifacts", "基于现有 qa_report 和缓存刷新 review packet / GPT 包"),
             ("inspect_review_packet", "查看最近一次 review packet 的批次摘要和复核提示"),
             ("promote_winner", "把人工确认的 winner 写入 winner bank"),
@@ -443,6 +448,7 @@ def _prompt_heavy_provider_compare_targets(
 def _default_review_paths(base_dir: Path) -> Dict[str, Path]:
     output_dir = (base_dir / "outputs").resolve()
     return {
+        "preflight_batch": output_dir / "preflight_batch.json",
         "qa_report": output_dir / "qa_report.json",
         "ranked_candidates": output_dir / "ranked_candidates.json",
         "review_packet": output_dir / "review_packet.json",
@@ -1245,6 +1251,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         return
 
     if workflow in {
+        "preflight_batch",
         "refresh_review_artifacts",
         "inspect_review_packet",
         "promote_winner",
@@ -1362,6 +1369,43 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         return None
 
     paths = _default_review_paths(base_dir)
+    if workflow == "preflight_batch":
+        try:
+            from core.qa_preflight import create_lightweight_preflight_config, run_preflight_batch
+        except ModuleNotFoundError as exc:
+            missing_name = str(getattr(exc, "name", "") or "unknown")
+            raise RuntimeError(
+                f"preflight_batch requires the runtime stack because module '{missing_name}' is missing. "
+                "Run it with .venv\\Scripts\\python.exe or install the full QA dependencies."
+            ) from exc
+
+        runtime = None
+        config = create_lightweight_preflight_config(base_dir)
+        try:
+            runtime = create_runtime(base_dir)
+            config = runtime.config
+        except Exception:
+            runtime = None
+        target_profile = str(args.profile or config.review.active_profile or "").strip()
+        if not target_profile:
+            raise ValueError("preflight_batch could not resolve an active profile")
+
+        result = run_preflight_batch(
+            runtime,
+            config=config,
+            input_dir=config.paths.dir_input,
+            target_profile=target_profile,
+            manifest_path=args.input_manifest,
+        )
+        paths["preflight_batch"].write_text(
+            json.dumps(result, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        _print_preflight_summary(result)
+        print(f"[预检文件] {paths['preflight_batch']}")
+        print("[交互引导] 如果这里已经 WARN/FAIL，先拆批或补齐 input manifest，再跑 shot_review。")
+        return 0
+
     if workflow == "setup_external_models":
         status_before = _external_setup_status(base_dir)
         _print_external_setup_status(status_before)
@@ -1565,6 +1609,42 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
     raise ValueError(f"unsupported workflow: {workflow}")
 
 
+def _print_preflight_summary(payload: Dict[str, Any]) -> None:
+    batch = payload.get("batch_preflight") or {}
+    manifest = payload.get("manifest_summary") or {}
+    print("\n[批次预检]")
+    print(f"  训练层: {payload.get('target_profile')}")
+    print(f"  图片数: {payload.get('input_count')}")
+    print(
+        "  Manifest: "
+        f"available={manifest.get('available')} "
+        f"| coverage={manifest.get('matched_image_share')} "
+        f"| path={manifest.get('path')}"
+    )
+    print(
+        "  预检治理: "
+        f"status={batch.get('status')} "
+        f"| lane_source={batch.get('governance_lane_source')} "
+        f"| dominant={batch.get('dominant_lane_family')} "
+        f"| share={batch.get('dominant_lane_share')} "
+        f"| purity={batch.get('lane_purity_score')}"
+    )
+    print(
+        "  意图对照: "
+        f"source={batch.get('prompt_intent_source')} "
+        f"| weak_prior={batch.get('prompt_intent_is_weak_prior')} "
+        f"| coverage={batch.get('intended_lane_coverage')} "
+        f"| match={batch.get('intended_observed_lane_match_share')}"
+    )
+    if batch.get("lane_counts"):
+        print(f"  观测 lane: {batch.get('lane_counts')}")
+    if batch.get("intended_lane_counts"):
+        print(f"  意图 lane: {batch.get('intended_lane_counts')}")
+    if batch.get("reasons"):
+        print(f"  风险  : {batch.get('reasons')}")
+    print(f"  建议动作: {batch.get('recommended_action')}")
+
+
 def _select_preset_interactively(
     *,
     base_dir: Path,
@@ -1670,6 +1750,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--workflow",
         choices=[
             "shot_review",
+            "preflight_batch",
             "refresh_review_artifacts",
             "inspect_review_packet",
             "promote_winner",
@@ -1711,6 +1792,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "disabled",
         ],
         help="Override the heavy evidence provider for QA mode.",
+    )
+    parser.add_argument(
+        "--input-manifest",
+        type=Path,
+        help="Optional input manifest JSON. Defaults to input/input_manifest.json when present.",
     )
     parser.add_argument(
         "--winner-image",

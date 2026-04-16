@@ -157,16 +157,23 @@ def _detect_slot_from_keywords(layer_tag: Optional[str], tokens: Sequence[str]) 
     return None
 
 
-def parse_collection_metadata(image_path: Path, input_dir: Optional[Path]) -> Dict[str, Any]:
+def parse_collection_metadata(
+    image_path: Path,
+    input_dir: Optional[Path],
+    manifest_entry: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     rel_path = _safe_relative_path(image_path, input_dir)
     tokens = _tokenize_path(rel_path)
     layer_tag = _detect_layer_tag(tokens)
     look_key = _extract_named_key(tokens, "look")
     outfit_key = _extract_named_key(tokens, "outfit")
     slot_key = _extract_named_key(tokens, "slot")
-    view_expected = _detect_view_expected(tokens)
-    view_expected_family = _view_family_from_expected(view_expected)
-    view_expected_center_deg = _view_center_deg_from_expected(view_expected)
+    view_expected_from_path = _detect_view_expected(tokens)
+    view_expected_family_from_path = _view_family_from_expected(view_expected_from_path)
+    view_expected_center_deg_from_path = _view_center_deg_from_expected(view_expected_from_path)
+    view_expected = view_expected_from_path
+    view_expected_family = view_expected_family_from_path
+    view_expected_center_deg = view_expected_center_deg_from_path
 
     naming_source = "none"
     if look_key is None and layer_tag is not None:
@@ -205,6 +212,49 @@ def parse_collection_metadata(image_path: Path, input_dir: Optional[Path]) -> Di
         elif layer_tag is not None:
             naming_source = "layer_only"
 
+    prompt_intent_metadata_source = "path_tokens" if view_expected_family is not None else "none"
+    manifest_payload = dict(manifest_entry) if isinstance(manifest_entry, dict) else {}
+    manifest_present = len(manifest_payload) > 0
+    if manifest_present:
+        if not layer_tag and manifest_payload.get("layer_tag"):
+            layer_tag = str(manifest_payload.get("layer_tag")).strip() or layer_tag
+        if look_key is None and manifest_payload.get("look_key"):
+            look_key = str(manifest_payload.get("look_key")).strip() or look_key
+        if outfit_key is None and manifest_payload.get("outfit_key"):
+            outfit_key = str(manifest_payload.get("outfit_key")).strip() or outfit_key
+        if slot_key is None and manifest_payload.get("slot_key"):
+            slot_key = str(manifest_payload.get("slot_key")).strip() or slot_key
+
+        manifest_view_expected = str(
+            manifest_payload.get("view_expected")
+            or manifest_payload.get("intended_view")
+            or ""
+        ).strip()
+        manifest_view_family = str(
+            manifest_payload.get("view_expected_family")
+            or manifest_payload.get("intended_lane_family")
+            or ""
+        ).strip()
+        manifest_view_center_deg = manifest_payload.get(
+            "view_expected_center_deg",
+            manifest_payload.get("intended_view_center_deg"),
+        )
+        if manifest_view_expected:
+            view_expected = manifest_view_expected
+            prompt_intent_metadata_source = "input_manifest"
+        if manifest_view_family:
+            view_expected_family = _view_family_from_expected(manifest_view_family) or manifest_view_family
+            prompt_intent_metadata_source = "input_manifest"
+        if manifest_view_center_deg is not None:
+            view_expected_center_deg = manifest_view_center_deg
+            prompt_intent_metadata_source = "input_manifest"
+        if view_expected_family is None and view_expected is not None:
+            view_expected_family = _view_family_from_expected(view_expected)
+        if view_expected_center_deg is None and view_expected is not None:
+            view_expected_center_deg = _view_center_deg_from_expected(view_expected)
+        if naming_source == "none":
+            naming_source = "input_manifest"
+
     groupable = layer_tag is not None and look_key is not None
     return {
         "input_relative_path": rel_path.as_posix(),
@@ -215,7 +265,18 @@ def parse_collection_metadata(image_path: Path, input_dir: Optional[Path]) -> Di
         "view_expected": view_expected,
         "view_expected_family": view_expected_family,
         "view_expected_center_deg": view_expected_center_deg,
+        "view_expected_from_path": view_expected_from_path,
+        "view_expected_family_from_path": view_expected_family_from_path,
+        "view_expected_center_deg_from_path": view_expected_center_deg_from_path,
         "view_expected_is_weak_prior": view_expected_family is not None,
+        "prompt_intent_metadata_source": prompt_intent_metadata_source,
+        "manifest_entry_present": bool(manifest_present),
+        "prompt_id": manifest_payload.get("prompt_id"),
+        "seed": manifest_payload.get("seed"),
+        "anchor_source": manifest_payload.get("anchor_source"),
+        "generator_name": manifest_payload.get("generator_name"),
+        "generator_version": manifest_payload.get("generator_version"),
+        "prompt_pack": manifest_payload.get("prompt_pack"),
         "groupable": bool(groupable),
         "naming_source": naming_source,
     }

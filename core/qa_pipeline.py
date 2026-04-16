@@ -15,6 +15,7 @@ import numpy as np
 from .providers import build_provider_bundle
 from .qa_admission import resolve_target_bucket
 from .qa_artifact_manifest import artifact_manifest_path, load_artifact_manifest_summary
+from .qa_collection_metadata import infer_layer_tag_from_profile, parse_collection_metadata
 from .qa_consistency import (
     apply_consistency_soft_gate,
     extract_body_constitution_metrics,
@@ -28,6 +29,7 @@ from .qa_industrial_summary import (
     build_batch_preflight_summary,
     build_evidence_completeness_summary,
 )
+from .qa_input_manifest import load_input_manifest_index, resolve_input_manifest_entry
 from .qa_master_consistency import (
     build_absolute_master_reference,
     build_body_identity_signature as _shared_body_identity_signature,
@@ -40,8 +42,6 @@ from .qa_outfit import (
     build_collection_aggregates,
     build_shot_selection_report,
     evaluate_active_batch_gate,
-    infer_layer_tag_from_profile,
-    parse_collection_metadata,
 )
 from .qa_review_only_score import apply_review_only_score_v2
 from .qa_review_refresh import refresh_review_topology_state
@@ -1146,11 +1146,13 @@ def _run_pipeline_impl(
     if len(anchors.full_pose_feats) == 0:
         print("[警告] 没有全身锚点，将导致 full 模块不可用")
 
+    input_manifest = load_input_manifest_index(config.paths.dir_input)
     report_items: List[Dict[str, Any]] = []
     batch_identity_samples: List[Dict[str, Any]] = []
     master_reference = build_absolute_master_reference(runtime, anchors)
     print(f"[RUN] TONE_FACE_REFS={len(face_tone_anchors)}")
     report_meta = _build_report_meta(runtime, target_profile, anchors, len(images), master_reference=master_reference)
+    report_meta["input_manifest"] = dict(input_manifest.get("summary") or {})
     print(f"\n[运行中] 任务模板: {target_profile}")
     print(f"[运行中] 身份锚池(face): {len(face_identity_anchors)}")
     print(f"[运行中] 质量锚池(face-like): {len(face_quality_anchors)}")
@@ -1163,7 +1165,8 @@ def _run_pipeline_impl(
 
     for img_path in images:
         print(f"-> 检测: {img_path.name}")
-        collection_meta = parse_collection_metadata(img_path, config.paths.dir_input)
+        manifest_entry = resolve_input_manifest_entry(img_path, config.paths.dir_input, input_manifest)
+        collection_meta = parse_collection_metadata(img_path, config.paths.dir_input, manifest_entry=manifest_entry)
         if not collection_meta.get("layer_tag"):
             inferred_layer = infer_layer_tag_from_profile(target_profile)
             if inferred_layer:

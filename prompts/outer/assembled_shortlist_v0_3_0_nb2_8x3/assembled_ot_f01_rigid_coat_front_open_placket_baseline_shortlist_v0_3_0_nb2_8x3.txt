@@ -1,0 +1,195 @@
+[REFERENCE PRIORITY RULE | MUST BE FIRST]
+Create one photorealistic vertical 9:16 full-body studio image of the same woman as the attached reference images.
+Use the reference images as hard anchors, not as loose style inspiration.
+Ref #1 = FACE MASTER (Identity Geometry Anchor). Highest priority for facial identity geometry.
+Ref #2 = FULL BODY MASTER (Body Architecture + Framing + Global Skin Read Anchor). Highest priority for body proportions, body architecture, full-body framing, and overall skin read.
+Ref #3 = UPPER SUPPORT anchor only if shoulders, neck, clavicle basin, collar lay, lapel entry, placket line, neckline edge, front edge, overlap plane, or upper-boundary drift appears.
+Conflict rule: Ref #1 always wins for facial identity geometry. Ref #2 always wins for body proportions, body architecture, full-body framing, and full-body skin read. Ref #3 is auxiliary only.
+Single person only. No redesign. No beautify. No face replacement style drift.
+
+[ANCHOR ROLE SPLIT | PROMPT DOCTRINE]
+Ref #1 governs facial identity geometry only:
+facial proportions, eye-nose-lip spacing, jawline, chin shape, nose structure, lip shape, hairline, and expression read.
+
+Ref #2 governs body architecture and global skin read:
+full-body proportions, shoulder-pelvis relationship, waistline, leg shape, full-body framing,
+and the neutral-cool skin palette from face to neck, torso, hands, legs, knees, calves, ankles, and feet.
+
+If Ref #1 facial skin appears paler than the global body read, preserve Ref #1 facial geometry exactly,
+but harmonize facial luminance and chroma into the same overall skin family as Ref #2.
+
+Ref #2 must never alter facial feature geometry.
+Ref #1 must never override body proportions or full-body framing.
+
+[IDENTITY HARD-LOCK]
+Facial identity geometry must match Ref #1 exactly.
+Do NOT beautify.
+Do NOT change facial proportions.
+Do NOT make the face more generic, younger, cuter, more glamorous, or more influencer-like.
+Layout Lock: inter-feature distances consistent with Ref #1.
+Ratio Lock: face width / face length ratio consistent with Ref #1.
+Face geometry must remain stable across the whole batch.
+Expression: calm neutral, relaxed closed mouth, no smile, no teeth, no pout.
+
+[FEATURE INVARIANTS]
+Face shape: soft oval face, rounded chin, natural jaw width, no V-line.
+Nose: bridge height and bridge length consistent with Ref #1; blunt rounded U-shaped nose tip; no sharp tip; no rhinoplasty look.
+Lips: lip thickness consistent with Ref #1; relaxed closed mouth; no overfilled lips.
+Eyes: natural eye size and spacing, no doll-eye effect, no enlarged iris effect.
+Eyebrows: natural density, not overly sharp, not overly arched.
+Ears: natural size, correct left-right symmetry.
+
+[HAIR & ACCESSORY LOCK]
+Hair Variant: black middle-part low ponytail, clean parting, natural hairline, no bangs covering eyebrows, no curls, no dye, no highlights.
+Hair stays simple, neat, and stable across the batch.
+Keep hair tucked behind the ears or behind the shoulders whenever needed so the neck column, collar lay, lapel entry, placket line, neckline edge, front edge, clavicle basin, and shoulder line stay readable.
+Earrings: small silver hoop earrings only.
+No additional accessories.
+
+[SKIN / TEXTURE / LIGHTING LOCK]
+Lighting: soft studio broad lighting with subtle rim light and soft frontal fill.
+Even exposure from head to toe.
+CRITICAL: uniform skin read from face to neck, clavicles, hands, abdomen, thighs, knees, calves, ankles, and feet.
+Legs must match the face in luminance family and overall chroma family.
+White balance: strictly neutral-cool.
+Skin palette: low-saturation, neutral-cool, clean and healthy, aligned to Ref #2.
+Skin texture: realistic natural skin texture, visible natural pores, fine vellus hair, subtle uneven highlights, realistic micro-contrast.
+Skin must look real and healthy, smooth but not waxy.
+No beauty filter. No airbrushed skin. No plastic skin. No over-smoothed limbs.
+Face geometry must stay locked to Ref #1.
+Face skin brightness must harmonize with the global full-body skin read from Ref #2.
+Avoid auto-exposure darkening.
+Add enough frontal fill so face, wrists, knees, calves, ankles, and feet stay in the same exposure family.
+No harsh specular hot spots.
+
+[BACKGROUND / STUDIO FIX]
+Background: solid neutral grey to cool grey seamless studio cyclorama, grey family around #808080, clean and uncluttered.
+No props. No furniture. No environment storytelling.
+Floor: subtle natural floor shadow grounding the feet.
+No bright white background.
+No black void background.
+No textured wall.
+
+[LAYOUT CONSISTENCY]
+Vertical full-body framing preferred.
+Keep clear breathing space above the head and below the feet.
+Do not crop the silhouette.
+The whole body must read clearly in one glance.
+
+[BODY ARCHITECTURE HARD-LOCK]
+Slim Chinese female, 170cm visual height, 50kg visual weight, slender professional model physique, long-leg proportion, measurements B82cm/W59cm/H86cm, 1:7.5 to 1:8 head-to-body ratio.
+Shoulders straight and relaxed, 38cm shoulder width, 22cm upper arm.
+Visible distinct clavicles, sleek neckline, 30cm neck.
+Natural trapezius slope, no shrugging.
+Shoulder-width to pelvis-width relationship consistent with Ref #2.
+Waist high and natural.
+Flat abdomen without abs definition.
+Natural hip curve, narrow and compact pelvis.
+Low body fat percentage, lean and firm soft tissue, tight silhouette.
+No rib cage visibility.
+No hollow cheeks.
+No body-slimming filter.
+Keep waist width and hip width consistent with Ref #2.
+Avoid snatched waist.
+Avoid extreme hourglass.
+
+[LOWER BODY SAFETY LOCK]
+Thighs: slender and elongated silhouette, tight soft tissue, model-like thin legs, natural thigh gap, no bulging quadriceps, no heavy lower body.
+Knees: clean, natural, aligned forward, not knocked inward, no dark patches, no bruised-looking shadows, no dirty knee tone.
+Calves: long and slender but realistic.
+Ankles: natural ankle bones visible, realistic Achilles line.
+Feet: natural bare feet, correct toe count (5 per foot), natural toe spacing, natural arch, clean heels, natural toenails, anatomically normal.
+Keep knees, ankles, heels, arches, and all toes fully visible and normal whenever framing allows.
+
+[ATTIRE | OUTER BASE]
+Inner top: fitted shallow crew-round matte top, cool mid-grey or slate-grey, fully covering the abdomen, continuous to the trouser waistband, clean neckline edge, no print, no logo, no trim.
+No cropped length. No bare abdomen strip. No exposed midriff gap.
+Trousers: high-waisted dark-charcoal slim straight ankle trousers, matte fabric, clean waistband, no belt, no cargo pockets, no flare, no print.
+Feet: natural bare feet only, low-salience, anatomically normal, quiet grounding only.
+Keep ankle bones, heel line, arch, toe spread, and toe direction readable whenever framing allows.
+Do not let the feet become a styling focus.
+Outerwear: exactly one clean outer layer only, as specified by the shot plugin.
+Outerwear color family: deep charcoal, graphite, muted navy, blue-black, or cool dark grey only.
+Outerwear must stay matte, logo-free, and low-contrast.
+Outerwear length is family-dependent:
+short families may end around the trouser waistband or upper-hip;
+mid families may end from upper-hip to upper-thigh;
+long families may fall from mid-thigh to upper-knee.
+Never go below the knee.
+No second outer layer.
+No scarf, necklace, brooch, bag, gloves, hat, belt tie, or layered accessories.
+Do not let the outer layer erase the clavicle basin, swallow the neck column, overpad the shoulders, pinch the waist into a fake hourglass, hide the trouser waistband, or rewrite the pelvis shape.
+Keep the collar lay, lapel break, front opening, center block, front edge, neckline edge, shirt collar point, placket line, overlap plane, sleeve line, side seam fall, hem line, box hem, and long panel edge clean and readable.
+Do not let pockets or hardware become the main subject.
+
+[CAMERA / OPTICS / FRAMING LOCK]
+Camera height: eye-level.
+Perspective: neutral perspective.
+Lens: 60mm equivalent.
+Horizon level.
+Vertical lines straight.
+Aspect ratio: 9:16.
+Framing: full body, head to toe fully visible.
+Feet fully visible.
+Keep 8–12% floor margin below feet.
+No camera tilt.
+No dramatic perspective distortion.
+No wide-angle look.
+No zoom crop inconsistency.
+Whole body scale should remain stable across the batch.
+
+[POSE GLOBAL RULES | NATURAL LOW-ENTROPY]
+Static standing product-read posture only.
+Neutral symmetry or one minimal quiet weight bias only.
+Body must obey natural anatomy, gravity, perspective, and joint logic.
+Choose only one main pose logic per image.
+The body must read as calm, vertical, and structurally stable before it reads as styled.
+Arms hang naturally at the sides with a narrow clean air gap from the outerwear and the outer thighs.
+Hands stay clear of lapels, placket, pockets, waistband, thighs, and knees.
+Feet stay flat and quiet.
+Feet remain parallel or very slightly outward in a natural stance unless the shot plugin asks for a very small static offset.
+No styling posture.
+No runway energy.
+No coat-display attitude.
+No exaggerated walking stride.
+No visible contrapposto.
+No visible hip pop.
+No chest-forward display pose.
+No dramatic twist.
+No fake dynamic transition.
+No stepping cue.
+No heel lift.
+No toe-pointing display.
+If the body turns, rotate as one quiet unit.
+Do not create the turn with neck overtwist, pelvis drop, ribcage thrust, or a stepping cue.
+Shoulders relaxed and calm.
+Shoulders must stay calm and nearly level.
+Pelvis must stay visually stable.
+Neck natural.
+If weight distribution is not perfectly even, it must remain minimal and visually calm.
+No motion blur.
+No occlusion of key joints.
+Body language must feel neutral, technical, reference-like, and product-read.
+
+[IMAGE QUALITY LOCK]
+Photorealistic.
+Natural anatomy.
+Stable full-body composition.
+High detail on face, clavicle basin, lapel break, neckline edge, shirt collar point, flat placket, soft placket fall, overlap plane, clean placket, box hem, long panel edge, waistband, knees, ankles, feet, and toes.
+No retouching look.
+No synthetic glossy skin.
+No stylized fashion-campaign grade.
+No cinematic mood.
+Reference image feeling, not advertisement feeling.
+
+[SHOT PLUGIN | OT-F01 RIGID COAT FRONT OPEN-PLACKET BASELINE]
+Use a clean-placket rigid coat with a straight collar or a narrow revere.
+Keep the shell compact, structured, and straight.
+Keep the coat open with a narrow clean center channel.
+Let the front edges, sleeves, and hem read as quiet rigid lines.
+Body faces camera directly. Head faces camera directly.
+Do not create cocoon bulk, puffer volume, or overlap front.
+
+[NEGATIVE_core_outer_v0.3.0-nb2-8x3] wrong identity, face drift, generic face, influencer face, over-beautified face, childish face, altered facial proportions, doll face, glam makeup, orange cast, bronze skin, dead-white face, face brighter than body, dark neck, dark clavicles, dark wrists, dark thighs, dark calves, dark ankles, dark feet, outerwear changes the person, widened shoulders, shoulder pads, thick trapezius, shortened neck, swallowed clavicles, swallowed neck column, swallowed lapel break, swallowed neckline edge, swallowed front edge, swallowed placket line, fake snatched waist, exaggerated hourglass, broad pelvis, bulky silhouette, double-breasted front, belt tie, belt knot, strong storm flap, epaulettes, zipper front, stand collar, shawl collar, hood, bomber jacket, puffer, parka, moto jacket, denim jacket, cape, poncho, fur coat, padded coat, cocoon coat, oversized drop shoulder, bare abdomen strip, exposed midriff gap, cropped inner top, cropped jacket look, hand in pocket pose, lapel grab, placket grab, sleeve roll, hem hold, contrapposto, hip pop, runway pose, walking feel, stepping cue, heel lift, toe pointing display, torso twist, high heels, pumps, stilettos, wedges, ankle boots, knee boots, loafers, chunky sneakers, running shoes, sandals, shoes, socks, stockings, tights, cropped feet, missing toes, extra toes, fused toes, malformed feet, bright pure white background, black void background, cinematic lighting, harsh side shadow, glossy skin, plastic skin, wax skin
+
+[NEGATIVE_finish_outer_v0.3.0-nb2-8x3] chalky face, underexposed face, dark calves, dark ankles, dark feet, bruised-looking knees, swallowed clavicle basin, swallowed neck column, lost lapel break, unstable neckline edge, unstable front edge, unstable placket line, unstable overlap plane, unstable center block, unstable hem corners, unstable short hem, unstable long panel edge, panel merged into thighs, hidden trouser waistband, hidden knees, widened shoulders, fake hourglass, glossy skin, plastic skin, wax skin
