@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -127,6 +128,38 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
         "label": "批次前置预检",
         "summary": "在重型 QA 前先看 lane 纯度、混批风险和 prompt intent 元数据是否齐全。",
     },
+    "prepare_input_manifest": {
+        "label": "准备输入清单",
+        "summary": "为当前 input 目录生成或更新 input_manifest.json，给 prompt_id / seed / intended_view 留标准入口。",
+    },
+    "fill_input_manifest_defaults": {
+        "label": "回填输入清单默认值",
+        "summary": "给当前 input_manifest.json 批量补录共享字段，例如 prompt_id、seed、anchor_source。", 
+    },
+    "merge_input_manifest_metadata": {
+        "label": "合并输入清单逐图元数据",
+        "summary": "把外部 image->fields 映射文件合并进当前 input_manifest.json，适合补录逐图 seed 和 prompt_id。",
+    },
+    "refresh_review_run_index": {
+        "label": "刷新运行索引",
+        "summary": "扫描 outputs 和 outputs_snapshots，生成统一运行索引与 clean batch 指针。",
+    },
+    "prepare_front_bootstrap_review": {
+        "label": "准备 front bootstrap 复审表",
+        "summary": "从运行索引读取推荐的 front clean batch，生成 top-3 人工复审表。",
+    },
+    "refresh_review_status_board": {
+        "label": "刷新总控状态板",
+        "summary": "汇总当前 outputs、clean snapshot、front top-3、winner bank 和 manifest 状态。",
+    },
+    "prepare_split_batch_plan": {
+        "label": "准备拆批方案",
+        "summary": "按 observed lane 汇总当前批次，生成 front / three_quarter / side / back 拆批方案。",
+    },
+    "materialize_split_batches": {
+        "label": "落盘拆批目录",
+        "summary": "按 batch_split_plan 把当前 input 复制到 input_split/<lane>/，并为每个子批次生成 manifest 模板。",
+    },
     "refresh_review_artifacts": {
         "label": "刷新复核产物",
         "summary": "基于现有 qa_report 与缓存，回填 topology 字段并重建 review packet / GPT 分析包。",
@@ -134,6 +167,10 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
     "inspect_review_packet": {
         "label": "查看复核摘要",
         "summary": "直接读取最近一次 review packet，快速看批次状态、Top1、风险和人工提示。",
+    },
+    "prepare_winner_bank_review": {
+        "label": "准备 winner 复审包",
+        "summary": "汇总 winner candidate、batch preflight 和当前 bank 状态，生成一份人工确认用 review packet。",
     },
     "promote_winner": {
         "label": "确认 winner",
@@ -337,8 +374,17 @@ def _select_workflow_interactively(default: str = "shot_review") -> str:
         [
             ("shot_review", "审一轮 shot 批次，输出 QA、排序和 review packet"),
             ("preflight_batch", "在 heavy QA 前先做 lane 纯度、混批和元数据预检"),
+            ("prepare_input_manifest", "为当前 input 目录生成或更新 input_manifest.json 模板"),
+            ("fill_input_manifest_defaults", "给当前 input_manifest.json 批量补录 prompt_id / seed / anchor_source"),
+            ("merge_input_manifest_metadata", "把外部逐图 metadata 合并进 input_manifest.json"),
+            ("refresh_review_run_index", "扫描 outputs 和 outputs_snapshots，生成统一运行索引"),
+            ("prepare_front_bootstrap_review", "从运行索引读取 front clean batch，生成 top-3 人工复审表"),
+            ("refresh_review_status_board", "汇总当前主结果、front 基线、winner bank 和 manifest 状态"),
+            ("prepare_split_batch_plan", "按 observed lane 生成当前批次的拆批方案"),
+            ("materialize_split_batches", "把拆批方案落到 input_split/<lane>/ 目录"),
             ("refresh_review_artifacts", "基于现有 qa_report 和缓存刷新 review packet / GPT 包"),
             ("inspect_review_packet", "查看最近一次 review packet 的批次摘要和复核提示"),
+            ("prepare_winner_bank_review", "生成 winner bank 人工确认包，先看能不能 promote"),
             ("promote_winner", "把人工确认的 winner 写入 winner bank"),
             ("seal_training_admission", "把通过 release gate 的候选写入 training admission manifest"),
             ("winner_bank_status", "查看 winner bank 状态与最新跨批次漂移报告"),
@@ -445,10 +491,21 @@ def _prompt_heavy_provider_compare_targets(
             print("[交互引导] 至少需要选择 1 个 heavy provider")
             continue
         return parsed
-def _default_review_paths(base_dir: Path) -> Dict[str, Path]:
-    output_dir = (base_dir / "outputs").resolve()
+def _resolve_artifacts_dir_arg(artifacts_dir: Optional[Path], base_dir: Path) -> Path:
+    if artifacts_dir is None:
+        return (base_dir / "outputs").resolve()
+    return _resolve_cli_path(artifacts_dir, base_dir)
+
+
+def _default_review_paths(base_dir: Path, artifacts_dir: Optional[Path] = None) -> Dict[str, Path]:
+    output_dir = _resolve_artifacts_dir_arg(artifacts_dir, base_dir)
     return {
         "preflight_batch": output_dir / "preflight_batch.json",
+        "batch_split_plan": output_dir / "batch_split_plan.json",
+        "materialized_batch_split": output_dir / "materialized_batch_split.json",
+        "review_run_index": output_dir / "review_run_index.json",
+        "front_bootstrap_review_sheet": output_dir / "front_bootstrap_review_sheet.json",
+        "review_status_board": output_dir / "review_status_board.json",
         "qa_report": output_dir / "qa_report.json",
         "ranked_candidates": output_dir / "ranked_candidates.json",
         "review_packet": output_dir / "review_packet.json",
@@ -456,9 +513,20 @@ def _default_review_paths(base_dir: Path) -> Dict[str, Path]:
         "review_artifacts": output_dir / "review_artifacts.json",
         "winner_bank_candidate": output_dir / "winner_bank_candidate.json",
         "winner_bank_report": output_dir / "winner_bank_report.json",
+        "winner_bank_review_packet": output_dir / "winner_bank_review_packet.json",
         "winner_bank": output_dir / "winner_bank.json",
         "training_admission_manifest": output_dir / "training_admission_manifest.json",
     }
+
+
+def _resolve_input_dir_arg(input_dir: Optional[Path], base_dir: Path) -> Path:
+    if input_dir is None:
+        return (base_dir / "input").resolve()
+    return _resolve_cli_path(input_dir, base_dir)
+
+
+def _override_runtime_input_dir(runtime: Any, input_dir: Path) -> None:
+    runtime.config.paths = replace(runtime.config.paths, dir_input=input_dir)
 
 
 def _powershell_executable() -> str:
@@ -1252,8 +1320,17 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
 
     if workflow in {
         "preflight_batch",
+        "prepare_input_manifest",
+        "fill_input_manifest_defaults",
+        "merge_input_manifest_metadata",
+        "refresh_review_run_index",
+        "prepare_front_bootstrap_review",
+        "refresh_review_status_board",
+        "prepare_split_batch_plan",
+        "materialize_split_batches",
         "refresh_review_artifacts",
         "inspect_review_packet",
+        "prepare_winner_bank_review",
         "promote_winner",
         "seal_training_admission",
         "winner_bank_status",
@@ -1368,7 +1445,108 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
     if workflow in {"", "shot_review", "advanced_cli"}:
         return None
 
-    paths = _default_review_paths(base_dir)
+    paths = _default_review_paths(base_dir, args.artifacts_dir)
+    if workflow == "prepare_input_manifest":
+        from core.qa_input_manifest import create_or_update_input_manifest
+
+        input_dir = _resolve_input_dir_arg(args.input_dir, base_dir)
+        result = create_or_update_input_manifest(
+            input_dir=input_dir,
+            manifest_path=args.input_manifest,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print("[交互引导] 下一步：补齐 prompt_id / seed / anchor_source / intended_view，然后再跑 preflight_batch。")
+        return 0
+
+    if workflow == "fill_input_manifest_defaults":
+        from core.qa_input_manifest import fill_input_manifest_defaults
+
+        input_dir = _resolve_input_dir_arg(args.input_dir, base_dir)
+        result = fill_input_manifest_defaults(
+            input_dir=input_dir,
+            manifest_path=args.input_manifest,
+            prompt_id=args.manifest_prompt_id,
+            seed=args.manifest_seed,
+            anchor_source=args.manifest_anchor_source,
+            generator_name=args.manifest_generator_name,
+            generator_version=args.manifest_generator_version,
+            prompt_pack=args.manifest_prompt_pack,
+            note=args.manifest_note,
+            missing_only=not bool(args.manifest_overwrite_existing),
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print("[交互引导] 下一步：重新跑 preflight_batch，确认 prompt intent 字段覆盖率是否达标。")
+        return 0
+
+    if workflow == "merge_input_manifest_metadata":
+        from core.qa_input_manifest import merge_input_manifest_item_metadata
+
+        input_dir = _resolve_input_dir_arg(args.input_dir, base_dir)
+        if args.manifest_metadata_file is None:
+            raise ValueError("merge_input_manifest_metadata requires --manifest-metadata-file")
+        result = merge_input_manifest_item_metadata(
+            input_dir=input_dir,
+            metadata_file=_resolve_cli_path(args.manifest_metadata_file, base_dir),
+            manifest_path=args.input_manifest,
+            missing_only=not bool(args.manifest_overwrite_existing),
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print("[交互引导] 下一步：重新跑 preflight_batch，确认逐图 metadata 合并后的字段覆盖率。")
+        return 0
+
+    if workflow == "refresh_review_run_index":
+        from core.qa_run_index import build_review_run_index
+
+        result = build_review_run_index(
+            base_dir=base_dir,
+            output_file=paths["review_run_index"],
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[运行索引] {paths['review_run_index']}")
+        print("[交互引导] 先看 recommended_runs.front_bootstrap_snapshot，再决定下一轮人工 winner 复审。")
+        return 0
+
+    if workflow == "prepare_front_bootstrap_review":
+        from core.qa_run_index import build_review_run_index
+        from core.qa_front_bootstrap_review import build_front_bootstrap_review_sheet
+
+        run_index_path = paths["review_run_index"]
+        build_review_run_index(
+            base_dir=base_dir,
+            output_file=run_index_path,
+        )
+        result = build_front_bootstrap_review_sheet(
+            run_index_file=run_index_path,
+            output_file=paths["front_bootstrap_review_sheet"],
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[front bootstrap 复审表] {paths['front_bootstrap_review_sheet']}")
+        print("[交互引导] 先在 top_candidates 里做人工只选一的结论，再考虑 promote_winner。")
+        return 0
+
+    if workflow == "refresh_review_status_board":
+        from core.qa_front_bootstrap_review import build_front_bootstrap_review_sheet
+        from core.qa_run_index import build_review_run_index
+        from core.qa_status_board import build_review_status_board
+
+        run_index_path = paths["review_run_index"]
+        build_review_run_index(
+            base_dir=base_dir,
+            output_file=run_index_path,
+        )
+        build_front_bootstrap_review_sheet(
+            run_index_file=run_index_path,
+            output_file=paths["front_bootstrap_review_sheet"],
+        )
+        result = build_review_status_board(
+            base_dir=base_dir,
+            output_file=paths["review_status_board"],
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[总控状态板] {paths['review_status_board']}")
+        print("[交互引导] 先看 next_actions，再决定补 manifest 还是进入 front bootstrap 人工复审。")
+        return 0
+
     if workflow == "preflight_batch":
         try:
             from core.qa_preflight import create_lightweight_preflight_config, run_preflight_batch
@@ -1386,6 +1564,10 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             config = runtime.config
         except Exception:
             runtime = None
+        input_dir = _resolve_input_dir_arg(args.input_dir, base_dir)
+        if runtime is not None:
+            _override_runtime_input_dir(runtime, input_dir)
+            config = runtime.config
         target_profile = str(args.profile or config.review.active_profile or "").strip()
         if not target_profile:
             raise ValueError("preflight_batch could not resolve an active profile")
@@ -1393,7 +1575,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         result = run_preflight_batch(
             runtime,
             config=config,
-            input_dir=config.paths.dir_input,
+            input_dir=input_dir,
             target_profile=target_profile,
             manifest_path=args.input_manifest,
         )
@@ -1404,6 +1586,38 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         _print_preflight_summary(result)
         print(f"[预检文件] {paths['preflight_batch']}")
         print("[交互引导] 如果这里已经 WARN/FAIL，先拆批或补齐 input manifest，再跑 shot_review。")
+        return 0
+
+    if workflow == "prepare_split_batch_plan":
+        from core.qa_batch_split import build_batch_split_plan
+
+        payload = build_batch_split_plan(
+            review_packet_file=paths["review_packet"],
+            preflight_file=paths["preflight_batch"],
+            output_file=paths["batch_split_plan"],
+        )
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        _print_batch_split_plan_summary(payload)
+        print(f"[拆批方案] {paths['batch_split_plan']}")
+        print("[交互引导] 先按 lane_family 拆到独立 input 目录，再对每个子批次分别跑 preflight_batch / shot_review。")
+        return 0
+
+    if workflow == "materialize_split_batches":
+        from core.qa_batch_split import materialize_split_batches
+
+        payload = materialize_split_batches(
+            plan_file=paths["batch_split_plan"],
+            input_dir=(base_dir / "input").resolve(),
+            output_root=(base_dir / "input_split").resolve(),
+        )
+        paths["materialized_batch_split"].write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        _print_materialized_split_summary(payload)
+        print(f"[拆批落盘摘要] {paths['materialized_batch_split']}")
+        print("[交互引导] 下一步：进入对应 input_split/<lane>/，先跑 preflight_batch，再跑 shot_review。")
         return 0
 
     if workflow == "setup_external_models":
@@ -1431,9 +1645,14 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         return 0
 
     if workflow == "refresh_review_artifacts":
+        from core.qa_run_index import build_review_run_index
         from core.qa_review_refresh import rebuild_review_artifacts_from_report
 
         result = rebuild_review_artifacts_from_report(paths["qa_report"], output_dir=paths["qa_report"].parent)
+        build_review_run_index(
+            base_dir=base_dir,
+            output_file=paths["review_run_index"],
+        )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         packet = _load_json_file(paths["review_packet"], "review packet")
         _print_review_packet_summary(packet)
@@ -1442,6 +1661,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         print(f"[排序] {paths['ranked_candidates']}")
         print(f"[复核摘要文件] {paths['review_packet']}")
         print(f"[GPT 分析包] {paths['gpt_review_packet']}")
+        print(f"[运行索引] {paths['review_run_index']}")
         print("[交互引导] 当整轮 heavy QA 超时，或只想回填 topology 字段时，优先用这个工作流刷新复审产物。")
         return 0
 
@@ -1460,10 +1680,30 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             print("[交互引导] 当前尚未生成 gpt_review_packet.json，请先重跑本轮 QA。")
         return 0
 
+    if workflow == "prepare_winner_bank_review":
+        from core.qa_winner_bank_review import build_winner_bank_review_packet
+
+        payload = build_winner_bank_review_packet(
+            candidate_file=paths["winner_bank_candidate"],
+            winner_bank_report_file=paths["winner_bank_report"],
+            review_packet_file=paths["review_packet"],
+            preflight_file=paths["preflight_batch"],
+            output_file=paths["winner_bank_review_packet"],
+        )
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        print(f"[Winner Bank 复审包] {paths['winner_bank_review_packet']}")
+        if payload.get("promotion_ready"):
+            print("[交互引导] 当前批次允许进入 winner bank 人工确认。先看 recommended_candidate，再决定是否执行 promote_winner。")
+        else:
+            print("[交互引导] 当前批次不建议 promote winner。先处理 promotion_blockers，再重新生成 review packet。")
+        return 0
+
     if workflow == "winner_bank_status":
         report = _load_json_file(paths["winner_bank_report"], "winner bank report")
         _print_winner_bank_summary(report)
         print(f"[Winner Bank 报告] {paths['winner_bank_report']}")
+        if paths["winner_bank_review_packet"].exists():
+            print(f"[Winner Bank 复审包] {paths['winner_bank_review_packet']}")
         return 0
 
     if workflow == "training_admission_status":
@@ -1636,6 +1876,8 @@ def _print_preflight_summary(payload: Dict[str, Any]) -> None:
         f"| coverage={batch.get('intended_lane_coverage')} "
         f"| match={batch.get('intended_observed_lane_match_share')}"
     )
+    if batch.get("manifest_required_field_coverage"):
+        print(f"  Manifest 字段: {batch.get('manifest_required_field_coverage')}")
     if batch.get("lane_counts"):
         print(f"  观测 lane: {batch.get('lane_counts')}")
     if batch.get("intended_lane_counts"):
@@ -1643,6 +1885,77 @@ def _print_preflight_summary(payload: Dict[str, Any]) -> None:
     if batch.get("reasons"):
         print(f"  风险  : {batch.get('reasons')}")
     print(f"  建议动作: {batch.get('recommended_action')}")
+
+
+def _print_batch_split_plan_summary(payload: Dict[str, Any]) -> None:
+    print("\n[拆批方案]")
+    print(f"  lane_source: {payload.get('lane_source')}")
+    print(f"  图片数     : {payload.get('input_count')}")
+    print(f"  split_required: {payload.get('split_required')}")
+    print(f"  建议动作   : {payload.get('recommended_action')}")
+    lane_groups = list(payload.get("lane_groups") or [])
+    for group in lane_groups[:6]:
+        print(
+            f"  - {group.get('lane_family')}: count={group.get('count')} "
+            f"share={group.get('share')} profile={group.get('suggested_profile')} "
+            f"dir={group.get('suggested_input_dir')}"
+        )
+
+
+def _print_materialized_split_summary(payload: Dict[str, Any]) -> None:
+    print("\n[拆批落盘]")
+    print(f"  output_root: {payload.get('output_root')}")
+    print(f"  lane_group_count: {payload.get('lane_group_count')}")
+    print(f"  copied_images: {payload.get('total_copied_images')}")
+    print(f"  copied_sidecars: {payload.get('total_copied_sidecars')}")
+    for group in list(payload.get("lane_groups") or [])[:6]:
+        print(
+            f"  - {group.get('lane_family')}: images={group.get('copied_images')} "
+            f"sidecars={group.get('copied_sidecars')} manifest={group.get('manifest_path')}"
+        )
+        missing_files = list(group.get("missing_files") or [])
+        if missing_files:
+            print(f"    missing={missing_files[:5]}")
+
+
+def _run_shot_review_preflight(
+    *,
+    base_dir: Path,
+    target_profile: Optional[str],
+    input_manifest: Optional[Path],
+    input_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    from core.qa_preflight import create_lightweight_preflight_config, run_preflight_batch
+
+    runtime = None
+    config = create_lightweight_preflight_config(base_dir)
+    resolved_input_dir = input_dir or config.paths.dir_input
+    try:
+        runtime = create_runtime(base_dir)
+        config = runtime.config
+        _override_runtime_input_dir(runtime, resolved_input_dir)
+        config = runtime.config
+    except Exception:
+        runtime = None
+    config.paths = replace(config.paths, dir_input=resolved_input_dir)
+
+    resolved_profile = str(target_profile or config.review.active_profile or "").strip()
+    if not resolved_profile:
+        raise ValueError("shot_review preflight could not resolve an active profile")
+
+    result = run_preflight_batch(
+        runtime,
+        config=config,
+        input_dir=resolved_input_dir,
+        target_profile=resolved_profile,
+        manifest_path=input_manifest,
+    )
+    paths = _default_review_paths(base_dir)
+    paths["preflight_batch"].write_text(
+        json.dumps(result, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return result
 
 
 def _select_preset_interactively(
@@ -1751,8 +2064,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=[
             "shot_review",
             "preflight_batch",
+            "prepare_input_manifest",
+            "fill_input_manifest_defaults",
+            "merge_input_manifest_metadata",
+            "refresh_review_run_index",
+            "prepare_front_bootstrap_review",
+            "refresh_review_status_board",
+            "prepare_split_batch_plan",
+            "materialize_split_batches",
             "refresh_review_artifacts",
             "inspect_review_packet",
+            "prepare_winner_bank_review",
             "promote_winner",
             "seal_training_admission",
             "winner_bank_status",
@@ -1797,6 +2119,59 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--input-manifest",
         type=Path,
         help="Optional input manifest JSON. Defaults to input/input_manifest.json when present.",
+    )
+    parser.add_argument(
+        "--manifest-prompt-id",
+        help="Shared prompt_id written into input_manifest items by fill_input_manifest_defaults.",
+    )
+    parser.add_argument(
+        "--manifest-seed",
+        help="Shared seed written into input_manifest items by fill_input_manifest_defaults.",
+    )
+    parser.add_argument(
+        "--manifest-anchor-source",
+        help="Shared anchor_source written into input_manifest items by fill_input_manifest_defaults.",
+    )
+    parser.add_argument(
+        "--manifest-generator-name",
+        help="Shared generator_name written into input_manifest items by fill_input_manifest_defaults.",
+    )
+    parser.add_argument(
+        "--manifest-generator-version",
+        help="Shared generator_version written into input_manifest items by fill_input_manifest_defaults.",
+    )
+    parser.add_argument(
+        "--manifest-prompt-pack",
+        help="Shared prompt_pack written into input_manifest items by fill_input_manifest_defaults.",
+    )
+    parser.add_argument(
+        "--manifest-note",
+        help="Optional note appended to input_manifest items by fill_input_manifest_defaults.",
+    )
+    parser.add_argument(
+        "--manifest-overwrite-existing",
+        action="store_true",
+        help="Allow fill_input_manifest_defaults to overwrite non-empty manifest fields instead of only filling missing values.",
+    )
+    parser.add_argument(
+        "--manifest-metadata-file",
+        type=Path,
+        help="External JSON file keyed by image name, used by merge_input_manifest_metadata to fill per-item manifest fields.",
+    )
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        help="Override the input directory for preflight_batch, prepare_input_manifest, and qa shot_review.",
+    )
+    parser.add_argument(
+        "--artifacts-dir",
+        type=Path,
+        help="Override the review artifact directory for inspect_review_packet, prepare_winner_bank_review, and other review-oriented workflows.",
+    )
+    parser.add_argument(
+        "--allow-preflight-fail",
+        action="store_true",
+        help="Allow QA shot_review to continue even when preflight_batch returns FAIL.",
     )
     parser.add_argument(
         "--winner-image",
@@ -2069,27 +2444,62 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             default_freeze_tag,
         )
 
-    pipeline_main(
-        base_dir=base_dir,
-        profile_name=selected_profile,
-        run_mode=args.mode,
-        heavy_evidence_provider=args.heavy_provider,
-        auto_load_thresholds=True if args.auto_load_thresholds else None,
-        threshold_override=threshold_override,
-        benchmark_report_path=_resolve_cli_path(args.benchmark_report, base_dir) if args.benchmark_report else None,
-        benchmark_labels_path=_resolve_cli_path(args.benchmark_labels, base_dir) if args.benchmark_labels else None,
-        benchmark_output_path=_resolve_cli_path(args.benchmark_output, base_dir) if args.benchmark_output else None,
-        benchmark_template_out=_resolve_cli_path(args.benchmark_template_out, base_dir) if args.benchmark_template_out else None,
-        benchmark_compare_heavy_providers=args.benchmark_compare_heavy_providers,
-        benchmark_image_root=_resolve_cli_path(args.benchmark_image_root, base_dir) if args.benchmark_image_root else None,
-        benchmark_dataset_role=benchmark_dataset_role,
-        benchmark_optuna_ready=benchmark_optuna_ready,
-        benchmark_id=benchmark_id,
-        benchmark_freeze_tag=benchmark_freeze_tag,
-        benchmark_update_labels=bool(args.benchmark_seal_labels),
-    )
     if effective_mode == "qa":
-        review_packet_path = _default_review_paths(base_dir)["review_packet"]
+        preflight_payload = _run_shot_review_preflight(
+            base_dir=base_dir,
+            target_profile=selected_profile,
+            input_manifest=_resolve_cli_path(args.input_manifest, base_dir) if args.input_manifest else None,
+            input_dir=_resolve_input_dir_arg(args.input_dir, base_dir),
+        )
+        _print_preflight_summary(preflight_payload)
+        print(f"[预检文件] {_default_review_paths(base_dir, args.artifacts_dir)['preflight_batch']}")
+        preflight_status = str((preflight_payload.get("batch_preflight") or {}).get("status") or "").upper()
+        if preflight_status == "FAIL" and not args.allow_preflight_fail:
+            print("[交互引导] 当前 batch preflight 失败，已阻断 shot_review。")
+            print("[交互引导] 先拆批或补齐 input manifest；如确需继续，可显式追加 --allow-preflight-fail。")
+            return 2
+        if preflight_status == "FAIL" and args.allow_preflight_fail:
+            print("[交互引导] 已显式允许 preflight FAIL，继续执行 shot_review。")
+
+    if effective_mode == "qa" and args.input_dir is not None:
+        runtime = create_runtime(base_dir)
+        _override_runtime_input_dir(runtime, _resolve_input_dir_arg(args.input_dir, base_dir))
+        if args.mode is not None:
+            runtime.config.run_mode = str(args.mode)
+        if args.heavy_provider is not None:
+            runtime.config.provider_policy["heavy_evidence"] = str(args.heavy_provider)
+            if runtime.providers is not None:
+                from core.providers import build_provider_bundle
+
+                runtime.providers = build_provider_bundle(runtime.config.provider_policy)
+        if selected_profile is not None:
+            runtime.config.review.active_profile = str(selected_profile)
+        if args.auto_load_thresholds:
+            runtime.config.auto_load_thresholds = True
+        print_runtime_config(runtime)
+        run_pipeline(runtime, profile_name=selected_profile, threshold_override=threshold_override)
+    else:
+        pipeline_main(
+            base_dir=base_dir,
+            profile_name=selected_profile,
+            run_mode=args.mode,
+            heavy_evidence_provider=args.heavy_provider,
+            auto_load_thresholds=True if args.auto_load_thresholds else None,
+            threshold_override=threshold_override,
+            benchmark_report_path=_resolve_cli_path(args.benchmark_report, base_dir) if args.benchmark_report else None,
+            benchmark_labels_path=_resolve_cli_path(args.benchmark_labels, base_dir) if args.benchmark_labels else None,
+            benchmark_output_path=_resolve_cli_path(args.benchmark_output, base_dir) if args.benchmark_output else None,
+            benchmark_template_out=_resolve_cli_path(args.benchmark_template_out, base_dir) if args.benchmark_template_out else None,
+            benchmark_compare_heavy_providers=args.benchmark_compare_heavy_providers,
+            benchmark_image_root=_resolve_cli_path(args.benchmark_image_root, base_dir) if args.benchmark_image_root else None,
+            benchmark_dataset_role=benchmark_dataset_role,
+            benchmark_optuna_ready=benchmark_optuna_ready,
+            benchmark_id=benchmark_id,
+            benchmark_freeze_tag=benchmark_freeze_tag,
+            benchmark_update_labels=bool(args.benchmark_seal_labels),
+        )
+    if effective_mode == "qa":
+        review_packet_path = _default_review_paths(base_dir, args.artifacts_dir)["review_packet"]
         try:
             packet = _load_json_file(review_packet_path, "review packet")
         except ValueError:

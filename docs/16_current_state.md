@@ -75,3 +75,5 @@ Read order inside the packet:
 - no auto-promotion into winner bank
 - no auto-admission into training set
 - curated winner bank may still be empty depending on the current review cycle
+- winner-bank bootstrap is currently deferred until review-only angle, clothing, lighting, and 3D topology invariance are mature enough for industrial LoRA screening
+- front top candidates may be reviewed for diagnostics, but should not be promoted into winner bank under the current policy

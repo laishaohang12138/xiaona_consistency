@@ -85,6 +85,22 @@ def _extract_prompt_intent_source(item: Dict[str, Any]) -> str:
     return value or "none"
 
 
+def _extract_manifest_entry_present(item: Dict[str, Any]) -> bool:
+    collection = _extract_collection(item)
+    return bool(collection.get("manifest_entry_present"))
+
+
+def _has_required_text(value: Any) -> bool:
+    return bool(str(value or "").strip())
+
+
+def _extract_prompt_intent_field(item: Dict[str, Any], field_name: str) -> Any:
+    collection = _extract_collection(item)
+    if field_name == "intended_view":
+        return collection.get("view_expected")
+    return collection.get(field_name)
+
+
 def _extract_observed_lane_center_distance(item: Dict[str, Any]) -> Optional[float]:
     breakdown = _extract_breakdown(item)
     return _safe_float(
@@ -138,6 +154,36 @@ def _component_available(summary: Dict[str, Any], component_key: str) -> bool:
     return False
 
 
+def _provider_declares_component(heavy_provider: Dict[str, Any], component_key: str) -> bool:
+    providers = heavy_provider.get("component_providers")
+    if isinstance(providers, list):
+        for row in providers:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("component_key") or "").strip() == component_key:
+                return True
+    return False
+
+
+def _provider_expectations(active_heavy_name: str, heavy_provider: Dict[str, Any]) -> Dict[str, bool]:
+    normalized = str(active_heavy_name or "").strip().lower()
+    expects_body_canonical = (
+        "canonical" in normalized
+        or "truth_fusion" in normalized
+        or _provider_declares_component(heavy_provider, "body_canonical")
+    )
+    expects_surface_evidence = (
+        "surface" in normalized
+        or "occlusion" in normalized
+        or "truth_fusion" in normalized
+        or _provider_declares_component(heavy_provider, "surface_occlusion")
+    )
+    return {
+        "expects_body_canonical": bool(expects_body_canonical),
+        "expects_surface_evidence": bool(expects_surface_evidence),
+    }
+
+
 def _coverage_ratio(items: Sequence[Dict[str, Any]], predicate) -> float:
     if not items:
         return 0.0
@@ -160,6 +206,7 @@ def build_batch_preflight_summary(
     lane_counts: Dict[str, int] = {}
     intended_lane_counts: Dict[str, int] = {}
     prompt_intent_source_counts: Dict[str, int] = {}
+    manifest_entry_count = 0
     intended_pairs = 0
     intended_matches = 0
     observed_center_distances: List[float] = []
@@ -168,6 +215,8 @@ def build_batch_preflight_summary(
         lane_counts[family] = lane_counts.get(family, 0) + 1
         prompt_source = _extract_prompt_intent_source(item)
         prompt_intent_source_counts[prompt_source] = prompt_intent_source_counts.get(prompt_source, 0) + 1
+        if _extract_manifest_entry_present(item):
+            manifest_entry_count += 1
         intended_family = _extract_intended_lane_family(item)
         if intended_family != "unknown":
             intended_lane_counts[intended_family] = intended_lane_counts.get(intended_family, 0) + 1
@@ -196,12 +245,20 @@ def build_batch_preflight_summary(
         )[0]
     intended_lane_share = float(dominant_intended_lane_count / max(1, total))
     intended_lane_coverage = float(sum(intended_lane_counts.values()) / max(1, total))
+    manifest_entry_coverage = float(manifest_entry_count / max(1, total))
     prompt_intent_source = "none"
     if prompt_intent_source_counts:
         prompt_intent_source, _ = sorted(
             prompt_intent_source_counts.items(),
             key=lambda row: (-int(row[1]), str(row[0])),
         )[0]
+    manifest_required_field_coverage = {
+        "prompt_id": _coverage_ratio(items, lambda item: _has_required_text(_extract_prompt_intent_field(item, "prompt_id"))),
+        "seed": _coverage_ratio(items, lambda item: _extract_prompt_intent_field(item, "seed") is not None),
+        "anchor_source": _coverage_ratio(items, lambda item: _has_required_text(_extract_prompt_intent_field(item, "anchor_source"))),
+        "intended_view": _coverage_ratio(items, lambda item: _has_required_text(_extract_prompt_intent_field(item, "intended_view"))),
+    }
+    manifest_required_field_ready = min(manifest_required_field_coverage.values(), default=0.0) >= 0.80
     intended_observed_match_share = (
         float(intended_matches / max(1, intended_pairs))
         if intended_pairs > 0
@@ -248,6 +305,8 @@ def build_batch_preflight_summary(
         reasons.append("LANE_DISTRIBUTION_TOO_MIXED")
     if intended_lane_coverage < 0.50:
         reasons.append("PROMPT_INTENT_METADATA_MISSING")
+    elif not manifest_required_field_ready:
+        reasons.append("PROMPT_INTENT_FIELDS_INCOMPLETE")
     if (
         intended_observed_match_share is not None
         and intended_lane_coverage >= 0.50
@@ -285,6 +344,13 @@ def build_batch_preflight_summary(
         "prompt_intent_source": prompt_intent_source,
         "prompt_intent_source_counts": prompt_intent_source_counts,
         "prompt_intent_is_weak_prior": True,
+        "manifest_entry_coverage": _round_or_none(manifest_entry_coverage),
+        "manifest_required_fields": ["prompt_id", "seed", "anchor_source", "intended_view"],
+        "manifest_required_field_coverage": {
+            key: _round_or_none(value)
+            for key, value in manifest_required_field_coverage.items()
+        },
+        "manifest_required_field_ready": bool(manifest_required_field_ready),
         "lane_counts": lane_counts,
         "dominant_lane_family": dominant_lane_family,
         "dominant_lane_share": _round_or_none(dominant_lane_share),
@@ -320,7 +386,9 @@ def build_evidence_completeness_summary(
         or (((meta.get("provider_policy") or {}) if isinstance(meta.get("provider_policy"), dict) else {}).get("heavy_evidence"))
         or ""
     ).strip()
-    expects_surface_evidence = any(token in active_heavy_name for token in ("fusion", "surface", "occlusion"))
+    expectations = _provider_expectations(active_heavy_name, heavy_provider)
+    expects_surface_evidence = bool(expectations.get("expects_surface_evidence"))
+    expects_body_canonical = bool(expectations.get("expects_body_canonical"))
 
     coverage = {
         "review_only_score_coverage": _coverage_ratio(items, lambda item: bool(_extract_breakdown(item))),
@@ -357,7 +425,7 @@ def build_evidence_completeness_summary(
         "body_topology_coverage": 0.10,
         "surface_evidence_coverage": 0.10 if expects_surface_evidence else 0.04,
         "face_canonical_coverage": 0.12,
-        "body_canonical_coverage": 0.10,
+        "body_canonical_coverage": 0.10 if expects_body_canonical else 0.04,
         "master_consistency_coverage": 0.08,
     }
     weighted_sum = 0.0
@@ -374,7 +442,7 @@ def build_evidence_completeness_summary(
         reasons.append("MASTER_CONSISTENCY_COVERAGE_WEAK")
     if coverage["face_canonical_coverage"] < 0.95:
         reasons.append("FACE_CANONICAL_COVERAGE_WEAK")
-    if coverage["body_canonical_coverage"] < 0.95:
+    if expects_body_canonical and coverage["body_canonical_coverage"] < 0.95:
         reasons.append("BODY_CANONICAL_COVERAGE_WEAK")
     if expects_surface_evidence and coverage["surface_evidence_coverage"] < 0.90:
         reasons.append("SURFACE_EVIDENCE_COVERAGE_WEAK")
@@ -389,7 +457,7 @@ def build_evidence_completeness_summary(
     replay_ready = (
         coverage["review_only_score_coverage"] >= 0.99
         and coverage["face_canonical_coverage"] >= 0.95
-        and coverage["body_canonical_coverage"] >= 0.95
+        and (not expects_body_canonical or coverage["body_canonical_coverage"] >= 0.95)
         and coverage["master_consistency_coverage"] >= 0.95
         and (not expects_surface_evidence or coverage["surface_evidence_coverage"] >= 0.90)
     )
@@ -398,6 +466,7 @@ def build_evidence_completeness_summary(
         "schema_version": "industrial_evidence_completeness_v1",
         "item_count": len(items),
         "active_heavy_provider": active_heavy_name,
+        "expects_body_canonical": expects_body_canonical,
         "expects_surface_evidence": expects_surface_evidence,
         "coverage": {key: _round_or_none(value) for key, value in coverage.items()},
         "completeness_score": _round_or_none(completeness_score),

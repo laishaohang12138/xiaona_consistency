@@ -7,6 +7,7 @@ __pycache__/
 outputs/
 outputs_snapshots/
 input/
+input_split/
 calib_pass/
 external/
 data/

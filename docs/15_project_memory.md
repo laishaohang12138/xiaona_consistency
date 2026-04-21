@@ -9,7 +9,7 @@ It does:
 - explainable QA metrics
 - batch-relative ranking
 - shortlist evidence for GPT plus human review
-- cross-batch drift evidence through winner bank governance
+- cross-batch drift evidence through winner bank governance after the bootstrap gate is reopened
 
 It does not:
 
@@ -27,6 +27,7 @@ It does not:
 6. Optuna is frozen until anchor coverage and frozen benchmark governance are ready.
 7. Input stays simple. The system adapts to a flat shot batch instead of forcing complex folder structure.
 8. Review outputs must be readable by humans and stable for GPT programmatic analysis.
+9. Winner bank bootstrap is deferred until review-only angle, clothing, lighting, and 3D topology invariance are mature.
 
 ## Current Review Model
 
@@ -42,7 +43,8 @@ Primary user-facing workflow entry:
 
 - `shot_review`
 - `inspect_review_packet`
-- `promote_winner`
+- `refresh_review_status_board`
+- `prepare_front_bootstrap_review`
 - `winner_bank_status`
 
 ## Training Governance Memory
@@ -58,10 +60,17 @@ For every shot batch:
 
 1. human first-pass removes obvious bad generations
 2. machine produces metrics and shortlist evidence
-3. GPT plus human pick the final winner
-4. only the human-approved winner may be promoted into winner bank
+3. GPT plus human use top candidates for diagnostic review
+4. winner-bank promotion stays deferred until review-only invariance gates are mature
 
-For every new winner:
+Before winner-bank bootstrap is reopened:
+
+1. angle noise from Nano Banana prompt/view mismatch must be replay-stable
+2. clothing / OUTER-style occlusion must not create false identity confidence
+3. lighting and exposure drift must not be confused with identity drift
+4. face/body 3D topology consistency must be stable across clean-lane replay
+
+For every future new winner:
 
 1. compare against absolute masters
 2. compare against current batch
