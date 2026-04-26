@@ -1,0 +1,9 @@
+{
+  "schema_version": "input_manifest_metadata_patch_v1",
+  "source_manifest": "D:\\xiaona_consistency\\input_replay\\outer\\front\\long_panel_coat\\ot_h02_long_panel_coat_front_panel_perimeter_signature_shortlist_v0_3_0_nb2_8x3\\input_manifest.json",
+  "outer_replay_lane": "front",
+  "outer_family": "long_panel_coat",
+  "outer_prompt_id": "OT-H02",
+  "outer_prompt_file": "prompts/outer/assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_h02_long_panel_coat_front_panel_perimeter_signature_shortlist_v0_3_0_nb2_8x3.txt",
+  "items": {}
+}

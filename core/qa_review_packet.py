@@ -321,11 +321,73 @@ def _compact_heavy_review_summary(payload: Any) -> Dict[str, Any]:
     return _clean_dict(compact)
 
 
+def _pose_gait_body_truth_read(
+    *,
+    body_truth_alignment: Optional[float],
+    body_topology_alignment: Optional[float],
+    pose_sensitive_measurement: Optional[float],
+    pose_measurement_gap: Optional[float],
+) -> str:
+    if body_truth_alignment is None and body_topology_alignment is None:
+        return "unavailable"
+    truth_signal = body_truth_alignment
+    if truth_signal is None:
+        truth_signal = body_topology_alignment
+    topology_signal = body_topology_alignment
+    if topology_signal is None:
+        topology_signal = body_truth_alignment
+    if (
+        truth_signal is not None
+        and float(truth_signal) >= 0.64
+        and pose_sensitive_measurement is not None
+        and float(pose_sensitive_measurement) < 0.46
+    ):
+        return "pose_sensitive_noise_possible"
+    if (
+        truth_signal is not None
+        and float(truth_signal) >= 0.62
+        and pose_measurement_gap is not None
+        and float(pose_measurement_gap) > 0.10
+    ):
+        return "pose_explained_delta_possible"
+    if (
+        truth_signal is not None
+        and topology_signal is not None
+        and float(truth_signal) < 0.56
+        and float(topology_signal) < 0.56
+    ):
+        return "unexplained_body_drift_risk"
+    if (
+        truth_signal is not None
+        and topology_signal is not None
+        and float(truth_signal) >= 0.74
+        and 0.66 <= float(topology_signal) < 0.72
+        and pose_sensitive_measurement is not None
+        and float(pose_sensitive_measurement) >= 0.78
+        and pose_measurement_gap is not None
+        and abs(float(pose_measurement_gap)) <= 0.04
+    ):
+        return "gait_tolerant_topology_margin_review"
+    if (
+        truth_signal is not None
+        and topology_signal is not None
+        and float(truth_signal) >= 0.72
+        and float(topology_signal) >= 0.72
+    ):
+        return "pose_gait_consistent"
+    return "manual_review_required"
+
+
 def _extract_canonical_truth_summary(heavy_evidence: Any) -> Dict[str, Any]:
     bundle = heavy_evidence if isinstance(heavy_evidence, dict) else {}
     metrics = list(bundle.get("metrics") or [])
     summary = dict(bundle.get("summary") or {}) if isinstance(bundle.get("summary"), dict) else {}
     component_rows = list(summary.get("component_providers") or [])
+    body_canonical_summary = (
+        dict(summary.get("body_canonical_summary") or {})
+        if isinstance(summary.get("body_canonical_summary"), dict)
+        else {}
+    )
 
     def _metric_value(metric_name: str) -> Optional[float]:
         for row in metrics:
@@ -362,16 +424,47 @@ def _extract_canonical_truth_summary(heavy_evidence: Any) -> Dict[str, Any]:
             "coverage": bundle.get("coverage"),
             "device": bundle.get("device"),
         }
+        body_canonical_summary = summary
+
+    body_pose_independent_truth_alignment = _round_or_none(_metric_value("body_pose_independent_truth_alignment"))
+    body_shape_truth_alignment = _round_or_none(_metric_value("body_shape_truth_alignment"))
+    body_gait_tolerant_topology_similarity = _round_or_none(_metric_value("body_gait_tolerant_topology_similarity"))
+    if body_gait_tolerant_topology_similarity is None:
+        body_gait_tolerant_topology_similarity = _round_or_none(_metric_value("body_topology_signature_similarity"))
+    body_pose_sensitive_measurement_similarity = _round_or_none(
+        _metric_value("body_pose_sensitive_measurement_similarity")
+    )
+    body_pose_measurement_gap = _round_or_none(body_canonical_summary.get("body_pose_measurement_gap"))
 
     return {
         "canonical_truth_available": available,
         "body_canonical_provider_state": body_canonical_component or {},
-        "body_shape_truth_alignment": _round_or_none(_metric_value("body_shape_truth_alignment")),
+        "body_truth_policy": "pose_gait_aware_absolute_116_1",
+        "body_truth_pose_gait_read": _pose_gait_body_truth_read(
+            body_truth_alignment=(
+                body_pose_independent_truth_alignment
+                if body_pose_independent_truth_alignment is not None
+                else body_shape_truth_alignment
+            ),
+            body_topology_alignment=body_gait_tolerant_topology_similarity,
+            pose_sensitive_measurement=body_pose_sensitive_measurement_similarity,
+            pose_measurement_gap=body_pose_measurement_gap,
+        ),
+        "body_pose_independent_truth_alignment": body_pose_independent_truth_alignment,
+        "body_shape_truth_alignment": body_shape_truth_alignment,
         "body_shape_beta_similarity": _round_or_none(_metric_value("body_shape_beta_similarity")),
+        "body_gait_tolerant_topology_similarity": body_gait_tolerant_topology_similarity,
         "body_topology_signature_similarity": _round_or_none(_metric_value("body_topology_signature_similarity")),
+        "body_core_measurement_similarity": _round_or_none(_metric_value("body_core_measurement_similarity")),
         "canonical_measurement_similarity": _round_or_none(_metric_value("canonical_measurement_similarity")),
+        "body_pose_sensitive_measurement_similarity": body_pose_sensitive_measurement_similarity,
         "body_pose_delta_similarity": _round_or_none(_metric_value("body_pose_delta_similarity")),
         "body_mesh_fit_confidence": _round_or_none(_metric_value("body_mesh_fit_confidence")),
+        "body_pose_measurement_gap": body_pose_measurement_gap,
+        "body_core_measurement_coverage": _round_or_none(body_canonical_summary.get("body_core_measurement_coverage")),
+        "body_pose_sensitive_measurement_coverage": _round_or_none(
+            body_canonical_summary.get("body_pose_sensitive_measurement_coverage")
+        ),
     }
 
 
@@ -408,7 +501,17 @@ def _topology_review_focus(
     prompts: List[str] = []
 
     face_topology = _round_or_none((face_summary or {}).get("canonical_face_topology_similarity"))
-    body_topology_metric = _round_or_none((truth_summary or {}).get("body_topology_signature_similarity"))
+    body_topology_metric = _round_or_none((truth_summary or {}).get("body_gait_tolerant_topology_similarity"))
+    if body_topology_metric is None:
+        body_topology_metric = _round_or_none((truth_summary or {}).get("body_topology_signature_similarity"))
+    body_truth_metric = _round_or_none((truth_summary or {}).get("body_pose_independent_truth_alignment"))
+    if body_truth_metric is None:
+        body_truth_metric = _round_or_none((truth_summary or {}).get("body_shape_truth_alignment"))
+    body_measurement_metric = _round_or_none((truth_summary or {}).get("body_core_measurement_similarity"))
+    if body_measurement_metric is None:
+        body_measurement_metric = _round_or_none((truth_summary or {}).get("canonical_measurement_similarity"))
+    body_pose_sensitive_metric = _round_or_none((truth_summary or {}).get("body_pose_sensitive_measurement_similarity"))
+    body_pose_measurement_gap = _round_or_none((truth_summary or {}).get("body_pose_measurement_gap"))
     body_topology_support = _round_or_none((breakdown or {}).get("body_topology_support"))
     angle_tolerance_score = _round_or_none((breakdown or {}).get("angle_tolerance_score"))
     body_angle_delta_deg = _round_or_none((breakdown or {}).get("body_angle_delta_deg"))
@@ -417,6 +520,7 @@ def _topology_review_focus(
     clothing_invariant_confidence = _round_or_none((breakdown or {}).get("clothing_invariant_confidence"))
     garment_occlusion_index = _round_or_none((breakdown or {}).get("garment_occlusion_index"))
     garment_boundary_risk = _round_or_none((breakdown or {}).get("garment_boundary_risk"))
+    pose_gait_read = str((truth_summary or {}).get("body_truth_pose_gait_read") or "").strip()
 
     if face_topology is not None:
         face_floor = 0.64 if "side" in lane_detail else 0.70 if "three_quarter" in lane_detail else 0.74
@@ -430,6 +534,24 @@ def _topology_review_focus(
         if body_signal is not None and float(body_signal) < body_floor:
             manual_focus.append("check shoulder-hip span, leg-to-torso ratio, and lower-body volume against 116-1")
             prompts.append("Body topology is weak. Compare 116-1 shape structure first, then treat pose/gait as secondary.")
+    if (
+        body_pose_sensitive_metric is not None
+        and float(body_pose_sensitive_metric) < 0.46
+        and body_truth_metric is not None
+        and float(body_truth_metric) >= 0.64
+    ):
+        manual_focus.append("allow gait asymmetry if trunk, shoulder, hip, and leg volume still match 116-1")
+        prompts.append("Pose-sensitive leg balance is noisy here. Keep the decision on body structure, not left-right gait symmetry.")
+    if (
+        body_pose_measurement_gap is not None
+        and float(body_pose_measurement_gap) > 0.10
+        and body_measurement_metric is not None
+        and float(body_measurement_metric) >= 0.62
+    ):
+        manual_focus.append("treat lower-limb asymmetry as pose noise when core body measurements still hold")
+    if pose_gait_read == "gait_tolerant_topology_margin_review":
+        manual_focus.append("review gait/topology margin: core body truth holds, but topology is just below pass band")
+        prompts.append("Gait-tolerant topology is near the margin. Do not call body drift unless trunk, shoulder-hip span, or leg volume truly changes.")
     if angle_tolerance_score is not None and float(angle_tolerance_score) < 0.60:
         manual_focus.append("treat exact angle as noisy and decide by topology before pose neatness")
         prompts.append("Angle variation is noisy. Keep identity judgment centered on canonical topology, not exact pose bucket purity.")
@@ -889,12 +1011,13 @@ def _build_gpt_review_packet(
         "schema_version": "gpt_review_packet_v1",
         "generated_at_utc": review_packet.get("generated_at_utc"),
         "system_role": review_packet.get("system_role"),
+        "project_scope": review_packet.get("project_scope") or {},
         "final_decision_owner": review_packet.get("final_decision_owner"),
         "analysis_scope": {
             "default_send_to_gpt": ["gpt_review_packet.json"],
             "optional_companion_files": {
                 "winner_bank_report.json": "only when analyzing cross-batch drift",
-                "training_admission_manifest.json": "only when analyzing sealed training admissions",
+                "training_admission_manifest.json": "external/legacy audit only; not required for screening",
             },
             "do_not_send_by_default": [
                 "qa_report.json",
@@ -990,7 +1113,7 @@ def _build_review_artifacts_index(
             },
             {
                 "file": str(training_admission_manifest_file or ""),
-                "purpose": "attach only for training admission or seal analysis",
+                "purpose": "external/legacy audit only; final training admission is outside this project",
             },
         ],
         "internal_debug_only": [
@@ -1024,7 +1147,21 @@ def build_review_packet(
     winner_meta = report_payload.get("winner_bank_governance") or {}
     winner_bank_report = _load_json_if_exists(winner_meta.get("drift_report_file"))
     winner_bank_candidate = _load_json_if_exists(winner_meta.get("candidate_file"))
+    project_scope = (report_payload.get("report_meta") or {}).get("project_scope") or {
+        "role": "screening_and_evidence_only",
+        "training_admission_participation": False,
+        "final_training_decision_owner": "external_training_decision_flow",
+    }
     batch_summary = _build_batch_summary(report_payload)
+    if not bool(project_scope.get("training_admission_participation", False)):
+        batch_summary["training_admission_governance"] = {
+            **dict(batch_summary.get("training_admission_governance") or {}),
+            "enabled": False,
+            "mode": "external_final_decision_out_of_scope",
+            "participates_in_final_admission": False,
+            "final_decision_owner": "external_training_decision_flow",
+            "local_role": "screening_evidence_only",
+        }
     batch_admission = build_batch_admission_advice(batch_summary, {"report": winner_bank_report})
     item_rows = _build_item_analysis(report_payload, batch_admission, winner_bank_report)
     item_lookup = {
@@ -1038,16 +1175,17 @@ def build_review_packet(
         "schema_version": "review_packet_v1_7",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "system_role": "evidence_only",
-        "final_decision_owner": "custom_gpt_plus_human",
+        "project_scope": project_scope,
+        "final_decision_owner": "external_training_decision_flow",
         "usage_protocol": {
-            "machine_role": "provide explainable metrics, shortlist ranking, and drift evidence only",
-            "human_role": "custom_gpt_plus_human decides the final winner and training admission",
+            "machine_role": "provide explainable screening metrics, shortlist ranking, and drift evidence only",
+            "human_role": "custom_gpt_plus_human may review winners and candidates; external training flow owns final training admission",
             "manual_steps": [
                 "review batch_summary first",
                 "compare top candidates in ranked_review_packet and pairwise cards",
-                "confirm the final winner manually",
-                "promote the human-approved winner into winner_bank if needed",
-                "seal the approved training item into training_admission_manifest if the release gate allows it",
+                "classify candidates as strong screening, review-needed, diagnostic-only, or reroll/reject",
+                "optionally record a human-approved winner into mutable winner_bank memory",
+                "send evidence packets to the external training-decision flow when needed",
             ],
         },
         "source_files": {

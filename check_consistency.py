@@ -140,6 +140,10 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
         "label": "合并输入清单逐图元数据",
         "summary": "把外部 image->fields 映射文件合并进当前 input_manifest.json，适合补录逐图 seed 和 prompt_id。",
     },
+    "prepare_manifest_completion_plan": {
+        "label": "准备清单补全计划",
+        "summary": "检查 front / three_quarter 输入清单缺口，区分可安全默认补的字段和必须人工确认的字段。",
+    },
     "refresh_review_run_index": {
         "label": "刷新运行索引",
         "summary": "扫描 outputs 和 outputs_snapshots，生成统一运行索引与 clean batch 指针。",
@@ -151,6 +155,22 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
     "refresh_review_status_board": {
         "label": "刷新总控状态板",
         "summary": "汇总当前 outputs、clean snapshot、front top-3、winner bank 和 manifest 状态。",
+    },
+    "refresh_review_invariance_status": {
+        "label": "刷新不变性状态",
+        "summary": "检查 review-only 角度、服装、灯光和 3D topology 是否足够成熟。",
+    },
+    "prepare_review_handoff": {
+        "label": "准备轻量复审包",
+        "summary": "把总控状态板、不变性闸门和推荐运行压缩成一份 GPT/人工优先阅读的小包。",
+    },
+    "prepare_lighting_replay_pack": {
+        "label": "准备灯光回放包",
+        "summary": "在 input_replay/lighting 下创建 front / three_quarter 灯光回放目录、manifest 模板和元数据补录模板。",
+    },
+    "prepare_outer_replay_pack": {
+        "label": "准备外套回放包",
+        "summary": "在 input_replay/outer 下创建按 OUTER prompt 分组的 review-only 外套遮挡回放目录、manifest 模板和元数据补录模板。",
     },
     "prepare_split_batch_plan": {
         "label": "准备拆批方案",
@@ -377,9 +397,14 @@ def _select_workflow_interactively(default: str = "shot_review") -> str:
             ("prepare_input_manifest", "为当前 input 目录生成或更新 input_manifest.json 模板"),
             ("fill_input_manifest_defaults", "给当前 input_manifest.json 批量补录 prompt_id / seed / anchor_source"),
             ("merge_input_manifest_metadata", "把外部逐图 metadata 合并进 input_manifest.json"),
+            ("prepare_manifest_completion_plan", "检查 front / 3Q 清单缺口和可安全补字段"),
             ("refresh_review_run_index", "扫描 outputs 和 outputs_snapshots，生成统一运行索引"),
             ("prepare_front_bootstrap_review", "从运行索引读取 front clean batch，生成 top-3 人工复审表"),
             ("refresh_review_status_board", "汇总当前主结果、front 基线、winner bank 和 manifest 状态"),
+            ("refresh_review_invariance_status", "检查角度、服装、灯光和 3D topology 不变性成熟度"),
+            ("prepare_review_handoff", "生成 GPT/人工优先阅读的轻量复审包"),
+            ("prepare_lighting_replay_pack", "创建灯光 replay 目录、manifest 模板和元数据模板"),
+            ("prepare_outer_replay_pack", "创建 OUTER replay 目录、manifest 模板和元数据模板"),
             ("prepare_split_batch_plan", "按 observed lane 生成当前批次的拆批方案"),
             ("materialize_split_batches", "把拆批方案落到 input_split/<lane>/ 目录"),
             ("refresh_review_artifacts", "基于现有 qa_report 和缓存刷新 review packet / GPT 包"),
@@ -506,6 +531,11 @@ def _default_review_paths(base_dir: Path, artifacts_dir: Optional[Path] = None) 
         "review_run_index": output_dir / "review_run_index.json",
         "front_bootstrap_review_sheet": output_dir / "front_bootstrap_review_sheet.json",
         "review_status_board": output_dir / "review_status_board.json",
+        "review_invariance_status": output_dir / "review_invariance_status.json",
+        "review_handoff_packet": output_dir / "review_handoff_packet.json",
+        "lighting_replay_pack": output_dir / "lighting_replay_pack.json",
+        "outer_replay_pack": output_dir / "outer_replay_pack.json",
+        "manifest_completion_plan": output_dir / "input_manifest_completion_plan.json",
         "qa_report": output_dir / "qa_report.json",
         "ranked_candidates": output_dir / "ranked_candidates.json",
         "review_packet": output_dir / "review_packet.json",
@@ -1323,9 +1353,14 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         "prepare_input_manifest",
         "fill_input_manifest_defaults",
         "merge_input_manifest_metadata",
+        "prepare_manifest_completion_plan",
         "refresh_review_run_index",
         "prepare_front_bootstrap_review",
         "refresh_review_status_board",
+        "refresh_review_invariance_status",
+        "prepare_review_handoff",
+        "prepare_lighting_replay_pack",
+        "prepare_outer_replay_pack",
         "prepare_split_batch_plan",
         "materialize_split_batches",
         "refresh_review_artifacts",
@@ -1467,6 +1502,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             manifest_path=args.input_manifest,
             prompt_id=args.manifest_prompt_id,
             seed=args.manifest_seed,
+            seed_unavailable_reason=args.manifest_seed_unavailable_reason,
             anchor_source=args.manifest_anchor_source,
             generator_name=args.manifest_generator_name,
             generator_version=args.manifest_generator_version,
@@ -1492,6 +1528,18 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         print("[交互引导] 下一步：重新跑 preflight_batch，确认逐图 metadata 合并后的字段覆盖率。")
+        return 0
+
+    if workflow == "prepare_manifest_completion_plan":
+        from core.qa_manifest_completion import build_manifest_completion_plan
+
+        result = build_manifest_completion_plan(
+            base_dir=base_dir,
+            output_file=paths["manifest_completion_plan"],
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[清单补全计划] {paths['manifest_completion_plan']}")
+        print("[交互引导] 先补 seed_unavailable_reason 和 anchor_source，再用真实 prompt_id 补齐来源。")
         return 0
 
     if workflow == "refresh_review_run_index":
@@ -1526,6 +1574,11 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
 
     if workflow == "refresh_review_status_board":
         from core.qa_front_bootstrap_review import build_front_bootstrap_review_sheet
+        from core.qa_invariance_status import build_review_invariance_status
+        from core.qa_lighting_replay_pack import build_lighting_replay_pack
+        from core.qa_outer_replay_pack import build_outer_replay_pack
+        from core.qa_manifest_completion import build_manifest_completion_plan
+        from core.qa_review_handoff import build_review_handoff_packet
         from core.qa_run_index import build_review_run_index
         from core.qa_status_board import build_review_status_board
 
@@ -1538,13 +1591,135 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             run_index_file=run_index_path,
             output_file=paths["front_bootstrap_review_sheet"],
         )
+        build_lighting_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["lighting_replay_pack"],
+        )
+        build_outer_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["outer_replay_pack"],
+        )
+        build_review_invariance_status(
+            base_dir=base_dir,
+            output_file=paths["review_invariance_status"],
+        )
         result = build_review_status_board(
             base_dir=base_dir,
             output_file=paths["review_status_board"],
         )
+        build_manifest_completion_plan(
+            base_dir=base_dir,
+            output_file=paths["manifest_completion_plan"],
+        )
+        build_review_handoff_packet(
+            base_dir=base_dir,
+            output_file=paths["review_handoff_packet"],
+        )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         print(f"[总控状态板] {paths['review_status_board']}")
+        print(f"[轻量复审包] {paths['review_handoff_packet']}")
         print("[交互引导] 先看 next_actions，再决定补 manifest 还是进入 front bootstrap 人工复审。")
+        return 0
+
+    if workflow == "refresh_review_invariance_status":
+        from core.qa_run_index import build_review_run_index
+        from core.qa_invariance_status import build_review_invariance_status
+        from core.qa_lighting_replay_pack import build_lighting_replay_pack
+        from core.qa_outer_replay_pack import build_outer_replay_pack
+
+        build_review_run_index(
+            base_dir=base_dir,
+            output_file=paths["review_run_index"],
+        )
+        build_lighting_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["lighting_replay_pack"],
+        )
+        build_outer_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["outer_replay_pack"],
+        )
+        result = build_review_invariance_status(
+            base_dir=base_dir,
+            output_file=paths["review_invariance_status"],
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[不变性状态] {paths['review_invariance_status']}")
+        print("[交互引导] winner_bank 只有在 overall_status=READY 后才应重新评估。")
+        return 0
+
+    if workflow == "prepare_review_handoff":
+        from core.qa_front_bootstrap_review import build_front_bootstrap_review_sheet
+        from core.qa_invariance_status import build_review_invariance_status
+        from core.qa_lighting_replay_pack import build_lighting_replay_pack
+        from core.qa_manifest_completion import build_manifest_completion_plan
+        from core.qa_outer_replay_pack import build_outer_replay_pack
+        from core.qa_review_handoff import build_review_handoff_packet
+        from core.qa_run_index import build_review_run_index
+        from core.qa_status_board import build_review_status_board
+
+        run_index_path = paths["review_run_index"]
+        build_review_run_index(
+            base_dir=base_dir,
+            output_file=run_index_path,
+        )
+        build_front_bootstrap_review_sheet(
+            run_index_file=run_index_path,
+            output_file=paths["front_bootstrap_review_sheet"],
+        )
+        build_lighting_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["lighting_replay_pack"],
+        )
+        build_outer_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["outer_replay_pack"],
+        )
+        build_review_invariance_status(
+            base_dir=base_dir,
+            output_file=paths["review_invariance_status"],
+        )
+        build_review_status_board(
+            base_dir=base_dir,
+            output_file=paths["review_status_board"],
+        )
+        build_manifest_completion_plan(
+            base_dir=base_dir,
+            output_file=paths["manifest_completion_plan"],
+        )
+        result = build_review_handoff_packet(
+            base_dir=base_dir,
+            output_file=paths["review_handoff_packet"],
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[轻量复审包] {paths['review_handoff_packet']}")
+        print("[交互引导] 默认先发这一个 JSON 给 GPT；只有需要逐图证据时再追加 detail 文件。")
+        return 0
+
+    if workflow == "prepare_lighting_replay_pack":
+        from core.qa_lighting_replay_pack import build_lighting_replay_pack
+
+        result = build_lighting_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["lighting_replay_pack"],
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[灯光回放包] {paths['lighting_replay_pack']}")
+        print("[交互引导] 把图放进 input_replay/lighting/<lane>/<variant>/，然后再次运行同一工作流刷新 manifest。")
+        print("[交互引导] 每个 variant 目录都会带 input_manifest.json 和 _input_manifest_metadata_template.json。")
+        return 0
+
+    if workflow == "prepare_outer_replay_pack":
+        from core.qa_outer_replay_pack import build_outer_replay_pack
+
+        result = build_outer_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["outer_replay_pack"],
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[外套回放包] {paths['outer_replay_pack']}")
+        print("[交互引导] 把图放进 input_replay/outer/<lane>/<family>/<prompt_leaf>/，然后再次运行同一工作流刷新 manifest。")
+        print("[交互引导] 每个 prompt leaf 目录都会带 input_manifest.json 和 _input_manifest_metadata_template.json。")
         return 0
 
     if workflow == "preflight_batch":
@@ -2067,9 +2242,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "prepare_input_manifest",
             "fill_input_manifest_defaults",
             "merge_input_manifest_metadata",
+            "prepare_manifest_completion_plan",
             "refresh_review_run_index",
             "prepare_front_bootstrap_review",
             "refresh_review_status_board",
+            "refresh_review_invariance_status",
+            "prepare_review_handoff",
+            "prepare_lighting_replay_pack",
+            "prepare_outer_replay_pack",
             "prepare_split_batch_plan",
             "materialize_split_batches",
             "refresh_review_artifacts",
@@ -2127,6 +2307,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--manifest-seed",
         help="Shared seed written into input_manifest items by fill_input_manifest_defaults.",
+    )
+    parser.add_argument(
+        "--manifest-seed-unavailable-reason",
+        help="Reason written when the generator does not expose a seed, for example nano_banana_seed_not_exposed.",
     )
     parser.add_argument(
         "--manifest-anchor-source",
@@ -2466,14 +2650,25 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
         _override_runtime_input_dir(runtime, _resolve_input_dir_arg(args.input_dir, base_dir))
         if args.mode is not None:
             runtime.config.run_mode = str(args.mode)
-        if args.heavy_provider is not None:
-            runtime.config.provider_policy["heavy_evidence"] = str(args.heavy_provider)
+        if selected_profile is not None:
+            runtime.config.review.active_profile = str(selected_profile)
+        resolved_heavy_provider = str(args.heavy_provider) if args.heavy_provider is not None else None
+        if resolved_heavy_provider is None:
+            from core.qa_runtime import get_preferred_heavy_evidence_for_profile
+
+            resolved_heavy_provider = get_preferred_heavy_evidence_for_profile(
+                runtime.config,
+                runtime.config.review.active_profile,
+            )
+        if (
+            resolved_heavy_provider is not None
+            and str(runtime.config.provider_policy.get("heavy_evidence") or "").strip() != resolved_heavy_provider
+        ):
+            runtime.config.provider_policy["heavy_evidence"] = resolved_heavy_provider
             if runtime.providers is not None:
                 from core.providers import build_provider_bundle
 
                 runtime.providers = build_provider_bundle(runtime.config.provider_policy)
-        if selected_profile is not None:
-            runtime.config.review.active_profile = str(selected_profile)
         if args.auto_load_thresholds:
             runtime.config.auto_load_thresholds = True
         print_runtime_config(runtime)

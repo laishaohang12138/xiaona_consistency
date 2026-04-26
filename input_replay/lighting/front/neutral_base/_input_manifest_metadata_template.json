@@ -1,0 +1,7 @@
+{
+  "schema_version": "input_manifest_metadata_patch_v1",
+  "source_manifest": "D:\\xiaona_consistency\\input_replay\\lighting\\front\\neutral_base\\input_manifest.json",
+  "lighting_replay_lane": "front",
+  "lighting_variant": "neutral_base",
+  "items": {}
+}

@@ -19,10 +19,10 @@ from .qa_utils import dedupe_keep_order
 
 _PROVIDER_NAME = "body_canonical_hmr2"
 _PROVIDER_FAMILY = "body_canonical"
-_PROVIDER_VERSION = "body_canonical_hmr2_direct_bridge_v2"
+_PROVIDER_VERSION = "body_canonical_hmr2_direct_bridge_v3"
 _MODEL_ID = "hmr2_direct_bridge_v2"
-_ARTIFACT_SCHEMA = "body_canonical_artifact_v1"
-_CACHE_SCHEMA = "body_canonical_cache_v1"
+_ARTIFACT_SCHEMA = "body_canonical_artifact_v2"
+_CACHE_SCHEMA = "body_canonical_cache_v2"
 _MASTER_ARTIFACT_NAME = "body_master_shape_only.json"
 _DEFAULT_MEASUREMENT_SCALE = 0.08
 _MIN_CANONICAL_MEASUREMENTS = 6
@@ -36,6 +36,20 @@ _BODY_TOPOLOGY_MEASUREMENT_ORDER = [
     "foot_length_to_leg",
     "left_right_foot_balance",
 ]
+_BODY_CORE_MEASUREMENT_ORDER = [
+    "shoulder_width_to_torso",
+    "hip_width_to_torso",
+    "shoulder_to_hip_ratio",
+    "upper_to_lower_leg_ratio",
+    "foot_length_to_leg",
+]
+_BODY_POSE_SENSITIVE_MEASUREMENT_ORDER = [
+    "leg_length_to_torso",
+    "left_right_leg_balance",
+    "left_right_foot_balance",
+]
+_MIN_BODY_CORE_MEASUREMENTS = 3
+_MIN_BODY_POSE_SENSITIVE_MEASUREMENTS = 2
 _DEFAULT_SMPL_MODEL = "basicModel_neutral_lbs_10_207_0_v1.0.0.pkl"
 _ALT_SMPL_MODELS = [
     "basicModel_neutral_lbs_10_207_0_v1.1.0.pkl",
@@ -100,15 +114,21 @@ def _measurement_mapping(value: Any) -> Dict[str, float]:
     return out
 
 
-def _measurement_vector(measurements: Dict[str, float]) -> Optional[np.ndarray]:
+def _measurement_vector(
+    measurements: Dict[str, float],
+    *,
+    preferred_order: Optional[Sequence[str]] = None,
+    min_measurements: int = _MIN_CANONICAL_MEASUREMENTS,
+) -> Optional[np.ndarray]:
     if len(measurements) == 0:
         return None
-    preferred = [key for key in _BODY_TOPOLOGY_MEASUREMENT_ORDER if key in measurements]
-    if len(preferred) >= _MIN_CANONICAL_MEASUREMENTS:
+    order = list(preferred_order or _BODY_TOPOLOGY_MEASUREMENT_ORDER)
+    preferred = [key for key in order if key in measurements]
+    if len(preferred) >= int(min_measurements):
         keys = preferred
     else:
         keys = sorted(measurements.keys())
-        if len(keys) < _MIN_CANONICAL_MEASUREMENTS:
+        if len(keys) < int(min_measurements):
             return None
     values = [float(measurements[key]) for key in keys]
     try:
@@ -117,9 +137,19 @@ def _measurement_vector(measurements: Dict[str, float]) -> Optional[np.ndarray]:
         return None
 
 
-def _body_topology_signature(shape_beta: Any, measurements: Dict[str, float]) -> Optional[np.ndarray]:
+def _body_topology_signature(
+    shape_beta: Any,
+    measurements: Dict[str, float],
+    *,
+    preferred_order: Optional[Sequence[str]] = None,
+    min_measurements: int = _MIN_CANONICAL_MEASUREMENTS,
+) -> Optional[np.ndarray]:
     beta = _normalize_vector(shape_beta)
-    measurement_vector = _measurement_vector(measurements)
+    measurement_vector = _measurement_vector(
+        measurements,
+        preferred_order=preferred_order,
+        min_measurements=min_measurements,
+    )
     if beta is None and measurement_vector is None:
         return None
 
@@ -412,6 +442,12 @@ def _build_direct_artifact(
         _pick_field(record, aliases=["betas", "shape_beta", "pred_betas", "smpl_betas", "shape"]),
         measurements,
     )
+    core_topology_signature = _body_topology_signature(
+        _pick_field(record, aliases=["betas", "shape_beta", "pred_betas", "smpl_betas", "shape"]),
+        measurements,
+        preferred_order=_BODY_CORE_MEASUREMENT_ORDER,
+        min_measurements=_MIN_BODY_CORE_MEASUREMENTS,
+    )
     return {
         "schema_version": _ARTIFACT_SCHEMA,
         "provider_name": _PROVIDER_NAME,
@@ -424,6 +460,7 @@ def _build_direct_artifact(
             _pick_field(record, aliases=["betas", "shape_beta", "pred_betas", "smpl_betas", "shape"])
         ),
         "body_topology_signature": topology_signature,
+        "body_core_topology_signature": core_topology_signature,
         "pose_vector": _compose_pose_vector(record),
         "canonical_measurements": measurements,
         "measurement_scales": measurement_scales,
@@ -494,6 +531,7 @@ def _normalize_artifact(raw: Dict[str, Any], *, source_path: Path, source_role: 
         "source_role": str(raw.get("source_role") or source_role),
         "shape_beta": _normalize_vector(raw.get("shape_beta") or raw.get("betas") or raw.get("shape")),
         "body_topology_signature": _normalize_vector(raw.get("body_topology_signature")),
+        "body_core_topology_signature": _normalize_vector(raw.get("body_core_topology_signature")),
         "pose_vector": _normalize_vector(raw.get("pose_vector") or raw.get("pose_theta") or raw.get("theta")),
         "canonical_measurements": measurements,
         "measurement_scales": measurement_scales,
@@ -503,6 +541,13 @@ def _normalize_artifact(raw: Dict[str, Any], *, source_path: Path, source_role: 
     }
     if artifact["body_topology_signature"] is None:
         artifact["body_topology_signature"] = _body_topology_signature(artifact.get("shape_beta"), measurements)
+    if artifact["body_core_topology_signature"] is None:
+        artifact["body_core_topology_signature"] = _body_topology_signature(
+            artifact.get("shape_beta"),
+            measurements,
+            preferred_order=_BODY_CORE_MEASUREMENT_ORDER,
+            min_measurements=_MIN_BODY_CORE_MEASUREMENTS,
+        )
     return artifact
 
 
@@ -617,10 +662,19 @@ def _measurement_similarity(
     master_values: Dict[str, float],
     candidate_values: Dict[str, float],
     scales: Dict[str, float],
+    *,
+    measurement_order: Optional[Sequence[str]] = None,
+    min_measurements: int = 1,
 ) -> Dict[str, Any]:
-    keys = [key for key in master_values.keys() if key in candidate_values]
-    if len(keys) == 0:
-        return {"score": None, "coverage": 0.0, "top_drifts": []}
+    if measurement_order is not None:
+        expected_keys = [key for key in measurement_order if key in master_values]
+        keys = [key for key in expected_keys if key in candidate_values]
+    else:
+        expected_keys = list(master_values.keys())
+        keys = [key for key in master_values.keys() if key in candidate_values]
+    coverage_denominator = max(1, len(expected_keys))
+    if len(keys) < int(min_measurements):
+        return {"score": None, "coverage": float(len(keys) / coverage_denominator), "top_drifts": [], "used_keys": keys}
     scores: List[float] = []
     drifts: List[Dict[str, Any]] = []
     for key in keys:
@@ -641,8 +695,9 @@ def _measurement_similarity(
     drifts.sort(key=lambda row: float(row.get("abs_delta") or 0.0), reverse=True)
     return {
         "score": float(sum(scores) / max(1, len(scores))),
-        "coverage": float(len(keys) / max(1, len(master_values))),
+        "coverage": float(len(keys) / coverage_denominator),
         "top_drifts": drifts[:4],
+        "used_keys": keys,
     }
 
 
@@ -1006,10 +1061,28 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
             master_artifact.get("body_topology_signature"),
             candidate_artifact.get("body_topology_signature"),
         )
+        core_topology_similarity, core_topology_delta = _signature_similarity(
+            master_artifact.get("body_core_topology_signature"),
+            candidate_artifact.get("body_core_topology_signature"),
+        )
         measurement_diag = _measurement_similarity(
             dict(master_artifact.get("canonical_measurements") or {}),
             dict(candidate_artifact.get("canonical_measurements") or {}),
             dict(master_artifact.get("measurement_scales") or {}),
+        )
+        core_measurement_diag = _measurement_similarity(
+            dict(master_artifact.get("canonical_measurements") or {}),
+            dict(candidate_artifact.get("canonical_measurements") or {}),
+            dict(master_artifact.get("measurement_scales") or {}),
+            measurement_order=_BODY_CORE_MEASUREMENT_ORDER,
+            min_measurements=_MIN_BODY_CORE_MEASUREMENTS,
+        )
+        pose_sensitive_measurement_diag = _measurement_similarity(
+            dict(master_artifact.get("canonical_measurements") or {}),
+            dict(candidate_artifact.get("canonical_measurements") or {}),
+            dict(master_artifact.get("measurement_scales") or {}),
+            measurement_order=_BODY_POSE_SENSITIVE_MEASUREMENT_ORDER,
+            min_measurements=_MIN_BODY_POSE_SENSITIVE_MEASUREMENTS,
         )
         pose_similarity, pose_delta = _pose_delta_similarity(
             master_artifact.get("pose_vector"),
@@ -1034,6 +1107,19 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
             numerator = sum(value * weight for value, weight in weighted_terms)
             denominator = sum(weight for _, weight in weighted_terms)
             body_shape_truth_alignment = float(numerator / denominator) if denominator > 0.0 else None
+        body_pose_independent_truth_alignment = None
+        pose_independent_terms: List[Tuple[float, float]] = []
+        if beta_similarity is not None:
+            pose_independent_terms.append((float(beta_similarity), 0.68))
+        if isinstance(core_measurement_diag.get("score"), (int, float)):
+            pose_independent_terms.append((float(core_measurement_diag["score"]), 0.32))
+        if len(pose_independent_terms) > 0:
+            numerator = sum(value * weight for value, weight in pose_independent_terms)
+            denominator = sum(weight for _, weight in pose_independent_terms)
+            body_pose_independent_truth_alignment = float(numerator / denominator) if denominator > 0.0 else None
+        pose_measurement_gap = None
+        if isinstance(core_measurement_diag.get("score"), (int, float)) and isinstance(measurement_diag.get("score"), (int, float)):
+            pose_measurement_gap = float(core_measurement_diag["score"] - measurement_diag["score"])
 
         summary = {
             "integration_state": "artifact_compare_ready",
@@ -1046,9 +1132,12 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
             "cache_miss_count": 0 if candidate_artifact.get("cache_state") == "hit" else 1,
             "cache_write_count": 1 if candidate_artifact.get("cache_state") == "write" else 0,
             "top_drifts": list(measurement_diag.get("top_drifts") or []),
+            "body_core_top_drifts": list(core_measurement_diag.get("top_drifts") or []),
+            "body_pose_sensitive_top_drifts": list(pose_sensitive_measurement_diag.get("top_drifts") or []),
             "guidance": dedupe_keep_order(
                 [
                     "Use this provider to separate 116-1 shape truth from gait pose before admission review.",
+                    "Prefer body_pose_independent_truth_alignment and body_gait_tolerant_topology_similarity when gait or stance differs from 116-1.",
                     "Promote HMR2 inference only after the artifact contract is stable on frozen benchmarks.",
                     *direct_guidance,
                 ]
@@ -1056,7 +1145,7 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
         }
 
         return {
-            "ok": body_shape_truth_alignment is not None,
+            "ok": body_pose_independent_truth_alignment is not None or body_shape_truth_alignment is not None,
             "provider_name": self.provider_name,
             "provider_family": self.provider_family,
             "provider_version": self.provider_version,
@@ -1070,6 +1159,13 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
             "coverage": _safe_float(coverage, 0.0),
             "reasons": [],
             "metric_specs": [
+                _metric_spec(
+                    "body_pose_independent_truth_alignment",
+                    body_pose_independent_truth_alignment,
+                    confidence=confidence,
+                    coverage=_safe_float(core_measurement_diag.get("coverage"), coverage),
+                    signature_ref=_vector_signature_ref("shape_beta", candidate_artifact.get("shape_beta")),
+                ),
                 _metric_spec(
                     "body_shape_truth_alignment",
                     body_shape_truth_alignment,
@@ -1085,6 +1181,13 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
                     signature_ref=_vector_signature_ref("shape_beta", candidate_artifact.get("shape_beta")),
                 ),
                 _metric_spec(
+                    "body_gait_tolerant_topology_similarity",
+                    core_topology_similarity,
+                    confidence=confidence,
+                    coverage=_safe_float(core_measurement_diag.get("coverage"), coverage),
+                    signature_ref=_topology_signature_ref("body_core_topology_signature", candidate_artifact.get("body_core_topology_signature")),
+                ),
+                _metric_spec(
                     "body_topology_signature_similarity",
                     topology_similarity,
                     confidence=confidence,
@@ -1092,10 +1195,22 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
                     signature_ref=_topology_signature_ref("body_topology_signature", candidate_artifact.get("body_topology_signature")),
                 ),
                 _metric_spec(
+                    "body_core_measurement_similarity",
+                    _safe_float(core_measurement_diag.get("score"), None),
+                    confidence=confidence,
+                    coverage=_safe_float(core_measurement_diag.get("coverage"), coverage),
+                ),
+                _metric_spec(
                     "canonical_measurement_similarity",
                     _safe_float(measurement_diag.get("score"), None),
                     confidence=confidence,
                     coverage=coverage,
+                ),
+                _metric_spec(
+                    "body_pose_sensitive_measurement_similarity",
+                    _safe_float(pose_sensitive_measurement_diag.get("score"), None),
+                    confidence=confidence,
+                    coverage=_safe_float(pose_sensitive_measurement_diag.get("coverage"), 0.0),
                 ),
                 _metric_spec(
                     "body_pose_delta_similarity",
@@ -1114,12 +1229,22 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
             "signature_refs": {
                 "shape_beta": _vector_signature_ref("shape_beta", candidate_artifact.get("shape_beta")),
                 "body_topology_signature": _topology_signature_ref("body_topology_signature", candidate_artifact.get("body_topology_signature")),
+                "body_core_topology_signature": _topology_signature_ref(
+                    "body_core_topology_signature",
+                    candidate_artifact.get("body_core_topology_signature"),
+                ),
                 "pose_vector": _vector_signature_ref("pose_vector", candidate_artifact.get("pose_vector")),
             },
             "summary": {
                 **summary,
                 "shape_beta_delta_l1": _round_or_none(beta_delta),
                 "body_topology_delta_l1": _round_or_none(topology_delta),
+                "body_core_topology_delta_l1": _round_or_none(core_topology_delta),
                 "pose_delta_l1": _round_or_none(pose_delta),
+                "body_pose_measurement_gap": _round_or_none(pose_measurement_gap),
+                "body_core_measurement_coverage": _round_or_none(_safe_float(core_measurement_diag.get("coverage"), None)),
+                "body_pose_sensitive_measurement_coverage": _round_or_none(
+                    _safe_float(pose_sensitive_measurement_diag.get("coverage"), None)
+                ),
             },
         }

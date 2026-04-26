@@ -12,24 +12,30 @@ def winner_bank_bootstrap_policy() -> Dict[str, Any]:
         "review_only clothing invariance is stable under basic outfit and OUTER-style occlusion",
         "review_only lighting invariance does not confuse exposure drift with identity drift",
         "face/body 3D topology consistency is stable enough for repeated batch replay",
+        "body truth reads separate pose/gait expression from unexplained body-structure drift",
     ]
     return {
-        "state": "deferred",
-        "blocker": WINNER_BANK_BOOTSTRAP_DEFERRED_BLOCKER,
+        "state": "mutable_candidate_memory",
+        "freeze_state": "not_frozen",
+        "blocker": None,
         "reason": (
-            "Do not start winner_bank bootstrap until review-only angle, clothing, lighting, "
-            "and 3D topology invariance are mature enough for industrial LoRA screening."
+            "Winner bank may remain mutable for GPT-plus-human review memory. Do not freeze it, "
+            "use it as identity truth, or use it as a final-admission signal. This project only "
+            "screens and packages evidence for the external training decision flow."
         ),
         "requirements": requirements,
         "allowed_now": [
             "use front top candidates for diagnostic review",
+            "manually record or update human-confirmed candidates as mutable winner_bank entries",
             "keep building input manifests",
             "run clean-lane review-only replay",
             "improve invariance metrics and evidence completeness",
         ],
         "disallowed_now": [
-            "promote winner into curated winner_bank",
-            "use winner_bank drift as a training admission signal",
+            "freeze winner_bank as a release reference",
+            "treat winner_bank as a new identity or body truth source",
+            "use winner_bank drift as a final-admission signal",
+            "feed winner_bank entries into parameter fitting",
         ],
     }
 

@@ -133,6 +133,8 @@ def build_front_bootstrap_review_sheet(
     bootstrap_policy = winner_bank_bootstrap_policy()
     if str(bootstrap_policy.get("state") or "") == "deferred" and WINNER_BANK_BOOTSTRAP_DEFERRED_BLOCKER not in blockers:
         blockers.append(WINNER_BANK_BOOTSTRAP_DEFERRED_BLOCKER)
+    policy_state = str(bootstrap_policy.get("state") or "")
+    promotion_ready = bool(winner_review.get("promotion_ready")) and policy_state != "deferred"
     payload = {
         "schema_version": "front_bootstrap_review_sheet_v1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -140,11 +142,14 @@ def build_front_bootstrap_review_sheet(
         "target_profile": str(recommended.get("target_profile") or "").strip(),
         "top_ranked_image": str(recommended.get("top_ranked_image") or "").strip(),
         "bootstrap_required": bool(winner_review.get("bank_bootstrap_required")),
-        "promotion_ready": bool(winner_review.get("promotion_ready")) and str(bootstrap_policy.get("state") or "") != "deferred",
+        "promotion_ready": promotion_ready,
         "promotion_blockers": blockers,
         "winner_bank_bootstrap_policy": bootstrap_policy,
-        "manual_goal": "Use top-3 front-core candidates for diagnostic review only while winner_bank bootstrap is deferred.",
-        "manual_rule": "Do not promote into winner_bank until review-only angle, clothing, lighting, and 3D topology invariance are mature.",
+        "manual_goal": "Use top-3 front-core candidates for diagnostic review; winner_bank entries remain mutable review memory.",
+        "manual_rule": (
+            "Do not freeze winner_bank or use it for training admission until review-only angle, clothing, "
+            "lighting, topology, and pose-aware body-truth reads are mature."
+        ),
         "top_candidates": top_candidates,
         "suggested_commands": {
             "inspect_review_packet": (
@@ -155,7 +160,12 @@ def build_front_bootstrap_review_sheet(
                 "python check_consistency.py --workflow winner_bank_status "
                 f'--artifacts-dir "{artifact_root}"'
             ),
-            "promote_rank_1": "deferred_by_policy_do_not_run",
+            "promote_rank_1": (
+                "python check_consistency.py --workflow promote_winner --winner-rank 1 "
+                f'--artifacts-dir "{artifact_root}"'
+                if promotion_ready
+                else "blocked_by_review_policy_or_current_blockers"
+            ),
         },
     }
     output_file.parent.mkdir(parents=True, exist_ok=True)

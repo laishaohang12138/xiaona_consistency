@@ -56,6 +56,7 @@ from .qa_runtime import (
     anchor_registry_snapshot,
     anchor_registry_summary,
     create_runtime_config,
+    get_preferred_heavy_evidence_for_profile,
     load_thresholds_from_file as load_runtime_thresholds_from_file,
     resolve_anchor_paths,
     save_thresholds_to_file,
@@ -325,6 +326,19 @@ def _build_report_meta(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "run_status": "engine_fatal" if runtime.engines.fatal else "ok",
         "active_profile": target_profile,
+        "project_scope": {
+            "schema_version": "project_scope_v1",
+            "role": "screening_and_evidence_only",
+            "machine_role": "rank_candidates_explain_risks_and_package_review_evidence",
+            "training_admission_participation": False,
+            "final_training_decision_owner": "external_training_decision_flow",
+            "does_not": [
+                "decide final training-set admission",
+                "seal training samples",
+                "freeze winner_bank as release truth",
+                "fit parameters from candidate-review data",
+            ],
+        },
         "review_policy": {
             "active_profile_default": runtime.config.review.active_profile,
             "strict_fail_min_conf": runtime.config.review.min_conf_for_strict_fail,
@@ -349,6 +363,44 @@ def _build_report_meta(
             "upper_support_anchor": truth_anchors.get("upper_support"),
             "qa_role": "evidence_only",
             "final_decision_owner": "custom_gpt_plus_human",
+        },
+        "body_truth_governance": {
+            "face_truth_policy": "single_absolute_truth",
+            "face_truth_anchor": truth_anchors.get("face_identity"),
+            "body_truth_policy": "single_absolute_truth_pose_gait_aware",
+            "body_truth_anchor": truth_anchors.get("body_master"),
+            "body_truth_interpretation": (
+                "Task-63987060-116-1 defines the absolute body truth, but body review must separate "
+                "pose/gait expression from unexplained body-structure drift."
+            ),
+            "preferred_body_truth_metrics": [
+                "body_pose_independent_truth_alignment",
+                "body_gait_tolerant_topology_similarity",
+                "body_core_measurement_similarity",
+                "body_pose_sensitive_measurement_similarity",
+                "body_pose_measurement_gap",
+            ],
+        },
+        "winner_bank_policy": {
+            "freeze_state": "not_frozen",
+            "role": "mutable_human_review_memory",
+            "not_source_of_truth": True,
+            "not_parameter_fit_source": True,
+            "training_admission_signal_allowed": False,
+        },
+        "parameter_fit_policy": {
+            "parameter_fitting_allowed_now": False,
+            "reason": "Project optimization is not complete; keep Optuna and threshold fitting locked.",
+            "allowed_now": [
+                "evidence-schema refinement",
+                "controlled replay collection",
+                "manual review language refinement",
+            ],
+            "disallowed_now": [
+                "Optuna parameter fitting",
+                "threshold fitting from candidate-review data",
+                "using mutable winner_bank as benchmark truth",
+            ],
         },
         "master_truth_reference": _json_ready((master_reference or {}).get("summary") or {}),
         "master_truth_artifact_dir": str(runtime.config.paths.dir_master_truth),
@@ -488,12 +540,14 @@ def _build_report_meta(
             "final_decision_owner": "custom_gpt_plus_human",
         },
         "training_admission_governance": {
-            "enabled": True,
-            "mode": "manual_seal_required",
+            "enabled": False,
+            "mode": "external_final_decision_out_of_scope",
             "manifest_file": str(training_manifest_file),
             "manifest_summary": training_manifest_summary,
+            "participates_in_final_admission": False,
             "winner_bank_equals_training_admission": False,
-            "final_decision_owner": "custom_gpt_plus_human",
+            "final_decision_owner": "external_training_decision_flow",
+            "local_role": "screening_evidence_only",
         },
         "review_packet": {
             "enabled": True,
@@ -1891,12 +1945,21 @@ def main(
         runtime = create_runtime(base_dir)
         if run_mode is not None:
             runtime.config.run_mode = str(run_mode)
-    if heavy_evidence_provider is not None:
-        runtime.config.provider_policy["heavy_evidence"] = str(heavy_evidence_provider)
-        if runtime.providers is not None:
-            runtime.providers = build_provider_bundle(runtime.config.provider_policy)
     if profile_name is not None:
         runtime.config.review.active_profile = str(profile_name)
+    resolved_heavy_provider = str(heavy_evidence_provider) if heavy_evidence_provider is not None else None
+    if resolved_heavy_provider is None:
+        resolved_heavy_provider = get_preferred_heavy_evidence_for_profile(
+            runtime.config,
+            runtime.config.review.active_profile,
+        )
+    if (
+        resolved_heavy_provider is not None
+        and str(runtime.config.provider_policy.get("heavy_evidence") or "").strip() != resolved_heavy_provider
+    ):
+        runtime.config.provider_policy["heavy_evidence"] = resolved_heavy_provider
+        if runtime.providers is not None:
+            runtime.providers = build_provider_bundle(runtime.config.provider_policy)
     if auto_load_thresholds is not None:
         runtime.config.auto_load_thresholds = bool(auto_load_thresholds)
     print_runtime_config(runtime)

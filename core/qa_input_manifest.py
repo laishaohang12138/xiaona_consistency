@@ -51,6 +51,10 @@ def _first_text(*values: Any) -> Optional[str]:
     return None
 
 
+def _seed_or_unavailable_ready(payload: Dict[str, Any]) -> bool:
+    return payload.get("seed") is not None or _first_text(payload.get("seed_unavailable_reason")) is not None
+
+
 def _safe_relative(path: Path, base_dir: Optional[Path]) -> str:
     resolved = path.resolve()
     if base_dir is None:
@@ -263,6 +267,7 @@ def _entry_template_from_image(
         "input_relative_path": meta.get("input_relative_path"),
         "prompt_id": seed_entry.get("prompt_id", ""),
         "seed": seed_entry.get("seed"),
+        "seed_unavailable_reason": seed_entry.get("seed_unavailable_reason", ""),
         "anchor_source": seed_entry.get("anchor_source", ""),
         "intended_view": seed_entry.get("view_expected") or meta.get("view_expected") or "",
         "intended_lane_family": seed_entry.get("view_expected_family") or meta.get("view_expected_family") or "",
@@ -272,7 +277,15 @@ def _entry_template_from_image(
         "prompt_pack": seed_entry.get("prompt_pack", ""),
         "notes": seed_entry.get("notes", ""),
     }
-    for key in ("prompt_id", "anchor_source", "generator_name", "generator_version", "prompt_pack", "notes"):
+    for key in (
+        "prompt_id",
+        "seed_unavailable_reason",
+        "anchor_source",
+        "generator_name",
+        "generator_version",
+        "prompt_pack",
+        "notes",
+    ):
         if template.get(key) is None:
             template[key] = ""
     return template
@@ -312,7 +325,7 @@ def create_or_update_input_manifest(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "generator_name": "",
         "generator_version": "",
-        "notes": "Fill prompt_id, seed, anchor_source, and intended_view for generated batches.",
+        "notes": "Fill prompt_id, seed or seed_unavailable_reason, anchor_source, and intended_view for generated batches.",
         "items": items,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -343,7 +356,11 @@ def _field_coverage(items: List[Dict[str, Any]]) -> Dict[str, float]:
     total = max(1, len(items))
     return {
         "prompt_id": float(sum(1 for item in items if _first_text(item.get("prompt_id")) is not None) / total),
-        "seed": float(sum(1 for item in items if item.get("seed") is not None) / total),
+        "seed": float(sum(1 for item in items if _seed_or_unavailable_ready(item)) / total),
+        "seed_available": float(sum(1 for item in items if item.get("seed") is not None) / total),
+        "seed_unavailable_reason": float(
+            sum(1 for item in items if _first_text(item.get("seed_unavailable_reason")) is not None) / total
+        ),
         "anchor_source": float(sum(1 for item in items if _first_text(item.get("anchor_source")) is not None) / total),
         "intended_view": float(sum(1 for item in items if _first_text(item.get("intended_view")) is not None) / total),
     }
@@ -355,6 +372,7 @@ def fill_input_manifest_defaults(
     *,
     prompt_id: Optional[str] = None,
     seed: Any = None,
+    seed_unavailable_reason: Optional[str] = None,
     anchor_source: Optional[str] = None,
     generator_name: Optional[str] = None,
     generator_version: Optional[str] = None,
@@ -378,6 +396,8 @@ def fill_input_manifest_defaults(
         defaults["prompt_id"] = str(prompt_id).strip()
     if seed is not None:
         defaults["seed"] = _coerce_seed_value(seed)
+    if seed_unavailable_reason is not None:
+        defaults["seed_unavailable_reason"] = str(seed_unavailable_reason).strip()
     if anchor_source is not None:
         defaults["anchor_source"] = str(anchor_source).strip()
     if generator_name is not None:

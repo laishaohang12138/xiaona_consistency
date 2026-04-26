@@ -1,0 +1,17 @@
+{
+  "schema_version": "input_manifest_v1",
+  "generated_at_utc": "2026-04-26T14:48:23.657529+00:00",
+  "generator_name": "",
+  "generator_version": "",
+  "notes": "OUTER replay pack. This directory is for review-only clothing or occlusion replay, not training admission.",
+  "items": [],
+  "outer_replay_pack": "outer_replay_pack_v1",
+  "outer_scope": "OUTER",
+  "outer_family": "long_panel_coat",
+  "outer_prompt_id": "OT-H03",
+  "outer_prompt_file": "prompts/outer/assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_h03_long_panel_coat_three_quarter_right_panel_tracking_shortlist_v0_3_0_nb2_8x3.txt",
+  "outer_prompt_pack": "outer_shortlist_v0_3_0_nb2_8x3",
+  "intended_view": "three_quarter",
+  "intended_lane_family": "three_quarter",
+  "intended_view_center_deg": 45
+}

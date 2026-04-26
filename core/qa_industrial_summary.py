@@ -101,6 +101,12 @@ def _extract_prompt_intent_field(item: Dict[str, Any], field_name: str) -> Any:
     return collection.get(field_name)
 
 
+def _extract_seed_or_unavailable_ready(item: Dict[str, Any]) -> bool:
+    if _extract_prompt_intent_field(item, "seed") is not None:
+        return True
+    return _has_required_text(_extract_prompt_intent_field(item, "seed_unavailable_reason"))
+
+
 def _extract_observed_lane_center_distance(item: Dict[str, Any]) -> Optional[float]:
     breakdown = _extract_breakdown(item)
     return _safe_float(
@@ -254,11 +260,22 @@ def build_batch_preflight_summary(
         )[0]
     manifest_required_field_coverage = {
         "prompt_id": _coverage_ratio(items, lambda item: _has_required_text(_extract_prompt_intent_field(item, "prompt_id"))),
-        "seed": _coverage_ratio(items, lambda item: _extract_prompt_intent_field(item, "seed") is not None),
+        "seed": _coverage_ratio(items, _extract_seed_or_unavailable_ready),
+        "seed_available": _coverage_ratio(items, lambda item: _extract_prompt_intent_field(item, "seed") is not None),
+        "seed_unavailable_reason": _coverage_ratio(
+            items,
+            lambda item: _has_required_text(_extract_prompt_intent_field(item, "seed_unavailable_reason")),
+        ),
         "anchor_source": _coverage_ratio(items, lambda item: _has_required_text(_extract_prompt_intent_field(item, "anchor_source"))),
         "intended_view": _coverage_ratio(items, lambda item: _has_required_text(_extract_prompt_intent_field(item, "intended_view"))),
     }
-    manifest_required_field_ready = min(manifest_required_field_coverage.values(), default=0.0) >= 0.80
+    required_coverage_values = [
+        manifest_required_field_coverage["prompt_id"],
+        manifest_required_field_coverage["seed"],
+        manifest_required_field_coverage["anchor_source"],
+        manifest_required_field_coverage["intended_view"],
+    ]
+    manifest_required_field_ready = min(required_coverage_values, default=0.0) >= 0.80
     intended_observed_match_share = (
         float(intended_matches / max(1, intended_pairs))
         if intended_pairs > 0
@@ -345,7 +362,7 @@ def build_batch_preflight_summary(
         "prompt_intent_source_counts": prompt_intent_source_counts,
         "prompt_intent_is_weak_prior": True,
         "manifest_entry_coverage": _round_or_none(manifest_entry_coverage),
-        "manifest_required_fields": ["prompt_id", "seed", "anchor_source", "intended_view"],
+        "manifest_required_fields": ["prompt_id", "seed_or_seed_unavailable_reason", "anchor_source", "intended_view"],
         "manifest_required_field_coverage": {
             key: _round_or_none(value)
             for key, value in manifest_required_field_coverage.items()

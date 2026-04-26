@@ -6,14 +6,15 @@ release_gates:
     machine_status_ceiling: PASS
     training_admission_allowed: true
     manual_training_admission_required: true
-    optuna_fit_allowed: true
+    optuna_fit_allowed: false
     requires_frozen_benchmark: false
     requires_curated_winner_bank: false
     required_lane_families:
       - front
     notes: >
       Primary front-core lane. A candidate may be sealed into the training bank
-      only after explicit GPT-plus-human review.
+      only after explicit GPT-plus-human review. Parameter fitting remains
+      disabled until project optimization and frozen benchmark governance are complete.
 
   BODY_GOLD.three_quarter_review:
     release_state: review

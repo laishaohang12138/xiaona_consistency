@@ -469,12 +469,18 @@ def _clothing_invariant_features(
             (None if garment_boundary_risk is None else 1.0 - garment_boundary_risk, 0.08),
         ]
     )
+    body_truth_metric = _safe_float(heavy_metrics.get("body_pose_independent_truth_alignment"))
+    if body_truth_metric is None:
+        body_truth_metric = _safe_float(heavy_metrics.get("body_shape_truth_alignment"))
+    body_measure_metric = _safe_float(heavy_metrics.get("body_core_measurement_similarity"))
+    if body_measure_metric is None:
+        body_measure_metric = _safe_float(heavy_metrics.get("canonical_measurement_similarity"))
     clothing_invariant_score = _weighted_mean(
         [
             (body_truth_support, 0.25),
             (body_topology_support, 0.20),
-            (heavy_metrics.get("body_shape_truth_alignment"), 0.12),
-            (heavy_metrics.get("canonical_measurement_similarity"), 0.09),
+            (body_truth_metric, 0.12),
+            (body_measure_metric, 0.09),
             (surface_evidence_support, 0.16),
             (clothfree_alignment, 0.08),
             (body_under_clothes, 0.04),
@@ -562,19 +568,30 @@ def _compute_review_only_v2(
         ]
     )
 
-    body_topology_metric = _safe_float(heavy_metrics.get("body_topology_signature_similarity"))
+    body_topology_metric = _safe_float(heavy_metrics.get("body_gait_tolerant_topology_similarity"))
+    if body_topology_metric is None:
+        body_topology_metric = _safe_float(heavy_metrics.get("body_topology_signature_similarity"))
+    body_truth_alignment_metric = _safe_float(heavy_metrics.get("body_pose_independent_truth_alignment"))
+    if body_truth_alignment_metric is None:
+        body_truth_alignment_metric = _safe_float(heavy_metrics.get("body_shape_truth_alignment"))
+    body_measurement_metric = _safe_float(heavy_metrics.get("body_core_measurement_similarity"))
+    if body_measurement_metric is None:
+        body_measurement_metric = _safe_float(heavy_metrics.get("canonical_measurement_similarity"))
+    body_pose_sensitive_metric = _safe_float(heavy_metrics.get("body_pose_sensitive_measurement_similarity"))
+    legacy_body_truth_alignment = _safe_float(heavy_metrics.get("body_shape_truth_alignment"))
+    legacy_body_measurement_similarity = _safe_float(heavy_metrics.get("canonical_measurement_similarity"))
     body_topology_weights = {
-        "front": {"topology": 0.34, "shape": 0.24, "measure": 0.18, "world3d": 0.14, "mesh": 0.10},
-        "three_quarter": {"topology": 0.38, "shape": 0.22, "measure": 0.18, "world3d": 0.12, "mesh": 0.10},
-        "side": {"topology": 0.46, "shape": 0.20, "measure": 0.14, "world3d": 0.12, "mesh": 0.08},
-        "back": {"topology": 0.42, "shape": 0.22, "measure": 0.14, "world3d": 0.14, "mesh": 0.08},
+        "front": {"topology": 0.38, "shape": 0.24, "measure": 0.16, "world3d": 0.12, "mesh": 0.10},
+        "three_quarter": {"topology": 0.40, "shape": 0.24, "measure": 0.14, "world3d": 0.12, "mesh": 0.10},
+        "side": {"topology": 0.48, "shape": 0.22, "measure": 0.10, "world3d": 0.12, "mesh": 0.08},
+        "back": {"topology": 0.44, "shape": 0.24, "measure": 0.10, "world3d": 0.14, "mesh": 0.08},
     }
     body_topology_weight = body_topology_weights.get(lane_family, body_topology_weights["three_quarter"])
     body_topology_support = _weighted_mean(
         [
             (body_topology_metric, body_topology_weight["topology"]),
-            (heavy_metrics.get("body_shape_truth_alignment"), body_topology_weight["shape"]),
-            (heavy_metrics.get("canonical_measurement_similarity"), body_topology_weight["measure"]),
+            (body_truth_alignment_metric, body_topology_weight["shape"]),
+            (body_measurement_metric, body_topology_weight["measure"]),
             (master.get("world3d_master_alignment"), body_topology_weight["world3d"]),
             (heavy_metrics.get("body_mesh_fit_confidence"), body_topology_weight["mesh"]),
         ]
@@ -582,10 +599,10 @@ def _compute_review_only_v2(
     body_truth_support = _weighted_mean(
         [
             (master.get("body_master_alignment"), 0.24),
-            (body_topology_support, 0.34),
-            (heavy_metrics.get("body_shape_truth_alignment"), 0.18),
-            (heavy_metrics.get("canonical_measurement_similarity"), 0.12),
-            (master.get("world3d_master_alignment"), 0.08),
+            (body_topology_support, 0.36),
+            (body_truth_alignment_metric, 0.22),
+            (body_measurement_metric, 0.10),
+            (master.get("world3d_master_alignment"), 0.04),
             (heavy_metrics.get("body_mesh_fit_confidence"), 0.04),
         ]
     )
@@ -598,10 +615,10 @@ def _compute_review_only_v2(
     )
     canonical_invariant_score = _weighted_mean(
         [
-            (body_topology_support, 0.34),
-            (heavy_metrics.get("body_shape_truth_alignment"), 0.20),
-            (heavy_metrics.get("canonical_measurement_similarity"), 0.16),
-            (heavy_metrics.get("body_pose_delta_similarity"), 0.08),
+            (body_topology_support, 0.38),
+            (body_truth_alignment_metric, 0.22),
+            (body_measurement_metric, 0.14),
+            (heavy_metrics.get("body_pose_delta_similarity"), 0.04),
             (heavy_metrics.get("body_mesh_fit_confidence"), 0.08),
             (face_truth_support, 0.14 if lane_family in {"front", "three_quarter"} else 0.08 if lane_family == "side" else 0.0),
         ]
@@ -705,7 +722,7 @@ def _compute_review_only_v2(
             (body_truth_support, 0.40 if lane_family in {"front", "three_quarter"} else 0.56 if lane_family == "side" else 0.62),
             (body_topology_support, 0.10 if lane_family in {"front", "three_quarter"} else 0.22 if lane_family == "side" else 0.26),
             (master.get("world3d_master_alignment"), 0.12),
-            (heavy_metrics.get("body_pose_delta_similarity"), 0.06),
+            (heavy_metrics.get("body_pose_delta_similarity"), 0.02),
             (clothing_invariant_score, 0.04),
             (angle_tolerance_score, 0.02),
             (lane_validity, 0.02),
@@ -723,8 +740,8 @@ def _compute_review_only_v2(
 
     hard_vetoes: List[str] = []
     soft_flags: List[str] = []
-    body_truth_alignment = _safe_float(heavy_metrics.get("body_shape_truth_alignment"))
-    body_measurement_similarity = _safe_float(heavy_metrics.get("canonical_measurement_similarity"))
+    body_truth_alignment = body_truth_alignment_metric
+    body_measurement_similarity = body_measurement_metric
     world3d_master_alignment = _safe_float(master.get("world3d_master_alignment"))
     mesh_confidence = _safe_float(heavy_metrics.get("body_mesh_fit_confidence"))
 
@@ -771,6 +788,8 @@ def _compute_review_only_v2(
 
     if mesh_confidence is not None and mesh_confidence < 0.56:
         soft_flags.append("BODY_MESH_CONFIDENCE_LOW")
+    if body_pose_sensitive_metric is not None and body_pose_sensitive_metric < 0.46:
+        soft_flags.append("BODY_GAIT_VARIATION_HIGH")
     if heavy_coverage is not None and heavy_coverage < 0.60:
         soft_flags.append("HEAVY_EVIDENCE_COVERAGE_LOW")
     if lane_validity is not None and lane_validity < 0.42:
@@ -878,6 +897,12 @@ def _compute_review_only_v2(
         "review_only_breakdown_v2": {
             "observed_lane_family": lane_family,
             "face_truth_support": _round_or_none(face_truth_support),
+            "body_gait_tolerant_topology_similarity": _round_or_none(body_topology_metric),
+            "body_pose_independent_truth_alignment": _round_or_none(body_truth_alignment_metric),
+            "body_core_measurement_similarity": _round_or_none(body_measurement_metric),
+            "body_pose_sensitive_measurement_similarity": _round_or_none(body_pose_sensitive_metric),
+            "body_shape_truth_alignment_legacy": _round_or_none(legacy_body_truth_alignment),
+            "canonical_measurement_similarity_legacy": _round_or_none(legacy_body_measurement_similarity),
             "body_topology_support": _round_or_none(body_topology_support),
             "body_truth_support": _round_or_none(body_truth_support),
             "truth_center_score": _round_or_none(truth_center_score),

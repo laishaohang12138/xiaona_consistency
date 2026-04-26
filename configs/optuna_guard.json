@@ -1,7 +1,7 @@
 {
   "schema_version": "qa_optuna_guard_v1",
   "optuna_locked": true,
-  "lock_reason": "Anchor set is not frozen yet. Candidate-review runs must not feed Optuna.",
+  "lock_reason": "Project optimization is not complete. Candidate-review runs and mutable winner_bank entries must not feed Optuna.",
   "required_label_role": "benchmark_frozen",
   "require_optuna_ready": true,
   "anchor_requirements": [

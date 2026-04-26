@@ -740,6 +740,7 @@ def _default_profile_policy() -> Dict[str, Dict[str, Any]]:
             "soft_review_buckets": [],
             "pass_cap_mode": "always_warn",
             "quota_bucket": "BODY_GOLD.three_quarter_review",
+            "preferred_heavy_evidence": "segformer_body_truth_fusion",
         },
     }
 
@@ -1083,6 +1084,20 @@ def _normalize_profile_policy_map(data: Any) -> Dict[str, Dict[str, Any]]:
                 node[key] = [str(values)]
         out[str(profile_name)] = node
     return out
+
+
+def get_preferred_heavy_evidence_for_profile(
+    config: RuntimeConfig,
+    profile_name: Optional[str],
+) -> Optional[str]:
+    profile_key = str(profile_name or "").strip()
+    if not profile_key:
+        return None
+    policy = config.profile_policy.get(profile_key, {})
+    if not isinstance(policy, dict):
+        return None
+    provider_name = str(policy.get("preferred_heavy_evidence") or "").strip()
+    return provider_name or None
 
 
 def _normalize_anchor_registry(data: Any) -> Dict[str, Any]:

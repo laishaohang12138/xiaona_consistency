@@ -8,14 +8,14 @@
 ## What This System Does
 - It checks candidate images against the frozen XiaoNa truth anchors.
 - It outputs evidence, rankings, and review packets.
-- It does not decide the final main-training admission by itself.
+- It does not decide final training-set admission; that belongs to the external training decision flow.
 
 ## Frozen Truth Rules
 1. `A-Core_01_0deg_MASTER.png` is the absolute face truth.
 2. `Task-63987060-116-1.png` is the absolute body truth.
 3. `Task-63987060-97-1.png` is only an upper-body support anchor.
 4. QA is `evidence_only`.
-5. Final sealing belongs to human review and the downstream decision flow.
+5. Final training admission is out of scope for this repository.
 
 ## Daily Workflows
 1. `shot_review`
@@ -82,7 +82,7 @@ This workflow prints a concise summary of:
 - active shadow view classifier
 - batch blockers
 - top candidate
-- admission advice
+- screening/routing advice
 
 Use this workflow after every `shot_review`.
 
@@ -96,7 +96,7 @@ The workflow will ask you to select:
 Then it writes the promoted record into the winner bank.
 
 Important:
-- winner promotion is not the same thing as main training admission
+- winner promotion is not the same thing as final training-set admission
 - the winner bank is a human-approved reference memory, not an auto-ingest training list
 
 ### 4. winner_bank_status

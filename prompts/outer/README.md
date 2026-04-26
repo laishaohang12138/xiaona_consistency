@@ -2,8 +2,9 @@
 
 ## Import Status
 - `v0.3.0-nb2-8x3` raw shortlist import has been fully landed into the repo.
-- The current state is a raw shortlist import only.
+- The current state is a governed inactive asset.
 - This folder is not yet the active OUTER runtime pack.
+- Machine-readable governance lives in `manifest.yaml`.
 
 ## Current Contents
 - Imported source files live under `assembled_shortlist_v0_3_0_nb2_8x3/`.
@@ -19,5 +20,7 @@
   - `OT-H01~H03` long panel coat
 
 ## Governance Note
-- Do not bind OUTER as active runtime scope until the full pack, manifest, and runtime formula are assembled.
+- Do not bind OUTER as active runtime scope until the full runtime formula, negative prompts, and release gates are assembled.
 - Preserve original source filenames during import; normalize naming only after the full pack is present.
+- OUTER may be used for review-only clothing / occlusion invariance replay while `runtime_active=false`.
+- OUTER must not be used for training admission or winner-bank bootstrap under the current policy.

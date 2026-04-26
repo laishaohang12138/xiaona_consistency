@@ -1302,10 +1302,27 @@ def _heavy_metric_mean_value(metrics: Dict[str, Any], metric_name: str, field_na
 def _extract_canonical_truth_summary(metrics: Dict[str, Any]) -> Dict[str, Any]:
     body_truth_available_ratio = _heavy_metric_mean_value(
         metrics,
-        "body_shape_truth_alignment",
+        "body_pose_independent_truth_alignment",
         "present_weight_ratio",
     )
+    if body_truth_available_ratio is None:
+        body_truth_available_ratio = _heavy_metric_mean_value(
+            metrics,
+            "body_shape_truth_alignment",
+            "present_weight_ratio",
+        )
     body_truth_mean = _heavy_metric_mean_value(
+        metrics,
+        "body_pose_independent_truth_alignment",
+        "value_mean",
+    )
+    if body_truth_mean is None:
+        body_truth_mean = _heavy_metric_mean_value(
+            metrics,
+            "body_shape_truth_alignment",
+            "value_mean",
+        )
+    body_truth_mean_legacy = _heavy_metric_mean_value(
         metrics,
         "body_shape_truth_alignment",
         "value_mean",
@@ -1315,12 +1332,45 @@ def _extract_canonical_truth_summary(metrics: Dict[str, Any]) -> Dict[str, Any]:
         "body_shape_beta_similarity",
         "value_mean",
     )
+    topology_mean = _heavy_metric_mean_value(
+        metrics,
+        "body_gait_tolerant_topology_similarity",
+        "value_mean",
+    )
+    if topology_mean is None:
+        topology_mean = _heavy_metric_mean_value(
+            metrics,
+            "body_topology_signature_similarity",
+            "value_mean",
+        )
     measurement_mean = _heavy_metric_mean_value(
+        metrics,
+        "body_core_measurement_similarity",
+        "value_mean",
+    )
+    if measurement_mean is None:
+        measurement_mean = _heavy_metric_mean_value(
+            metrics,
+            "canonical_measurement_similarity",
+            "value_mean",
+        )
+    measurement_mean_legacy = _heavy_metric_mean_value(
         metrics,
         "canonical_measurement_similarity",
         "value_mean",
     )
     pose_delta_mean = _heavy_metric_mean_value(
+        metrics,
+        "body_pose_sensitive_measurement_similarity",
+        "value_mean",
+    )
+    if pose_delta_mean is None:
+        pose_delta_mean = _heavy_metric_mean_value(
+            metrics,
+            "body_pose_delta_similarity",
+            "value_mean",
+        )
+    pose_delta_mean_legacy = _heavy_metric_mean_value(
         metrics,
         "body_pose_delta_similarity",
         "value_mean",
@@ -1333,22 +1383,44 @@ def _extract_canonical_truth_summary(metrics: Dict[str, Any]) -> Dict[str, Any]:
     readiness_terms = [
         0.45 * float(body_truth_available_ratio or 0.0),
         0.30 * float(body_truth_mean or 0.0),
-        0.15 * float(body_beta_mean or 0.0),
+        0.15 * float(measurement_mean or 0.0),
         0.10 * float(mesh_fit_mean or 0.0),
     ]
     canonical_truth_readiness_score = round(sum(readiness_terms), 6)
     return {
         "body_shape_truth_available_weight_ratio": round(float(body_truth_available_ratio or 0.0), 6),
+        "body_pose_independent_truth_available_weight_ratio": round(float(body_truth_available_ratio or 0.0), 6),
         "body_shape_truth_alignment_mean": None
+        if body_truth_mean is None
+        else round(body_truth_mean, 6),
+        "body_shape_truth_alignment_mean_legacy": None
+        if body_truth_mean_legacy is None
+        else round(body_truth_mean_legacy, 6),
+        "body_pose_independent_truth_alignment_mean": None
         if body_truth_mean is None
         else round(body_truth_mean, 6),
         "body_shape_beta_similarity_mean": None
         if body_beta_mean is None
         else round(body_beta_mean, 6),
+        "body_gait_tolerant_topology_similarity_mean": None
+        if topology_mean is None
+        else round(topology_mean, 6),
         "canonical_measurement_similarity_mean": None
         if measurement_mean is None
         else round(measurement_mean, 6),
+        "canonical_measurement_similarity_mean_legacy": None
+        if measurement_mean_legacy is None
+        else round(measurement_mean_legacy, 6),
+        "body_core_measurement_similarity_mean": None
+        if measurement_mean is None
+        else round(measurement_mean, 6),
         "body_pose_delta_similarity_mean": None
+        if pose_delta_mean is None
+        else round(pose_delta_mean, 6),
+        "body_pose_delta_similarity_mean_legacy": None
+        if pose_delta_mean_legacy is None
+        else round(pose_delta_mean_legacy, 6),
+        "body_pose_sensitive_measurement_similarity_mean": None
         if pose_delta_mean is None
         else round(pose_delta_mean, 6),
         "body_mesh_fit_confidence_mean": None
@@ -1356,8 +1428,8 @@ def _extract_canonical_truth_summary(metrics: Dict[str, Any]) -> Dict[str, Any]:
         else round(mesh_fit_mean, 6),
         "canonical_truth_readiness_score": canonical_truth_readiness_score,
         "canonical_truth_readiness_formula": (
-            "0.45*body_shape_truth_available + 0.30*body_shape_truth_alignment "
-            "+ 0.15*body_shape_beta_similarity + 0.10*body_mesh_fit_confidence"
+            "0.45*body_pose_independent_truth_available + 0.30*body_pose_independent_truth_alignment "
+            "+ 0.15*body_core_measurement_similarity + 0.10*body_mesh_fit_confidence"
         ),
     }
 

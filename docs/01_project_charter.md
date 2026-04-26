@@ -3,7 +3,7 @@
 ## Project Identity
 - Project name: XiaoNa LoRA Training Engineering
 - Single scope: this repository and its linked anchor, prompt, QA, and batch review assets
-- Primary objective: build a high-purity, reusable, iteratively upgradable asset system for XiaoNa
+- Primary objective: build a high-purity, reusable, iteratively upgradable screening and evidence system for XiaoNa candidate batches
 
 ## Version Roadmap
 1. XiaoNa v1.0 Core
@@ -29,6 +29,7 @@
 - Anchor usage rules
 - Prompt architecture maintenance
 - QA review and final arbitration
+- Candidate screening, risk routing, and evidence packaging
 - Batch retrospectives
 - Patch decisions
 - Version naming and release discipline
@@ -38,6 +39,7 @@
 - Cross-project creative work
 - Style-first prompt experimentation
 - Large unsupervised rule rewrites
+- Final training-set admission inside this repository
 
 ## Tool Roles
 - ChatGPT / Codex
@@ -66,4 +68,8 @@
 - Repository files are the primary source of truth
 - Custom GPT knowledge is a published read-only mirror of frozen rules
 - Dynamic batch data is not a source of truth
-
+- `winner_bank` is mutable review memory in the current phase, not frozen truth
+- final training-set admission belongs to the external training decision flow, not this repository
+- Parameter fitting is disabled until project optimization is complete
+- `A-Core_01_0deg_MASTER.png` is the only face truth
+- `Task-63987060-116-1.png` is the only body truth, interpreted with pose/gait-aware consistency

@@ -1,0 +1,64 @@
+prompt_asset:
+  id: outer_shortlist_v0_3_0_nb2_8x3
+  scope: OUTER
+  status: inactive_governed
+  version: v0.3.0-nb2-8x3
+  source_import: outer_prompt_pack_v0_3_0_nb2_8x3 assembled shortlist
+  imported_at: 2026-04-16
+  refs_required:
+    - ref_1_face_master
+    - ref_2_full_body_master
+  refs_optional:
+    - ref_3_upper_support_97
+  runtime_presets:
+    outer_occlusion_replay:
+      base: null
+      plugin_family: OT-A01~OT-H03
+      negatives: []
+      status: planned
+      purpose: review-only occlusion and clothing-invariance replay
+  plugin_registry:
+    blazer:
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_a01_blazer_front_open_lapel_baseline_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_a02_blazer_front_single_point_close_signature_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_a03_blazer_three_quarter_left_lapel_tracking_shortlist_v0_3_0_nb2_8x3.txt
+    collarless_jacket:
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_b01_collarless_jacket_front_open_edge_baseline_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_b02_collarless_jacket_front_hidden_close_neckline_signature_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_b03_collarless_jacket_three_quarter_right_boundary_tracking_shortlist_v0_3_0_nb2_8x3.txt
+    overshirt:
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_c01_overshirt_front_open_placket_baseline_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_c02_overshirt_front_flat_placket_close_signature_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_c03_overshirt_three_quarter_left_collar_placket_tracking_shortlist_v0_3_0_nb2_8x3.txt
+    cardigan:
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_d01_cardigan_front_soft_open_baseline_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_d02_cardigan_front_soft_center_close_signature_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_d03_cardigan_three_quarter_right_soft_placket_tracking_shortlist_v0_3_0_nb2_8x3.txt
+    trench:
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_e01_trench_front_open_edge_baseline_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_e02_trench_front_overlap_block_signature_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_e03_trench_three_quarter_left_overlap_tracking_shortlist_v0_3_0_nb2_8x3.txt
+    rigid_coat:
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_f01_rigid_coat_front_open_placket_baseline_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_f02_rigid_coat_front_clean_placket_close_signature_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_f03_rigid_coat_three_quarter_right_volume_tracking_shortlist_v0_3_0_nb2_8x3.txt
+    short_jacket:
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_g01_short_jacket_front_open_hem_baseline_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_g02_short_jacket_front_box_hem_signature_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_g03_short_jacket_three_quarter_left_box_hem_tracking_shortlist_v0_3_0_nb2_8x3.txt
+    long_panel_coat:
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_h01_long_panel_coat_front_open_panel_baseline_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_h02_long_panel_coat_front_panel_perimeter_signature_shortlist_v0_3_0_nb2_8x3.txt
+      - assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_h03_long_panel_coat_three_quarter_right_panel_tracking_shortlist_v0_3_0_nb2_8x3.txt
+  governance:
+    runtime_active: false
+    training_admission_allowed: false
+    winner_bank_bootstrap_allowed: false
+    review_only_replay_allowed: true
+    release_gate_required_before_activation: true
+  notes:
+    - OUTER is currently a governed inactive asset, not an active runtime prompt pack.
+    - OUTER is for clothing/occlusion invariance replay before any training admission.
+    - A-Core_01 and Task-63987060-116-1 remain the only face/body truth anchors.
+    - Outerwear volume must not redefine body identity or replace BODY_GOLD truth.
+    - Activation requires runtime formula, negative prompts, and dedicated OUTER review gates.

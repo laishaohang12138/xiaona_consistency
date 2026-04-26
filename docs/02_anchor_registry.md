@@ -35,6 +35,7 @@
   - Lock body constitution
   - Lock full-body framing
   - Lock whole-body read and silhouette discipline
+  - Lock the body truth that must be interpreted under pose and gait variation
 - Conflict rule:
   - If body proportion, waistline, skeleton, or framing disagrees with other sources, Ref #2 wins
 
@@ -85,4 +86,5 @@
 ## Governance
 - Face identity must be defined only by `A-Core_01_0deg_MASTER.png`
 - Full-body constitution and framing must be defined only by `Task-63987060-116-1.png`
+- Body-truth consistency must separate pose/gait expression from unexplained body-structure drift.
 - Side/back/profile support anchors may assist observation, but they are not allowed to become new identity masters

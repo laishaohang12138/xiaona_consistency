@@ -1,6 +1,6 @@
 # xiaona_consistency
 
-XiaoNa LoRA training engineering repository.
+XiaoNa LoRA candidate screening and consistency-evidence repository.
 
 ## Current Scope
 - Entrypoint CLI in [check_consistency.py](./check_consistency.py)
@@ -23,8 +23,11 @@ XiaoNa LoRA training engineering repository.
 - `outputs/qa_report.json` now writes `report_meta` plus `items`, including provider policy, anchor snapshot, layer quota snapshot, and threshold hash
 - Benchmark replay can re-score a saved `qa_report.json` under threshold overrides without rerunning vision models
 - Optuna search can optimize replay metrics from `configs/optuna_search_space.template.json` without touching the main QA path
-- `configs/optuna_guard.json` keeps Optuna locked until frozen benchmark labels and anchor coverage are ready
+- `configs/optuna_guard.json` keeps Optuna locked until project optimization, frozen benchmark labels, and anchor coverage are ready
 - `configs/optuna_mode_presets.json` provides user-facing review / front / 3q / side / full-release fit presets
+- Winner bank is currently mutable review memory, not frozen release truth or a fitting source
+- Body truth is pose/gait-aware: `Task-63987060-116-1.png` remains the only body truth while pose-sensitive deltas are interpreted separately
+- Final training-set admission is outside this repository; outputs are screening, ranking, risk routing, and evidence packets only
 
 ## Confirmed Route
 1. Engineering decoupling first

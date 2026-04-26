@@ -7,8 +7,9 @@ Read in this order:
 1. [15_project_memory.md](./15_project_memory.md)
 2. [16_current_state.md](./16_current_state.md)
 3. [17_next_actions.md](./17_next_actions.md)
-4. [25_clothing_invariant_surface_bridge.md](./25_clothing_invariant_surface_bridge.md) when reviewing clothing-invariant surface evidence.
-5. [26_densepose_wsl_deployment.md](./26_densepose_wsl_deployment.md) when preparing official DensePose deployment.
+4. [29_pose_gait_body_truth_policy.md](./29_pose_gait_body_truth_policy.md) when reviewing pose/gait-aware body truth.
+5. [25_clothing_invariant_surface_bridge.md](./25_clothing_invariant_surface_bridge.md) when reviewing clothing-invariant surface evidence.
+6. [26_densepose_wsl_deployment.md](./26_densepose_wsl_deployment.md) when preparing official DensePose deployment.
 
 Use this pack when:
 
@@ -18,10 +19,11 @@ Use this pack when:
 
 Fast rules:
 
-- This project provides explainable evidence and ranking only.
-- Final training admission is always decided by custom GPT plus human review.
+- This project provides screening, explainable evidence, risk routing, and ranking only.
+- Final training-set admission is outside this repository and belongs to the external training decision flow.
 - Absolute anchors stay frozen unless there is an explicit governance decision.
-- Optuna stays frozen until anchor coverage and benchmark freeze are truly ready.
+- Winner bank is mutable review memory for now, not frozen release truth.
+- Optuna and parameter fitting stay frozen until project optimization and frozen benchmark governance are truly ready.
 
 Recommended new-window prompt:
 

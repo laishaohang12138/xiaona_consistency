@@ -170,7 +170,9 @@ def _augment_master_consistency_card(item: Dict[str, Any]) -> bool:
     absolute_alignment = _safe_float(master.get("face_master_alignment"))
     canonical_alignment = _safe_float(face_shadow.get("canonical_face_identity_similarity"))
     topology_alignment = _safe_float(face_shadow.get("canonical_face_topology_similarity"))
-    body_topology_alignment = _safe_float(_metric_value(heavy_bundle, "body_topology_signature_similarity"))
+    body_topology_alignment = _safe_float(_metric_value(heavy_bundle, "body_gait_tolerant_topology_similarity"))
+    if body_topology_alignment is None:
+        body_topology_alignment = _safe_float(_metric_value(heavy_bundle, "body_topology_signature_similarity"))
 
     updated = False
     if master.get("absolute_front_master_alignment") != _round_or_none(absolute_alignment):

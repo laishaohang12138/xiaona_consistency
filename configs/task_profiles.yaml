@@ -338,6 +338,7 @@ profile_policy:
     soft_review_buckets: []
     pass_cap_mode: always_warn
     quota_bucket: BODY_GOLD.three_quarter_review
+    preferred_heavy_evidence: segformer_body_truth_fusion
     hard_quality_flags:
       - FACE_UNDEREXPOSED_DARK
       - FACE_NO_RELIABLE_SIGNAL
@@ -354,6 +355,7 @@ profile_policy:
     soft_review_buckets: []
     pass_cap_mode: always_warn
     quota_bucket: BODY_GOLD.side90_shadow
+    preferred_heavy_evidence: segformer_body_truth_fusion
     hard_quality_flags:
       - HIP_POP_DETECTED_POSSIBLE_MODEL_POSE
   body_gold_back180_shadow:
@@ -368,5 +370,6 @@ profile_policy:
     soft_review_buckets: []
     pass_cap_mode: always_warn
     quota_bucket: BODY_GOLD.back180_shadow
+    preferred_heavy_evidence: segformer_body_truth_fusion
     hard_quality_flags:
       - HIP_POP_DETECTED_POSSIBLE_MODEL_POSE

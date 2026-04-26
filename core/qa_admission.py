@@ -80,6 +80,7 @@ def build_batch_admission_advice(
     engine_status = batch_summary.get("engine_status") or {}
     release_gate = _release_gate_summary(batch_summary, target_bucket)
     training_governance = batch_summary.get("training_admission_governance") or {}
+    participates_in_final_admission = bool(training_governance.get("participates_in_final_admission", True))
     batch_preflight = batch_summary.get("batch_preflight") or {}
     evidence_completeness = batch_summary.get("evidence_completeness") or {}
 
@@ -96,9 +97,9 @@ def build_batch_admission_advice(
         blockers.append("BATCH_PREFLIGHT_WARN")
     if lane_family in {"side", "back"} and target_bucket == "BODY_GOLD.front_core":
         blockers.append("NON_FRONT_BATCH_FOR_FRONT_CORE")
-    if release_gate.get("release_state") in {"shadow", "review", "filter_only"}:
+    if participates_in_final_admission and release_gate.get("release_state") in {"shadow", "review", "filter_only"}:
         blockers.append(f"RELEASE_GATE_{str(release_gate.get('release_state') or '').upper()}_ONLY")
-    if not bool(release_gate.get("training_admission_allowed")):
+    if participates_in_final_admission and not bool(release_gate.get("training_admission_allowed")):
         blockers.append("RELEASE_GATE_TRAINING_ADMISSION_DENIED")
     required_lane_families = list(release_gate.get("required_lane_families") or [])
     if lane_family and required_lane_families and lane_family not in required_lane_families:
@@ -116,7 +117,11 @@ def build_batch_admission_advice(
     evidence_status = str(evidence_completeness.get("status") or "").strip().upper()
     if evidence_status == "FAIL":
         blockers.append("EVIDENCE_COMPLETENESS_FAILED")
-    if bool(release_gate.get("requires_frozen_benchmark")) and not bool(evidence_completeness.get("replay_ready")):
+    if (
+        participates_in_final_admission
+        and bool(release_gate.get("requires_frozen_benchmark"))
+        and not bool(evidence_completeness.get("replay_ready"))
+    ):
         blockers.append("EVIDENCE_NOT_REPLAY_READY_FOR_FROZEN_BENCHMARK")
     if bool(evidence_completeness.get("replay_ready")):
         supports.append("EVIDENCE_REPLAY_READY")
@@ -125,7 +130,7 @@ def build_batch_admission_advice(
 
     winner_report = (winner_bank_status or {}).get("report") or {}
     curated_bank_available = bool(winner_report.get("curated_bank_available"))
-    if release_gate.get("requires_curated_winner_bank") and not curated_bank_available:
+    if participates_in_final_admission and release_gate.get("requires_curated_winner_bank") and not curated_bank_available:
         blockers.append("CURATED_WINNER_BANK_REQUIRED")
     if curated_bank_available and int(winner_report.get("drift_row_count") or 0) > 0:
         drift_rows = list(winner_report.get("drift_rows") or [])
@@ -137,8 +142,14 @@ def build_batch_admission_advice(
         if int(manifest_summary.get("entry_count") or 0) > 0:
             supports.append("TRAINING_ADMISSION_MANIFEST_AVAILABLE")
 
-    eligible_for_training_seal = len(blockers) == 0 and bool(release_gate.get("training_admission_allowed"))
-    if "ENGINE_FATAL_UNAVAILABLE" in blockers:
+    eligible_for_training_seal = (
+        participates_in_final_admission
+        and len(blockers) == 0
+        and bool(release_gate.get("training_admission_allowed"))
+    )
+    if not participates_in_final_admission:
+        suggested_action = "screen_and_route_candidates_to_external_training_decision"
+    elif "ENGINE_FATAL_UNAVAILABLE" in blockers:
         suggested_action = "hold_batch_until_engine_recovered"
     elif "NON_FRONT_BATCH_FOR_FRONT_CORE" in blockers:
         suggested_action = "reroute_to_matching_lane_profile"
@@ -155,6 +166,8 @@ def build_batch_admission_advice(
 
     return {
         "system_role": "advisory_only",
+        "project_scope": "screening_only",
+        "training_admission_participation": participates_in_final_admission,
         "target_bucket": target_bucket,
         "dominant_lane_family": lane_family,
         "release_gate": release_gate,
@@ -179,6 +192,7 @@ def build_candidate_admission_advice(
     status = str(item_summary.get("status") or "").strip().upper()
     release_gate = dict(batch_admission.get("release_gate") or {})
     training_admission_allowed = bool(release_gate.get("training_admission_allowed"))
+    participates_in_final_admission = bool(batch_admission.get("training_admission_participation", True))
     batch_preflight = batch_admission.get("batch_preflight") or {}
     evidence_completeness = batch_admission.get("evidence_completeness") or {}
     blockers: List[str] = []
@@ -211,8 +225,20 @@ def build_candidate_admission_advice(
     if bool(evidence_completeness.get("replay_ready")):
         supports.append("EVIDENCE_REPLAY_READY")
 
-    eligible_for_training_seal = bool(batch_admission.get("eligible_for_training_seal")) and training_admission_allowed and len(blockers) == 0
-    if "ITEM_STATUS_FAIL" in blockers:
+    eligible_for_training_seal = (
+        participates_in_final_admission
+        and bool(batch_admission.get("eligible_for_training_seal"))
+        and training_admission_allowed
+        and len(blockers) == 0
+    )
+    if not participates_in_final_admission:
+        if "ITEM_STATUS_FAIL" in blockers:
+            suggestion = "screening_reject_tail"
+        elif len(blockers) == 0:
+            suggestion = "screening_priority_candidate"
+        else:
+            suggestion = "screening_review_needed"
+    elif "ITEM_STATUS_FAIL" in blockers:
         suggestion = "reject_tail"
     elif not training_admission_allowed:
         suggestion = "not_eligible_for_training_seal"
@@ -228,6 +254,8 @@ def build_candidate_admission_advice(
         suggestion = "manual_hold_candidate"
 
     return {
+        "project_scope": "screening_only",
+        "training_admission_participation": participates_in_final_admission,
         "target_bucket": batch_admission.get("target_bucket"),
         "release_gate": release_gate,
         "batch_preflight": batch_preflight,

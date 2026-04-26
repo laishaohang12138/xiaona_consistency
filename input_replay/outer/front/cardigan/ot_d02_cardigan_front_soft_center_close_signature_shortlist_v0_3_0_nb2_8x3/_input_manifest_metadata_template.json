@@ -1,0 +1,9 @@
+{
+  "schema_version": "input_manifest_metadata_patch_v1",
+  "source_manifest": "D:\\xiaona_consistency\\input_replay\\outer\\front\\cardigan\\ot_d02_cardigan_front_soft_center_close_signature_shortlist_v0_3_0_nb2_8x3\\input_manifest.json",
+  "outer_replay_lane": "front",
+  "outer_family": "cardigan",
+  "outer_prompt_id": "OT-D02",
+  "outer_prompt_file": "prompts/outer/assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_d02_cardigan_front_soft_center_close_signature_shortlist_v0_3_0_nb2_8x3.txt",
+  "items": {}
+}

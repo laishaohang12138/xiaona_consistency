@@ -262,6 +262,7 @@ def parse_collection_metadata(
         "manifest_entry_present": bool(manifest_present),
         "prompt_id": manifest_payload.get("prompt_id"),
         "seed": manifest_payload.get("seed"),
+        "seed_unavailable_reason": manifest_payload.get("seed_unavailable_reason"),
         "anchor_source": manifest_payload.get("anchor_source"),
         "generator_name": manifest_payload.get("generator_name"),
         "generator_version": manifest_payload.get("generator_version"),

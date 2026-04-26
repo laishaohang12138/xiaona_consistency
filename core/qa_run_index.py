@@ -30,6 +30,10 @@ def _round_or_none(value: Any, digits: int = 4) -> Optional[float]:
     return round(number, digits)
 
 
+def _safe_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
 def _artifact_run_brief(artifact_root: Path, *, kind: str) -> Optional[Dict[str, Any]]:
     gpt_packet = _load_json(artifact_root / "gpt_review_packet.json")
     if not gpt_packet:
@@ -66,6 +70,7 @@ def _artifact_run_brief(artifact_root: Path, *, kind: str) -> Optional[Dict[str,
         "preflight_status": str(batch_preflight.get("status") or "").strip(),
         "evidence_status": str(evidence.get("status") or "").strip(),
         "completeness_score": _round_or_none(evidence.get("completeness_score")),
+        "active_heavy_provider": _safe_text(evidence.get("active_heavy_provider")),
         "release_state": str(release_gate.get("release_state") or "").strip(),
         "training_admission_allowed": bool(release_gate.get("training_admission_allowed")),
         "admission_suggested_action": str(admission_advice.get("suggested_action") or "").strip(),
@@ -109,6 +114,19 @@ def _front_bootstrap_score(row: Dict[str, Any]) -> tuple:
     )
 
 
+def _three_quarter_clean_score(row: Dict[str, Any]) -> tuple:
+    active_heavy_provider = _safe_text(row.get("active_heavy_provider")).lower()
+    prefers_truth_fusion = 0 if "truth_fusion" in active_heavy_provider else 1
+    return (
+        prefers_truth_fusion,
+        -float(row.get("completeness_score") or 0.0),
+        -int(row.get("review_only_pass_count") or 0),
+        -int(row.get("input_count") or 0),
+        -int(str(row.get("generated_at_utc") or "").replace("-", "").replace(":", "").replace("T", "").replace(".", "").replace("+", "" )[:14] or 0),
+        str(row.get("run_name") or ""),
+    )
+
+
 def build_review_run_index(
     *,
     base_dir: Path,
@@ -127,7 +145,15 @@ def build_review_run_index(
 
     clean_lane_runs = [row for row in snapshot_runs if bool(row.get("is_clean_lane_run"))]
     front_candidates = [row for row in snapshot_runs if bool(row.get("is_front_primary_candidate"))]
+    three_quarter_candidates = [
+        row for row in clean_lane_runs if str(row.get("dominant_lane_family") or "").strip() == "three_quarter"
+    ]
     recommended_front_bootstrap = sorted(front_candidates, key=_front_bootstrap_score)[0] if front_candidates else None
+    recommended_three_quarter_clean = (
+        sorted(three_quarter_candidates, key=_three_quarter_clean_score)[0]
+        if three_quarter_candidates
+        else None
+    )
 
     payload = {
         "schema_version": "review_run_index_v1",
@@ -143,10 +169,7 @@ def build_review_run_index(
                 else ""
             ),
             "front_bootstrap_snapshot": recommended_front_bootstrap,
-            "three_quarter_clean_snapshot": next(
-                (row for row in clean_lane_runs if str(row.get("dominant_lane_family")) == "three_quarter"),
-                None,
-            ),
+            "three_quarter_clean_snapshot": recommended_three_quarter_clean,
         },
     }
     output_file.parent.mkdir(parents=True, exist_ok=True)
