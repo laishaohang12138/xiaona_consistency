@@ -329,12 +329,16 @@ def _build_report_meta(
         "project_scope": {
             "schema_version": "project_scope_v1",
             "role": "screening_and_evidence_only",
-            "machine_role": "rank_candidates_explain_risks_and_package_review_evidence",
+            "machine_role": "rank_candidates_explain_risks_route_review_priority_and_package_evidence",
             "training_admission_participation": False,
+            "image_set_decision_participation": False,
             "final_training_decision_owner": "external_training_decision_flow",
+            "final_image_set_decision_owner": "external_dataset_curation_flow",
             "does_not": [
                 "decide final training-set admission",
+                "decide final image-set membership",
                 "seal training samples",
+                "assemble or freeze the final training image set",
                 "freeze winner_bank as release truth",
                 "fit parameters from candidate-review data",
             ],
@@ -509,8 +513,9 @@ def _build_report_meta(
         "shot_batch_selection": {
             "enabled": True,
             "mode": "advisory_rank_only",
-            "final_decision_owner": "custom_gpt_plus_human",
-            "goal": "provide ranking and explanations for batch review, not final auto-selection",
+            "final_decision_owner": "external_dataset_curation_flow",
+            "review_priority_owner": "screening_system",
+            "goal": "provide ranking and explanations for batch review, not final image-set selection",
             "outputs": [
                 "selection_score",
                 "top_ranked_image",
@@ -528,16 +533,25 @@ def _build_report_meta(
                 "structure_stability",
             ],
         },
+        "dataset_curation_governance": {
+            "enabled": False,
+            "mode": "external_final_image_set_decision_out_of_scope",
+            "participates_in_final_image_set_decision": False,
+            "final_image_set_decision_owner": "external_dataset_curation_flow",
+            "local_role": "screening_evidence_and_review_priority_only",
+            "machine_ranking_meaning": "review_priority_not_image_set_membership",
+        },
         "winner_bank_governance": {
             "enabled": True,
             "mode": "manual_promotion_required",
-            "goal": "track cross-batch drift for final human-approved winners without auto-promoting machine top1",
+            "goal": "track cross-batch drift for mutable review-memory entries without auto-promoting machine top1 or deciding the final image set",
             "outputs": [
                 "winner_bank_candidate.json",
                 "winner_bank_report.json",
             ],
             "auto_promote_machine_top1": False,
-            "final_decision_owner": "custom_gpt_plus_human",
+            "final_decision_owner": "external_dataset_curation_flow",
+            "local_role": "mutable_review_memory_only",
         },
         "training_admission_governance": {
             "enabled": False,
@@ -545,8 +559,10 @@ def _build_report_meta(
             "manifest_file": str(training_manifest_file),
             "manifest_summary": training_manifest_summary,
             "participates_in_final_admission": False,
+            "participates_in_final_image_set_decision": False,
             "winner_bank_equals_training_admission": False,
             "final_decision_owner": "external_training_decision_flow",
+            "final_image_set_decision_owner": "external_dataset_curation_flow",
             "local_role": "screening_evidence_only",
         },
         "review_packet": {

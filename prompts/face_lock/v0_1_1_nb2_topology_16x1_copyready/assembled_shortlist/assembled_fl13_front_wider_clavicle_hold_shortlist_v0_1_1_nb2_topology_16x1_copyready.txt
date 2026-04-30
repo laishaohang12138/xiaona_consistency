@@ -1,0 +1,84 @@
+[REFERENCE PRIORITY RULE | MUST BE FIRST]
+Create one photorealistic technical studio portrait of XiaoNa.
+Use the attached images as explicit anchors with fixed roles, not as loose style references.
+
+Ref #1 = FACE MASTER. Use it only for facial identity geometry: feature layout, eye-nose-lip spacing, face width-to-length ratio, jawline, chin shape, nose structure, lip shape, hairline, ear placement, and calm neutral expression.
+Ref #2 = FULL BODY MASTER. Use it for body architecture, shoulder width, neck length, clavicle basin, upper-body continuity, global skin read, and the overall XiaoNa person-read.
+Ref #3 = UPPER SUPPORT. Use it only when shoulders, neck column, clavicle basin, or upper-body edge starts to drift.
+
+If the anchors conflict, Ref #1 wins for facial geometry. Ref #2 wins for body architecture and global skin family. Ref #3 is auxiliary only.
+Single person only. No redesign. No beautify. No face replacement. No style drift.
+
+[IDENTITY HARD-LOCK]
+XiaoNa is a 24-year-old Chinese woman with the same facial identity as Ref #1.
+Preserve a soft oval face, rounded chin, natural jaw width, natural temple width, natural cheek volume, blunt rounded U-shaped nose tip, consistent nose bridge height and length, natural eye size and spacing, natural eyebrows, relaxed closed mouth, and natural lip thickness.
+Keep the face adult, calm, ordinary, healthy, and stable.
+Do not make her younger, cuter, prettier, more glamorous, more generic, more influencer-like, more idol-like, or more doll-like.
+Expression stays calm neutral with a relaxed closed mouth. No smile. No teeth. No pout. No performance squint.
+
+[3D FACE TOPOLOGY LOCK]
+Preserve the same 3D head hull as Ref #1: frontal skull shell, forehead width, brow ridge read, eye socket placement, nose projection, philtrum length, lip plane, chin projection, lower jaw arc, and ear-root placement.
+When the head turns or pitches, make it read as the same head rotating in space.
+Do not fake depth by narrowing the jaw, sharpening the nose, hollowing the cheeks, erasing the far-side cheek, stretching the chin, or creating a V-line.
+Keep the nose tip, philtrum, upper lip, lower lip, chin, jawline, neck column, and clavicle basin topologically continuous.
+
+[HEAD-NECK-BODY CONTINUITY]
+Keep the head attached to the same body from Ref #2.
+Maintain the jaw underside, submental plane, neck column, trapezius slope, shoulder heads, and clavicle basin as one natural connected structure whenever visible.
+Keep a slender professional-model build, visually 170 cm and 50 kg, straight relaxed shoulders, distinct clavicles, 30 cm visual neck, 38 cm shoulder width, and 1:7.5 to 1:8 head-to-body ratio when body scale is implied.
+Do not widen shoulders, thicken the trapezius, shorten the neck, inflate the bust, or change torso identity.
+
+[HAIR / EAR / ACCESSORY LOCK]
+Hair is black, center-parted, tied in a low ponytail, with clean natural parting and natural hairline.
+No bangs covering eyebrows. No curls. No dye. No highlights.
+Tuck hair behind the ears or behind the shoulders whenever ear root, jawline, neckline, or clavicle visibility is needed.
+Do not let loose strands cover the hairline, eyebrows, eyes, ears, jawline, neck column, or clavicle basin.
+Small silver hoop earrings only if visible. No necklace. No choker. No scarf. No brooch. No extra accessories.
+
+[SKIN / TEXTURE / LIGHTING LOCK]
+Use soft technical studio lighting with broad frontal fill, neutral-cool white balance, and low-contrast exposure.
+Keep face, neck, ears, clavicles, and upper chest in the same exposure and chroma family.
+If Ref #1 facial skin appears paler than the global body read, keep Ref #1 facial geometry but harmonize facial luminance and chroma into the same overall skin family as Ref #2.
+Skin texture is real and healthy: visible natural pores, fine vellus hair, subtle uneven highlights, realistic micro-contrast, and natural skin relief.
+No beauty filter. No airbrushed skin. No wax skin. No plastic skin. No porcelain smoothing. No glossy glamour retouch.
+Avoid under-chin darkness, dark neck, chalky face, dead-white face, red chest patch, muddy clavicle shadow, and hard specular hot spots.
+
+[WARDROBE DISCIPLINE]
+Use one fixed low-entropy wardrobe family: a plain fitted shallow crew-round basic top in matte neutral-cool mid-value grey, slate grey, or graphite grey.
+The top is clean, non-transparent, non-glossy, non-lingerie, and without logo, text, print, lace, mesh, metallic shine, or decorative trim.
+No outerwear. No jacket. No blazer. No coat. No cardigan. No hoodie. No scarf. No high collar. No turtleneck. No mock neck. No V-neck. No deep U-neck. No shirt collar. No off-shoulder. No halter.
+
+[BACKGROUND / CAMERA / FRAMING]
+Use a clean neutral grey to cool grey seamless studio background, uncluttered, with no props, no furniture, no environment story, no text, and no watermark.
+Use vertical portrait framing, 3:4 aspect ratio, high-resolution 2K or 4K if available.
+Use a neutral 65 mm equivalent portrait lens. Camera is eye-level or slightly upper-chest-level. Neutral perspective, straight verticals, level horizon.
+No phone selfie perspective. No wide-angle distortion.
+Default framing is head-to-clavicle or head-to-upper-chest.
+Keep full hairline, both eyes, nose, mouth, chin, jawline, and at least the neck base readable.
+For attachment and wider slots, include both clavicles and shoulder heads.
+Do not crop into a face-only beauty macro.
+
+[POSE / VARIABLE BUDGET]
+Use a static low-entropy upright pose with calm technical body language.
+No fashion attitude. No runway feeling. No chest-forward display. No dramatic twist. No hip pop.
+No hand near face, neck, collar, chest, or hair.
+Each shot changes only one main variable: frontal crop, yaw, pitch, attachment readability, light microrelief, or mild contour threshold.
+Do not combine new angle, new light, new expression, new wardrobe, and new crop in the same image.
+
+[IMAGE QUALITY]
+Photorealistic. Natural anatomy. Stable studio composition. High detail on face, skin texture, hairline, ears, jawline, neck, and clavicle basin.
+No retouching look. No synthetic glossy skin. No stylized fashion-campaign mood. No cinematic drama.
+
+[SHOT PLUGIN | FL-13 FRONT WIDER CLAVICLE HOLD]
+Set the head and upper body facing the camera directly.
+Use a wider head-to-upper-chest crop.
+Include full hairline, both ears if naturally visible, jawline, neck column, both clavicles, clavicle basin, shoulder heads, and the top edge of the shallow crew-round shirt.
+Keep shoulder width, neck length, clavicle read, and upper torso identity consistent with Ref #2.
+Keep expression calm neutral and closed-mouth.
+Do not turn this into a neckline-fashion shot.
+
+[NEGATIVE CORE]
+wrong person, different identity, face drift, generic face, influencer face, internet beauty face, idol face, doll face, anime face, childish face, baby face, over-beautified face, glamorous face, altered facial proportions, face replacement look, celebrity-like face, V-line face, pointy chin, tiny chin, sharpened jaw, narrow jaw, hollow cheeks, over-sculpted cheekbones, asymmetrical face, oversized eyes, enlarged iris, colored contacts, heavy eyeliner, false eyelashes, heavy makeup, glossy makeup, overfilled lips, duck lips, open mouth, teeth showing, smiling, pout, pinched nose, tiny nose, sharp nose tip, rhinoplasty nose, erased nostril shape, changed philtrum, changed lip plane, fake 3D depth, far-side cheek erased, warped jawline, broken ear placement, hidden ear root, hair covering hairline, hair covering ears, hair covering jawline, hair covering neck, bangs over eyebrows, loose strands across face, macro face crop, face-only crop, beauty portrait crop, selfie, phone camera perspective, wide-angle distortion, fisheye, tilted horizon, camera roll, low angle, high angle, dramatic split lighting, harsh rim light, cinematic mood, fashion campaign gloss, dark neck, dark clavicles, muddy under-chin shadow, red chest patch, chalky face, dead-white face, face brighter than body, dark face, uneven exposure, orange cast, yellow cast, bronze skin, tanned skin, plastic skin, wax skin, airbrushed skin, beauty filter, over-retouched skin, low microtexture, blurred pores, glossy oily skin, necklace, choker, scarf, brooch, extra accessories, outerwear, jacket, blazer, cardigan, coat, hoodie, high collar, turtleneck, mock neck, V-neck, shirt collar, off-shoulder, halter, logo, text print, pattern print, lace, transparent fabric, shiny fabric, props, furniture, busy background, textured wall, bright white background, black void background, multiple people, extra person, watermark, text
+
+[NEGATIVE FINISH]
+slightly different XiaoNa, two XiaoNa face variants, subtle identity drift, age drift, younger-looking face, glamour retouch creep, V-line creep, chin too sharp, jaw too narrow, nose tip too sharp, lips too full, philtrum too short, cheek too hollow, far-side cheek collapsed, fake three-quarter face, yaw mismatch, left-right face mismatch, pitch distortion, nostril overexposure, under-nose shadow, under-chin darkness, head floating above neck, broken jaw-neck transition, collapsed neck column, thick neck, short neck, swallowed clavicle basin, hidden clavicles, shoulder heads cropped, hairline clipped, ear roots hidden, jawline hidden, eyelid detail blurred, pores erased, waxy forehead, plastic cheek, blurred skin relief, synthetic skin highlight, chalky cheek, face too pale, face too bright, face too dark, neck darker than face, upper chest color mismatch, edge halo around hair, background glow, campaign lighting, beauty headshot polish, social media profile photo look

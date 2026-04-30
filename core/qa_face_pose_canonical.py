@@ -152,6 +152,146 @@ def _landmark_topology_signature(value: Any) -> Optional[np.ndarray]:
     return np.asarray(signature_parts, dtype=np.float32)
 
 
+def _normalized_landmark_points(value: Any) -> Optional[np.ndarray]:
+    points = _landmark_points(value)
+    if points is None or points.shape[0] < 5:
+        return None
+    centered = points - np.mean(points, axis=0, keepdims=True)
+    scale = float(np.linalg.norm(centered))
+    if scale <= 1e-8:
+        return None
+    return centered / scale
+
+
+def _landmark_region_signature(points: np.ndarray) -> Optional[np.ndarray]:
+    if points is None or points.shape[0] < 2:
+        return None
+    xs = points[:, 0]
+    ys = points[:, 1]
+    abs_x = np.abs(xs)
+    radii = np.linalg.norm(points, axis=1)
+    pairwise = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=2)
+    tri_upper = pairwise[np.triu_indices(points.shape[0], k=1)]
+    if tri_upper.size == 0:
+        return None
+    width = float(np.max(xs) - np.min(xs))
+    height = float(np.max(ys) - np.min(ys))
+    signature_parts: List[float] = [
+        width,
+        height,
+        width / max(height, 1e-8),
+        float(np.mean(xs)),
+        float(np.mean(ys)),
+        float(np.std(xs)),
+        float(np.std(ys)),
+    ]
+    signature_parts.extend(float(node) for node in np.quantile(xs, [0.10, 0.25, 0.50, 0.75, 0.90]).tolist())
+    signature_parts.extend(float(node) for node in np.quantile(ys, [0.10, 0.25, 0.50, 0.75, 0.90]).tolist())
+    signature_parts.extend(float(node) for node in np.quantile(abs_x, [0.25, 0.50, 0.75, 0.90]).tolist())
+    signature_parts.extend(float(node) for node in np.quantile(radii, [0.25, 0.50, 0.75, 0.90]).tolist())
+    signature_parts.extend(float(node) for node in np.quantile(tri_upper, [0.10, 0.35, 0.50, 0.65, 0.90]).tolist())
+    return np.asarray(signature_parts, dtype=np.float32)
+
+
+def _masked_region_similarity(
+    reference_points: np.ndarray,
+    candidate_points: np.ndarray,
+    mask: np.ndarray,
+) -> Optional[float]:
+    if int(np.count_nonzero(mask)) < 2:
+        return None
+    ref_signature = _landmark_region_signature(reference_points[mask])
+    cand_signature = _landmark_region_signature(candidate_points[mask])
+    similarity, _ = _vector_similarity(ref_signature, cand_signature)
+    return similarity
+
+
+def _lateral_balance_signature(points: np.ndarray) -> Optional[np.ndarray]:
+    left = points[points[:, 0] < 0.0]
+    right = points[points[:, 0] > 0.0]
+    if left.shape[0] < 2 or right.shape[0] < 2:
+        return None
+
+    def _side_features(side: np.ndarray) -> List[float]:
+        xs = side[:, 0]
+        ys = side[:, 1]
+        return [
+            float(np.mean(np.abs(xs))),
+            float(np.std(np.abs(xs))),
+            float(np.mean(ys)),
+            float(np.std(ys)),
+            float(np.max(ys) - np.min(ys)),
+        ]
+
+    total = float(points.shape[0])
+    parts: List[float] = [
+        float(left.shape[0] / max(total, 1.0)),
+        float(right.shape[0] / max(total, 1.0)),
+    ]
+    parts.extend(_side_features(left))
+    parts.extend(_side_features(right))
+    return np.asarray(parts, dtype=np.float32)
+
+
+def _head_topology_partition_similarity(reference: Any, candidate: Any) -> Dict[str, Any]:
+    ref_points = _normalized_landmark_points(reference)
+    cand_points = _normalized_landmark_points(candidate)
+    if ref_points is None or cand_points is None or ref_points.shape != cand_points.shape:
+        return {
+            "available": False,
+            "schema_version": "head_topology_partition_v1",
+            "partition_method": "canonical_landmark_quantile_bands_v1",
+            "reason": "landmark_shape_unavailable",
+        }
+
+    ys = ref_points[:, 1]
+    abs_x = np.abs(ref_points[:, 0])
+    y_q33, y_q66 = np.quantile(ys, [0.33, 0.66]).tolist()
+    contour_q75 = float(np.quantile(abs_x, 0.75))
+    center_q35 = float(np.quantile(abs_x, 0.35))
+
+    partition_values: Dict[str, Optional[float]] = {
+        "upper_face_similarity": _masked_region_similarity(ref_points, cand_points, ys <= y_q33),
+        "mid_face_similarity": _masked_region_similarity(ref_points, cand_points, (ys > y_q33) & (ys < y_q66)),
+        "lower_face_similarity": _masked_region_similarity(ref_points, cand_points, ys >= y_q66),
+        "contour_similarity": _masked_region_similarity(ref_points, cand_points, abs_x >= contour_q75),
+        "center_axis_similarity": _masked_region_similarity(ref_points, cand_points, abs_x <= center_q35),
+    }
+    lateral_ref = _lateral_balance_signature(ref_points)
+    lateral_cand = _lateral_balance_signature(cand_points)
+    lateral_similarity, _ = _vector_similarity(lateral_ref, lateral_cand)
+    partition_values["lateral_balance_similarity"] = lateral_similarity
+
+    mean_similarity = _weighted_mean(
+        [
+            (partition_values.get("upper_face_similarity"), 0.16),
+            (partition_values.get("mid_face_similarity"), 0.18),
+            (partition_values.get("lower_face_similarity"), 0.18),
+            (partition_values.get("contour_similarity"), 0.22),
+            (partition_values.get("center_axis_similarity"), 0.18),
+            (partition_values.get("lateral_balance_similarity"), 0.08),
+        ]
+    )
+    available_parts = {
+        key: value for key, value in partition_values.items() if value is not None
+    }
+    weakest_part = None
+    weakest_part_similarity = None
+    if available_parts:
+        weakest_part, weakest_part_similarity = min(available_parts.items(), key=lambda row: float(row[1]))
+
+    return {
+        "available": True,
+        "schema_version": "head_topology_partition_v1",
+        "partition_method": "canonical_landmark_quantile_bands_v1",
+        "landmark_count": int(ref_points.shape[0]),
+        "mean_similarity": mean_similarity,
+        "weakest_part": weakest_part,
+        "weakest_part_similarity": weakest_part_similarity,
+        **partition_values,
+    }
+
+
 def _cache_dir(runtime: Any) -> Path:
     cache_root = getattr(getattr(runtime.config, "paths", None), "dir_heavy_cache", Path("outputs") / "heavy_evidence_cache")
     cache_dir = Path(cache_root) / _PROVIDER_NAME
@@ -395,6 +535,11 @@ class FacePoseCanonicalProvider(FaceCanonicalProvider):
         canonical_face_identity_similarity = None
         canonical_face_topology_similarity = None
         canonical_face_topology_delta = None
+        head_topology_partition: Dict[str, Any] = {
+            "available": False,
+            "schema_version": "head_topology_partition_v1",
+            "partition_method": "canonical_landmark_quantile_bands_v1",
+        }
         pose_delta_similarity = None
         pose_delta_deg = None
         pose_euler = {"yaw": None, "pitch": None, "roll": None}
@@ -417,6 +562,10 @@ class FacePoseCanonicalProvider(FaceCanonicalProvider):
                 master_artifact.get("canonical_face_topology_signature"),
                 candidate_artifact.get("canonical_face_topology_signature"),
             )
+            head_topology_partition = _head_topology_partition_similarity(
+                master_artifact.get("canonical_landmarks"),
+                candidate_artifact.get("canonical_landmarks"),
+            )
             pose_delta_similarity, pose_delta_deg = _pose_delta_similarity(
                 dict(master_artifact.get("pose_euler_deg") or {}),
                 dict(candidate_artifact.get("pose_euler_deg") or {}),
@@ -427,6 +576,8 @@ class FacePoseCanonicalProvider(FaceCanonicalProvider):
                 reasons.append("FACE_CANONICAL_IDENTITY_ALIGNMENT_UNAVAILABLE")
             if canonical_face_topology_similarity is None:
                 reasons.append("FACE_CANONICAL_TOPOLOGY_ALIGNMENT_UNAVAILABLE")
+            if not bool(head_topology_partition.get("available")):
+                reasons.append("FACE_HEAD_TOPOLOGY_PARTITION_UNAVAILABLE")
             if pose_delta_similarity is None:
                 reasons.append("FACE_CANONICAL_POSE_DELTA_UNAVAILABLE")
 
@@ -450,6 +601,10 @@ class FacePoseCanonicalProvider(FaceCanonicalProvider):
                 guidance.append("canonical 脸部 3D 拓扑支撑偏弱，人工复核时优先看鼻梁-嘴-下巴关系与下颌线走势。")
             if canonical_face_landmark_similarity is not None and canonical_face_landmark_similarity < 0.72:
                 guidance.append("canonical 脸部拓扑相似度偏低，人工复核时优先看眼鼻口与下颌线。")
+            weakest_part_similarity = _safe_float(head_topology_partition.get("weakest_part_similarity"), None)
+            if weakest_part_similarity is not None and weakest_part_similarity < 0.70:
+                weakest_part = str(head_topology_partition.get("weakest_part") or "unknown")
+                guidance.append(f"head topology 分区弱项={weakest_part}，人工复核时优先确认该区域是否身份漂移。")
             if normalization_confidence is not None and normalization_confidence < 0.65:
                 guidance.append("这张图的 frontalization/可见脸质量偏弱，canonical 结论只能作辅助参考。")
 
@@ -485,6 +640,30 @@ class FacePoseCanonicalProvider(FaceCanonicalProvider):
             "canonical_face_identity_similarity": _round_or_none(canonical_face_identity_similarity),
             "canonical_face_topology_similarity": _round_or_none(canonical_face_topology_similarity),
             "canonical_face_topology_delta": _round_or_none(canonical_face_topology_delta),
+            "head_topology_partition": _json_ready(head_topology_partition),
+            "head_topology_mean_similarity": _round_or_none(head_topology_partition.get("mean_similarity")),
+            "head_topology_weakest_part": head_topology_partition.get("weakest_part"),
+            "head_topology_weakest_part_similarity": _round_or_none(
+                head_topology_partition.get("weakest_part_similarity")
+            ),
+            "head_topology_upper_face_similarity": _round_or_none(
+                head_topology_partition.get("upper_face_similarity")
+            ),
+            "head_topology_mid_face_similarity": _round_or_none(
+                head_topology_partition.get("mid_face_similarity")
+            ),
+            "head_topology_lower_face_similarity": _round_or_none(
+                head_topology_partition.get("lower_face_similarity")
+            ),
+            "head_topology_contour_similarity": _round_or_none(
+                head_topology_partition.get("contour_similarity")
+            ),
+            "head_topology_center_axis_similarity": _round_or_none(
+                head_topology_partition.get("center_axis_similarity")
+            ),
+            "head_topology_lateral_balance_similarity": _round_or_none(
+                head_topology_partition.get("lateral_balance_similarity")
+            ),
             "pose_delta_similarity": _round_or_none(pose_delta_similarity),
             "pose_delta_deg": _round_or_none(pose_delta_deg),
             "yaw_deg": _round_or_none(pose_euler.get("yaw")),

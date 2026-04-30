@@ -72,6 +72,8 @@ def load_training_admission_manifest_summary(manifest_file: Path) -> Dict[str, A
     last_entry = _recent_entries(entries, limit=1)
     return {
         "manifest_file": str(manifest_file),
+        "scope": "external_training_admission_audit_only",
+        "local_decision_participation": False,
         "available": bool(payload.get("available")),
         "reason": payload.get("reason"),
         "entry_count": len(entries),
@@ -114,7 +116,7 @@ def seal_training_admission_entry(
 ) -> Dict[str, Any]:
     owner = str(manual_owner or "").strip()
     if not owner:
-        raise ValueError("manual_owner is required to seal training admission")
+        raise ValueError("manual_owner is required to record external training admission audit")
 
     target_profile = str(candidate_entry.get("target_profile") or "").strip()
     target_bucket = resolve_target_bucket(target_profile)
@@ -168,9 +170,15 @@ def seal_training_admission_entry(
 
     payload = _load_manifest_payload(manifest_file)
     entries = list(payload.get("entries") or [])
+    audit_timestamp = _utcnow_iso()
     sealed_entry = {
         "schema_version": "training_admission_entry_v1",
-        "sealed_for_training": True,
+        "record_role": "external_training_admission_audit_only",
+        "local_decision_participation": False,
+        "sealed_for_training": False,
+        "external_decision_recorded": True,
+        "final_decision_owner": "external_training_decision_flow",
+        "final_image_set_decision_owner": "external_dataset_curation_flow",
         "target_profile": target_profile,
         "target_bucket": target_bucket,
         "layer_tag": candidate_entry.get("layer_tag"),
@@ -196,7 +204,8 @@ def seal_training_admission_entry(
         "human_seal": {
             "owner": owner,
             "note": str(manual_note or "").strip(),
-            "sealed_at_utc": _utcnow_iso(),
+            "sealed_at_utc": audit_timestamp,
+            "audit_recorded_at_utc": audit_timestamp,
         },
     }
 
@@ -221,12 +230,19 @@ def seal_training_admission_entry(
         "entry_count": len(entries),
         "entries": entries,
         "policy": {
+            "manifest_role": "external_training_admission_audit_ledger",
+            "local_decision_participation": False,
             "manual_seal_required": True,
             "winner_bank_equals_training_admission": False,
-            "final_decision_owner": "custom_gpt_plus_human",
+            "final_decision_owner": "external_training_decision_flow",
+            "final_image_set_decision_owner": "external_dataset_curation_flow",
             "release_gate_enforced": True,
             "batch_preflight_enforced": True,
             "evidence_completeness_enforced": True,
+            "does_not_decide": [
+                "final training-set admission",
+                "final image-set membership",
+            ],
         },
     }
     manifest_file.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -235,6 +251,9 @@ def seal_training_admission_entry(
         "action": action,
         "manifest_file": str(manifest_file),
         "entry_count": len(entries),
+        "record_role": "external_training_admission_audit_only",
+        "recorded_image": sealed_entry.get("image"),
+        "recorded_record_key": sealed_entry.get("record_key"),
         "sealed_image": sealed_entry.get("image"),
         "sealed_record_key": sealed_entry.get("record_key"),
         "target_bucket": target_bucket,

@@ -9,13 +9,14 @@
 - It checks candidate images against the frozen XiaoNa truth anchors.
 - It outputs evidence, rankings, and review packets.
 - It does not decide final training-set admission; that belongs to the external training decision flow.
+- It does not decide final image-set membership; that belongs to the external dataset-curation flow.
 
 ## Frozen Truth Rules
 1. `A-Core_01_0deg_MASTER.png` is the absolute face truth.
 2. `Task-63987060-116-1.png` is the absolute body truth.
 3. `Task-63987060-97-1.png` is only an upper-body support anchor.
 4. QA is `evidence_only`.
-5. Final training admission is out of scope for this repository.
+5. Final training admission and final image-set membership are out of scope for this repository.
 
 ## Daily Workflows
 1. `shot_review`
@@ -31,6 +32,12 @@
 4. `winner_bank_status`
    - Check winner bank status and drift across batches.
    - Use this when you want to know whether the recent winners are starting to drift.
+5. `prepare_replay_collection_plan`
+   - Build the next metadata, lighting, OUTER, and side/back topology collection queue.
+   - Use this before a controlled replay collection round.
+6. `prepare_topology_replay_pack`
+   - Create controlled side/back topology replay directories and manifest templates.
+   - Use this before collecting side/back validation images.
 
 ## Recommended Daily Sequence
 1. Run `shot_review`.
@@ -39,6 +46,8 @@
 4. Confirm one winner.
 5. Run `promote_winner`.
 6. Periodically run `winner_bank_status`.
+7. Before side/back topology replay, run `prepare_topology_replay_pack`.
+8. Before controlled replay, run `prepare_replay_collection_plan`.
 
 ## Start Command
 Run the interactive entry:
@@ -97,13 +106,61 @@ Then it writes the promoted record into the winner bank.
 
 Important:
 - winner promotion is not the same thing as final training-set admission
-- the winner bank is a human-approved reference memory, not an auto-ingest training list
+- the winner bank is mutable review memory, not an auto-ingest training list or final image-set decision
 
 ### 4. winner_bank_status
 Choose this when you want to see:
 - how many winners are recorded
 - whether the recent winners show drift
 - whether the bank is still stable enough to use as a review reference
+
+### 4b. external admission audit
+`seal_training_admission` is disabled by default in the screening project.
+
+Use it only as an audit ledger after an external training-decision flow has already made the decision. To record that external decision, set:
+
+```powershell
+$env:XIAONA_ALLOW_EXTERNAL_ADMISSION_AUDIT="1"
+```
+
+Important:
+- this does not make a local admission decision
+- this does not decide final image-set membership
+- the manifest is an external audit ledger, not a local training-set builder
+
+### 5. prepare_replay_collection_plan
+Choose this when you are preparing a controlled replay round instead of reviewing a fresh mixed batch.
+
+The workflow refreshes `outputs/replay_collection_plan.json` and gives an `immediate_operator_queue`.
+
+Use it to plan:
+- which front / three-quarter manifest fields must be completed first
+- which lighting variants need images next
+- which OUTER prompt leaves belong in the starter wave
+- whether side/back lane topology is ready to run with `segformer_body_truth_fusion`
+- which isolated `outputs/replay/...` artifact directory each replay command should use
+
+Important:
+- this plan produces screening evidence only
+- it does not freeze winner bank
+- it does not authorize parameter fitting
+- it does not make final training-set admission decisions
+- it does not make final image-set membership decisions
+
+### 6. prepare_topology_replay_pack
+Choose this when you want to collect side/back topology evidence separately from clean-lane, lighting, and OUTER replay.
+
+The workflow creates:
+- `input_replay/topology/side/side_left_profile`
+- `input_replay/topology/side/side_right_profile`
+- `input_replay/topology/back/back180_neutral`
+- `input_replay/topology/back/back180_subtle_gait_shift`
+
+Important:
+- side/back BODY_GOLD profiles already prefer `segformer_body_truth_fusion`
+- do not override to a weaker provider unless debugging
+- do not treat gait-sensitive body deltas as drift without topology review
+- this is still screening evidence only
 
 ## How To Read The Main Signals
 

@@ -37,6 +37,19 @@
 - Neckline shortlist re-roll:
   `neckline_runtime_base_v0_1_1_nb_clean.txt` + one main plugin `NK-A01~NK-E04` + `negative_core_neckline_v0_1_1_nb_clean.txt` + `negative_finish_neckline_v0_1_1_nb_clean.txt`
 
+## Landed FACE_LOCK Prompt Asset
+- The landed FACE_LOCK prompt pack is `v0.1.1-nb2-topology-16x1-copyready`
+- It lives under `prompts/face_lock/v0_1_1_nb2_topology_16x1_copyready/`
+- It is currently `landed_review_only`, not an active runtime formula
+- Scope is FACE_LOCK only; it reinforces face identity geometry, 3D face topology, and head-neck-body attachment
+- It does not create a new face truth, body truth, winner-bank truth, or training-admission signal
+
+## FACE_LOCK Copy-Ready Formula
+- Copy-ready shortlist:
+  one assembled prompt `FL-01~FL-16`, with positive prompt, shot plugin, negative core, and negative finish embedded in the same file
+- The pack is intentionally not split into base/plugin/negative files yet
+- Runtime formula extraction requires a later governance pass
+
 ## BRIDGE Runtime Base
 - Owns:
   - reference priority doctrine
@@ -85,6 +98,15 @@
 ## NECKLINE Negative Layers
 - `negative_core_neckline_v0_1_1_nb_clean.txt` is always on for active NECKLINE lanes
 - `negative_finish_neckline_v0_1_1_nb_clean.txt` is shortlist re-roll tightening only
+
+## FACE_LOCK Shot Families
+- `FL-01~FL-02` own canonical front baselines
+- `FL-03~FL-06` own 10-22 degree yaw identity carry
+- `FL-07~FL-08` own micro pitch stability
+- `FL-09~FL-10` own head-neck-body attachment hold
+- `FL-11~FL-12` own light microrelief stability
+- `FL-13~FL-14` own clavicle, hairline, and ear-root readability
+- `FL-15~FL-16` own 28-30 degree contour threshold
 
 ## BODY GOLD Runtime Base
 - Owns:

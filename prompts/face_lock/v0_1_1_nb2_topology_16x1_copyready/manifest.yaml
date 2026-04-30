@@ -1,0 +1,76 @@
+prompt_asset:
+  id: face_lock_v0_1_1_nb2_topology_16x1_copyready
+  scope: FACE_LOCK
+  status: landed_review_only
+  runtime_active: false
+  version: v0.1.1-nb2-topology-16x1-copyready
+  source_import: face_lock_prompt_pack_v0_1_1_nb2_topology_16x1_copyready assembled shortlist
+  refs_required:
+    - ref_1_face_master
+    - ref_2_full_body_master
+  refs_optional:
+    - ref_3_upper_support_97
+  runtime_presets:
+    face_lock_copyready_shortlist:
+      mode: assembled_copyready_prompt
+      prompt_family: FL-01~FL-16
+      positives: embedded
+      negatives:
+        - embedded_negative_core
+        - embedded_negative_finish
+      notes:
+        - Each assembled file is directly copy-ready for Nano Banana 2 style generation.
+        - Do not split into base/plugin/negative files unless a later governance pass approves the runtime formula.
+  plugin_registry:
+    assembled_shortlist:
+      - assembled_shortlist/assembled_fl01_front_neutral_canonical_baseline_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl02_front_close_canonical_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl03_yaw_left_10_12_identity_carry_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl04_yaw_right_10_12_identity_carry_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl05_yaw_left_20_22_identity_carry_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl06_yaw_right_20_22_identity_carry_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl07_pitch_chin_down_micro_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl08_pitch_chin_up_micro_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl09_attachment_slight_left_hold_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl10_attachment_slight_right_hold_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl11_front_upper_key_microrelief_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl12_front_wrap_fill_microrelief_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl13_front_wider_clavicle_hold_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl14_front_hairline_ear_hold_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl15_contour_threshold_left_28_30_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+      - assembled_shortlist/assembled_fl16_contour_threshold_right_28_30_shortlist_v0_1_1_nb2_topology_16x1_copyready.txt
+  shot_registry:
+    FL-01: front_neutral_canonical_baseline
+    FL-02: front_close_canonical
+    FL-03: yaw_left_10_12_identity_carry
+    FL-04: yaw_right_10_12_identity_carry
+    FL-05: yaw_left_20_22_identity_carry
+    FL-06: yaw_right_20_22_identity_carry
+    FL-07: pitch_chin_down_micro
+    FL-08: pitch_chin_up_micro
+    FL-09: attachment_slight_left_hold
+    FL-10: attachment_slight_right_hold
+    FL-11: front_upper_key_microrelief
+    FL-12: front_wrap_fill_microrelief
+    FL-13: front_wider_clavicle_hold
+    FL-14: front_hairline_ear_hold
+    FL-15: contour_threshold_left_28_30
+    FL-16: contour_threshold_right_28_30
+  intended_use:
+    - face identity reinforcement
+    - 3D face topology continuity
+    - head-neck-body attachment stability
+    - hairline / ear-root / jawline readability
+    - face microtexture and lighting robustness
+  governance:
+    training_admission_participation: false
+    winner_bank_freeze_source: false
+    parameter_fitting_source: false
+    final_decision_owner: external_training_decision_flow
+  notes:
+    - FACE_LOCK prompt assets are landed for controlled generation and screening evidence only.
+    - A-Core_01_0deg_MASTER.png remains the only face truth.
+    - Task-63987060-116-1.png remains the only body truth and is read through pose/gait-aware metrics.
+    - Ref #3 remains upper-boundary support only and must not redefine identity or body truth.
+    - These copy-ready files include embedded negative core and negative finish text.
+    - Do not treat FACE_LOCK output as final training-set admission.

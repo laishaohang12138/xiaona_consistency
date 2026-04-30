@@ -1,0 +1,20 @@
+{
+  "schema_version": "input_manifest_v1",
+  "generated_at_utc": "2026-04-26T15:56:36.280355+00:00",
+  "generator_name": "",
+  "generator_version": "",
+  "notes": "Topology replay pack. This directory is for review-only side/back topology validation, not winner-bank freeze, parameter fitting, or final training admission.",
+  "items": [],
+  "topology_replay_pack": "topology_replay_pack_v1",
+  "topology_replay_lane": "back",
+  "topology_variant": "back180_neutral",
+  "pose_control_bucket": "strict_back_neutral",
+  "target_profile": "body_gold_back180_shadow",
+  "intended_view": "back_180",
+  "intended_lane_family": "back",
+  "intended_view_center_deg": 180,
+  "intended_view_side": "center",
+  "face_truth_anchor": "A-Core_01_0deg_MASTER.png",
+  "body_truth_anchor": "Task-63987060-116-1.png",
+  "body_truth_read": "pose_gait_aware_absolute_116_1"
+}

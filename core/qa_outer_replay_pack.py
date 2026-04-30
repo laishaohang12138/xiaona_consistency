@@ -225,13 +225,19 @@ def _write_replay_root_readme(base_dir: Path, rows: List[Dict[str, Any]]) -> Pat
 
 
 def _refresh_prompt_manifest(leaf_dir: Path, row: Dict[str, Any]) -> Dict[str, Any]:
+    previous_payload = _load_json(leaf_dir / "input_manifest.json")
+    previous_generated_at = _safe_text(previous_payload.get("generated_at_utc"))
     manifest_result = create_or_update_input_manifest(leaf_dir)
     manifest_path = Path(str(manifest_result.get("path") or leaf_dir / "input_manifest.json")).resolve()
     payload = _load_json(manifest_path)
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
 
     payload["schema_version"] = "input_manifest_v1"
-    payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
+    payload["generated_at_utc"] = (
+        previous_generated_at
+        if previous_generated_at and not items
+        else datetime.now(timezone.utc).isoformat()
+    )
     payload["outer_replay_pack"] = "outer_replay_pack_v1"
     payload["outer_scope"] = "OUTER"
     payload["outer_family"] = row["family"]

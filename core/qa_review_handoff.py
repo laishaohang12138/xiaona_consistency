@@ -256,6 +256,41 @@ def _compact_project_scope(status_board: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _compact_replay_collection_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
+    if not plan:
+        return {
+            "available": False,
+            "overall_status": "",
+            "summary": {},
+            "immediate_operator_queue": [],
+        }
+    queue = plan.get("immediate_operator_queue") if isinstance(plan.get("immediate_operator_queue"), list) else []
+    compact_queue: List[Dict[str, Any]] = []
+    for raw_task in queue[:8]:
+        if not isinstance(raw_task, dict):
+            continue
+        compact_queue.append(
+            {
+                "priority_group": str(raw_task.get("priority_group") or "").strip(),
+                "area": str(raw_task.get("area") or "").strip(),
+                "task_type": str(raw_task.get("task_type") or "").strip(),
+                "title": str(raw_task.get("title") or "").strip(),
+                "status": str(raw_task.get("status") or "").strip(),
+                "input_dir": str(raw_task.get("input_dir") or "").strip(),
+                "target_profile": str(raw_task.get("target_profile") or "").strip(),
+                "image_count": _safe_int(raw_task.get("image_count")),
+                "images_needed_for_minimum": _safe_int(raw_task.get("images_needed_for_minimum")),
+                "run_commands": raw_task.get("run_commands") if isinstance(raw_task.get("run_commands"), list) else [],
+            }
+        )
+    return {
+        "available": True,
+        "overall_status": str(plan.get("overall_status") or "").strip(),
+        "summary": plan.get("summary") if isinstance(plan.get("summary"), dict) else {},
+        "immediate_operator_queue": compact_queue,
+    }
+
+
 def build_review_handoff_packet(
     *,
     base_dir: Path,
@@ -265,6 +300,7 @@ def build_review_handoff_packet(
     status_board = _load_json(outputs_dir / "review_status_board.json")
     invariance_status = _load_json(outputs_dir / "review_invariance_status.json")
     manifest_completion = _load_json(outputs_dir / "input_manifest_completion_plan.json")
+    replay_collection = _load_json(outputs_dir / "replay_collection_plan.json")
     run_index = _load_json(outputs_dir / "review_run_index.json")
     front_sheet = _load_json(outputs_dir / "front_bootstrap_review_sheet.json")
     gates = invariance_status.get("gates") if isinstance(invariance_status.get("gates"), dict) else {}
@@ -318,6 +354,8 @@ def build_review_handoff_packet(
                 "outputs/review_invariance_status.json",
                 "outputs/lighting_replay_pack.json",
                 "outputs/outer_replay_pack.json",
+                "outputs/topology_replay_pack.json",
+                "outputs/replay_collection_plan.json",
                 "outputs/input_manifest_completion_plan.json",
                 "outputs/review_run_index.json",
                 "outputs/body_topology_truth_fusion_compare.json",
@@ -342,6 +380,7 @@ def build_review_handoff_packet(
             if isinstance(manifest_completion.get("blocked_splits"), list)
             else [],
         },
+        "replay_collection_plan": _compact_replay_collection_plan(replay_collection),
         "gate_summary": _compact_gate_rows(gates),
         "pose_gait_body_truth": pose_gait_body_truth,
         "optimization_focus": optimization_focus,

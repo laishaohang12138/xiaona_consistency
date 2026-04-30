@@ -196,6 +196,37 @@ def _outer_replay_pack_state(base_dir: Path) -> Dict[str, Any]:
     }
 
 
+def _topology_replay_pack_state(base_dir: Path) -> Dict[str, Any]:
+    pack_file = base_dir / "outputs" / "topology_replay_pack.json"
+    pack = _load_json(pack_file)
+    if not pack:
+        return {
+            "prepared": False,
+            "pack_file": str(pack_file.resolve()),
+            "replay_root": str((base_dir / "input_replay" / "topology").resolve()),
+        }
+    lanes = pack.get("lanes") if isinstance(pack.get("lanes"), list) else []
+    images_by_lane: Dict[str, int] = {}
+    variant_count_by_lane: Dict[str, int] = {}
+    for raw_lane in lanes:
+        lane = raw_lane if isinstance(raw_lane, dict) else {}
+        lane_name = _safe_text(lane.get("lane"))
+        if not lane_name:
+            continue
+        images_by_lane[lane_name] = int(lane.get("total_current_images") or 0)
+        variant_count_by_lane[lane_name] = int(lane.get("variant_count") or 0)
+    return {
+        "prepared": True,
+        "pack_file": str(pack_file.resolve()),
+        "replay_root": str(pack.get("replay_root") or ""),
+        "lane_count": int(pack.get("lane_count") or 0),
+        "variant_dir_count": int(pack.get("variant_dir_count") or 0),
+        "total_current_images": int(pack.get("total_current_images") or 0),
+        "current_images_by_lane": images_by_lane,
+        "variant_count_by_lane": variant_count_by_lane,
+    }
+
+
 def _gate(status: str, reasons: List[str], metrics: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "status": status,
@@ -441,6 +472,7 @@ def build_review_invariance_status(
         lane_face_topology_counts[lane_name] = len(face_values)
         lane_body_topology_counts[lane_name] = len(body_values)
     topology_compare = _body_topology_compare_state(base_dir, tq_root)
+    topology_pack_state = _topology_replay_pack_state(base_dir)
     topology_reasons: List[str] = []
     front_face_topology_mean = _safe_float(lane_face_topology_means.get("front"))
     three_quarter_face_topology_mean = _safe_float(lane_face_topology_means.get("three_quarter"))
@@ -509,6 +541,7 @@ def build_review_invariance_status(
                 "face_topology_sample_count_by_lane": lane_face_topology_counts,
                 "body_topology_sample_count_by_lane": lane_body_topology_counts,
                 "three_quarter_truth_fusion_compare": topology_compare,
+                "side_back_topology_replay_pack": topology_pack_state,
             },
         ),
     }
@@ -531,7 +564,12 @@ def build_review_invariance_status(
     if str(gates["topology_consistency"]["status"]) != "PASS":
         next_actions.append("tighten body topology support or add replay cases before winner_bank freezing")
     elif bool((topology_compare or {}).get("resolved_for_three_quarter_review")):
-        next_actions.append("keep the body truth-fusion chain on three_quarter and validate the same topology gain on side/back before promotion")
+        if not bool(topology_pack_state.get("prepared")):
+            next_actions.append("prepare controlled side/back topology replay pack before side/back validation")
+        elif int(topology_pack_state.get("total_current_images") or 0) <= 0:
+            next_actions.append("collect controlled side/back topology variants into input_replay/topology before promotion")
+        else:
+            next_actions.append("run side/back topology replay with profile-default truth-fusion before promotion")
     if str(gates["lighting_invariance"]["status"]) != "PASS":
         if bool(lighting_pack_state.get("prepared")):
             next_actions.append("collect controlled front / three_quarter lighting variants into input_replay/lighting before adjusting lighting gates")

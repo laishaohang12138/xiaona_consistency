@@ -387,6 +387,154 @@ def _inverse_range_score(value: Optional[float], low: float, high: float) -> Opt
     return None if score is None else 1.0 - score
 
 
+def _same_truth_projection_policy(lane_family: str) -> Dict[str, Any]:
+    mapping = {
+        "front": {
+            "projection_mode": "direct_truth_surface",
+            "face_weight": 0.42,
+            "body_weight": 0.46,
+            "world3d_weight": 0.12,
+            "uncertainty_floor": 0.06,
+            "pass_confidence_floor": 0.58,
+            "pass_uncertainty_max": 0.46,
+        },
+        "three_quarter": {
+            "projection_mode": "canonical_pose_projection",
+            "face_weight": 0.34,
+            "body_weight": 0.52,
+            "world3d_weight": 0.14,
+            "uncertainty_floor": 0.10,
+            "pass_confidence_floor": 0.54,
+            "pass_uncertainty_max": 0.48,
+        },
+        "side": {
+            "projection_mode": "same_truth_side_projection",
+            "face_weight": 0.12,
+            "body_weight": 0.72,
+            "world3d_weight": 0.16,
+            "uncertainty_floor": 0.18,
+            "pass_confidence_floor": 0.52,
+            "pass_uncertainty_max": 0.50,
+        },
+        "back": {
+            "projection_mode": "same_truth_back_projection_body_only",
+            "face_weight": 0.0,
+            "body_weight": 0.82,
+            "world3d_weight": 0.18,
+            "uncertainty_floor": 0.26,
+            "pass_confidence_floor": 0.50,
+            "pass_uncertainty_max": 0.54,
+        },
+    }
+    return dict(mapping.get(lane_family, mapping["three_quarter"]))
+
+
+def _same_truth_projection_features(
+    *,
+    lane_family: str,
+    face_shadow: Dict[str, Any],
+    heavy_metrics: Dict[str, Optional[float]],
+    master: Dict[str, Any],
+    angle_features: Dict[str, Optional[float]],
+    face_truth_support: Optional[float],
+    body_truth_support: Optional[float],
+    body_topology_support: Optional[float],
+    body_topology_metric: Optional[float],
+    body_truth_alignment_metric: Optional[float],
+    body_measurement_metric: Optional[float],
+    heavy_confidence: Optional[float],
+    heavy_coverage: Optional[float],
+) -> Dict[str, Any]:
+    policy = _same_truth_projection_policy(lane_family)
+    face_weights_by_lane = {
+        "front": {"truth": 0.10, "canonical": 0.26, "topology": 0.22, "head_part": 0.08, "landmark": 0.14, "normal": 0.12, "visible": 0.08},
+        "three_quarter": {"truth": 0.06, "canonical": 0.22, "topology": 0.28, "head_part": 0.10, "landmark": 0.16, "normal": 0.10, "visible": 0.08},
+        "side": {"truth": 0.00, "canonical": 0.12, "topology": 0.34, "head_part": 0.14, "landmark": 0.18, "normal": 0.12, "visible": 0.10},
+        "back": {"truth": 0.00, "canonical": 0.00, "topology": 0.00, "head_part": 0.00, "landmark": 0.00, "normal": 0.00, "visible": 0.00},
+    }
+    face_weights = face_weights_by_lane.get(lane_family, face_weights_by_lane["three_quarter"])
+    face_projection_confidence = _weighted_mean(
+        [
+            (face_truth_support, face_weights["truth"]),
+            (face_shadow.get("canonical_face_identity_similarity"), face_weights["canonical"]),
+            (face_shadow.get("canonical_face_topology_similarity"), face_weights["topology"]),
+            (face_shadow.get("head_topology_weakest_part_similarity"), face_weights["head_part"]),
+            (face_shadow.get("canonical_face_landmark_similarity"), face_weights["landmark"]),
+            (face_shadow.get("face_pose_normalization_confidence"), face_weights["normal"]),
+            (face_shadow.get("visible_face_coverage"), face_weights["visible"]),
+        ]
+    )
+    body_partition_mean = _safe_float(heavy_metrics.get("body_topology_partition_mean_similarity"))
+    body_partition_weakest = _safe_float(heavy_metrics.get("body_topology_weakest_part_similarity"))
+    body_projection_confidence = _weighted_mean(
+        [
+            (body_topology_support, 0.22),
+            (body_topology_metric, 0.16),
+            (body_partition_mean, 0.12),
+            (body_partition_weakest, 0.10),
+            (body_truth_alignment_metric, 0.16),
+            (body_truth_support, 0.10),
+            (body_measurement_metric, 0.06),
+            (master.get("world3d_master_alignment"), 0.04),
+            (heavy_metrics.get("body_mesh_fit_confidence"), 0.02),
+            (heavy_confidence, 0.01),
+            (heavy_coverage, 0.01),
+        ]
+    )
+    same_truth_projection_confidence = _weighted_mean(
+        [
+            (face_projection_confidence, float(policy["face_weight"])),
+            (body_projection_confidence, float(policy["body_weight"])),
+            (master.get("world3d_master_alignment"), float(policy["world3d_weight"])),
+        ]
+    )
+
+    uncertainty_reasons: List[str] = []
+    if face_projection_confidence is None and lane_family != "back":
+        uncertainty_reasons.append("FACE_PROJECTION_UNAVAILABLE")
+    if body_projection_confidence is None:
+        uncertainty_reasons.append("BODY_PROJECTION_UNAVAILABLE")
+    if lane_family == "back":
+        uncertainty_reasons.append("FACE_WITHHELD_FOR_BACK_VIEW")
+
+    lane_membership = _safe_float(angle_features.get("lane_membership_confidence"))
+    angle_tolerance = _safe_float(angle_features.get("angle_tolerance_score"))
+    mesh_confidence = _safe_float(heavy_metrics.get("body_mesh_fit_confidence"))
+    projection_confidence = _safe_float(same_truth_projection_confidence)
+    uncertainty = 0.76 if projection_confidence is None else 1.0 - projection_confidence
+
+    if lane_membership is not None and lane_membership < 0.48:
+        uncertainty += 0.08
+        uncertainty_reasons.append("LANE_MEMBERSHIP_LOW_FOR_PROJECTION")
+    if angle_tolerance is not None and angle_tolerance < 0.50:
+        uncertainty += 0.06
+        uncertainty_reasons.append("ANGLE_TOLERANCE_LOW_FOR_PROJECTION")
+    if heavy_coverage is not None and heavy_coverage < 0.60:
+        uncertainty += 0.08
+        uncertainty_reasons.append("HEAVY_COVERAGE_LOW_FOR_PROJECTION")
+    if mesh_confidence is not None and mesh_confidence < 0.56:
+        uncertainty += 0.06
+        uncertainty_reasons.append("MESH_CONFIDENCE_LOW_FOR_PROJECTION")
+    if lane_family in {"side", "back"}:
+        uncertainty_reasons.append("DERIVED_VIEW_FROM_SINGLE_TRUTH")
+
+    uncertainty = _clamp(max(float(policy["uncertainty_floor"]), uncertainty), 0.0, 1.0)
+    projection_reliability = 1.0 - uncertainty
+
+    return {
+        "projection_mode": str(policy["projection_mode"]),
+        "truth_source_policy": "same_truth_projection_not_new_anchor",
+        "face_projection_confidence": _round_or_none(face_projection_confidence),
+        "body_projection_confidence": _round_or_none(body_projection_confidence),
+        "same_truth_projection_confidence": _round_or_none(same_truth_projection_confidence),
+        "same_truth_projection_uncertainty": _round_or_none(uncertainty),
+        "same_truth_projection_reliability": _round_or_none(projection_reliability),
+        "pass_confidence_floor": _round_or_none(policy["pass_confidence_floor"]),
+        "pass_uncertainty_max": _round_or_none(policy["pass_uncertainty_max"]),
+        "uncertainty_reasons": list(dict.fromkeys(uncertainty_reasons))[:6],
+    }
+
+
 def _clothing_invariant_features(
     debug: Dict[str, Any],
     diagnostics: Dict[str, Any],
@@ -531,11 +679,25 @@ def _compute_review_only_v2(
     face_shadow = debug.get("face_canonical_shadow") or {}
     heavy_bundle = candidate_row.get("heavy_evidence") or debug.get("heavy_evidence") or {}
     heavy_metrics = _metric_map(heavy_bundle)
+    heavy_summary = dict((heavy_bundle or {}).get("summary") or {}) if isinstance(heavy_bundle, dict) else {}
+    body_canonical_summary = (
+        dict(heavy_summary.get("body_canonical_summary") or {})
+        if isinstance(heavy_summary.get("body_canonical_summary"), dict)
+        else heavy_summary
+    )
+    body_topology_partition_summary = (
+        dict(body_canonical_summary.get("body_topology_partition") or {})
+        if isinstance(body_canonical_summary.get("body_topology_partition"), dict)
+        else {}
+    )
 
     lane_family = _lane_family(item, candidate_row)
     thresholds = _lane_thresholds(lane_family)
 
     face_topology_support = _safe_float(face_shadow.get("canonical_face_topology_similarity"))
+    head_topology_mean_similarity = _safe_float(face_shadow.get("head_topology_mean_similarity"))
+    head_topology_weakest_part_similarity = _safe_float(face_shadow.get("head_topology_weakest_part_similarity"))
+    head_topology_weakest_part = str(face_shadow.get("head_topology_weakest_part") or "").strip()
     face_support_weights = {
         "front": {"canonical": 0.42, "topology": 0.28, "landmark": 0.18, "frontal": 0.12},
         "three_quarter": {"canonical": 0.34, "topology": 0.34, "landmark": 0.20, "frontal": 0.12},
@@ -578,18 +740,38 @@ def _compute_review_only_v2(
     if body_measurement_metric is None:
         body_measurement_metric = _safe_float(heavy_metrics.get("canonical_measurement_similarity"))
     body_pose_sensitive_metric = _safe_float(heavy_metrics.get("body_pose_sensitive_measurement_similarity"))
+    body_topology_partition_mean = _safe_float(heavy_metrics.get("body_topology_partition_mean_similarity"))
+    body_topology_weakest_part_similarity = _safe_float(heavy_metrics.get("body_topology_weakest_part_similarity"))
+    body_topology_weakest_part = str(
+        body_canonical_summary.get("body_topology_weakest_part")
+        or body_topology_partition_summary.get("weakest_part")
+        or ""
+    ).strip()
+    body_topology_torso_core_similarity = _safe_float(heavy_metrics.get("body_topology_torso_core_similarity"))
+    body_topology_shoulder_neck_frame_similarity = _safe_float(
+        heavy_metrics.get("body_topology_shoulder_neck_frame_similarity")
+    )
+    body_topology_waist_pelvis_similarity = _safe_float(heavy_metrics.get("body_topology_waist_pelvis_similarity"))
+    body_topology_leg_axis_similarity = _safe_float(heavy_metrics.get("body_topology_leg_axis_similarity"))
+    body_topology_lower_body_volume_similarity = _safe_float(
+        heavy_metrics.get("body_topology_lower_body_volume_similarity")
+    )
+    body_topology_gait_phase_similarity = _safe_float(heavy_metrics.get("body_topology_gait_phase_similarity"))
+    body_pose_explained_delta_score = _safe_float(heavy_metrics.get("body_pose_explained_delta_score"))
     legacy_body_truth_alignment = _safe_float(heavy_metrics.get("body_shape_truth_alignment"))
     legacy_body_measurement_similarity = _safe_float(heavy_metrics.get("canonical_measurement_similarity"))
     body_topology_weights = {
-        "front": {"topology": 0.38, "shape": 0.24, "measure": 0.16, "world3d": 0.12, "mesh": 0.10},
-        "three_quarter": {"topology": 0.40, "shape": 0.24, "measure": 0.14, "world3d": 0.12, "mesh": 0.10},
-        "side": {"topology": 0.48, "shape": 0.22, "measure": 0.10, "world3d": 0.12, "mesh": 0.08},
-        "back": {"topology": 0.44, "shape": 0.24, "measure": 0.10, "world3d": 0.14, "mesh": 0.08},
+        "front": {"topology": 0.28, "partition": 0.16, "weakest": 0.08, "shape": 0.22, "measure": 0.12, "world3d": 0.08, "mesh": 0.06},
+        "three_quarter": {"topology": 0.30, "partition": 0.18, "weakest": 0.08, "shape": 0.22, "measure": 0.10, "world3d": 0.07, "mesh": 0.05},
+        "side": {"topology": 0.34, "partition": 0.20, "weakest": 0.08, "shape": 0.20, "measure": 0.08, "world3d": 0.06, "mesh": 0.04},
+        "back": {"topology": 0.32, "partition": 0.20, "weakest": 0.08, "shape": 0.22, "measure": 0.08, "world3d": 0.06, "mesh": 0.04},
     }
     body_topology_weight = body_topology_weights.get(lane_family, body_topology_weights["three_quarter"])
     body_topology_support = _weighted_mean(
         [
             (body_topology_metric, body_topology_weight["topology"]),
+            (body_topology_partition_mean, body_topology_weight["partition"]),
+            (body_topology_weakest_part_similarity, body_topology_weight["weakest"]),
             (body_truth_alignment_metric, body_topology_weight["shape"]),
             (body_measurement_metric, body_topology_weight["measure"]),
             (master.get("world3d_master_alignment"), body_topology_weight["world3d"]),
@@ -599,9 +781,10 @@ def _compute_review_only_v2(
     body_truth_support = _weighted_mean(
         [
             (master.get("body_master_alignment"), 0.24),
-            (body_topology_support, 0.36),
-            (body_truth_alignment_metric, 0.22),
-            (body_measurement_metric, 0.10),
+            (body_topology_support, 0.32),
+            (body_truth_alignment_metric, 0.20),
+            (body_topology_partition_mean, 0.08),
+            (body_measurement_metric, 0.08),
             (master.get("world3d_master_alignment"), 0.04),
             (heavy_metrics.get("body_mesh_fit_confidence"), 0.04),
         ]
@@ -615,11 +798,14 @@ def _compute_review_only_v2(
     )
     canonical_invariant_score = _weighted_mean(
         [
-            (body_topology_support, 0.38),
-            (body_truth_alignment_metric, 0.22),
-            (body_measurement_metric, 0.14),
-            (heavy_metrics.get("body_pose_delta_similarity"), 0.04),
-            (heavy_metrics.get("body_mesh_fit_confidence"), 0.08),
+            (body_topology_support, 0.30),
+            (body_truth_alignment_metric, 0.18),
+            (body_topology_partition_mean, 0.14),
+            (body_topology_weakest_part_similarity, 0.08),
+            (body_measurement_metric, 0.10),
+            (body_pose_explained_delta_score, 0.04),
+            (heavy_metrics.get("body_pose_delta_similarity"), 0.03),
+            (heavy_metrics.get("body_mesh_fit_confidence"), 0.05),
             (face_truth_support, 0.14 if lane_family in {"front", "three_quarter"} else 0.08 if lane_family == "side" else 0.0),
         ]
     )
@@ -658,6 +844,30 @@ def _compute_review_only_v2(
     )
     heavy_confidence = _safe_float((heavy_bundle or {}).get("confidence"))
     heavy_coverage = _safe_float((heavy_bundle or {}).get("coverage"))
+    projection_features = _same_truth_projection_features(
+        lane_family=lane_family,
+        face_shadow=face_shadow,
+        heavy_metrics=heavy_metrics,
+        master=master,
+        angle_features=angle_features,
+        face_truth_support=face_truth_support,
+        body_truth_support=body_truth_support,
+        body_topology_support=body_topology_support,
+        body_topology_metric=body_topology_metric,
+        body_truth_alignment_metric=body_truth_alignment_metric,
+        body_measurement_metric=body_measurement_metric,
+        heavy_confidence=heavy_confidence,
+        heavy_coverage=heavy_coverage,
+    )
+    same_truth_projection_confidence = _safe_float(projection_features.get("same_truth_projection_confidence"))
+    same_truth_projection_uncertainty = _safe_float(projection_features.get("same_truth_projection_uncertainty"))
+    same_truth_projection_reliability = _safe_float(projection_features.get("same_truth_projection_reliability"))
+    projection_support_weights = {
+        "front": 0.08,
+        "three_quarter": 0.10,
+        "side": 0.18,
+        "back": 0.22,
+    }
     clothing_features = _clothing_invariant_features(
         debug,
         diagnostics,
@@ -684,6 +894,7 @@ def _compute_review_only_v2(
             (lane_validity, 0.10),
             (batch_relative_score, 0.02),
             (face_support_score, 0.06 if lane_family != "back" else 0.0),
+            (same_truth_projection_confidence, projection_support_weights.get(lane_family, 0.10)),
         ]
     )
     review_only_score = _weighted_mean(
@@ -702,6 +913,7 @@ def _compute_review_only_v2(
             (lane_validity, 0.08),
             (outfit_invariant_score, 0.02),
             (batch_relative_score, 0.04),
+            (same_truth_projection_confidence, 0.08),
         ]
     )
     review_only_confidence = _weighted_mean(
@@ -714,18 +926,21 @@ def _compute_review_only_v2(
             (heavy_coverage, 0.10),
             (heavy_metrics.get("body_mesh_fit_confidence"), 0.04),
             (face_shadow.get("face_pose_normalization_confidence"), 0.00 if lane_family == "back" else 0.04),
+            (same_truth_projection_reliability, 0.12),
         ]
     )
     truth_proxy = _weighted_mean(
         [
             (face_truth_support, 0.28 if lane_family in {"front", "three_quarter"} else 0.10 if lane_family == "side" else 0.0),
             (body_truth_support, 0.40 if lane_family in {"front", "three_quarter"} else 0.56 if lane_family == "side" else 0.62),
-            (body_topology_support, 0.10 if lane_family in {"front", "three_quarter"} else 0.22 if lane_family == "side" else 0.26),
+            (body_topology_support, 0.08 if lane_family in {"front", "three_quarter"} else 0.18 if lane_family == "side" else 0.22),
+            (body_topology_partition_mean, 0.04 if lane_family in {"front", "three_quarter"} else 0.06 if lane_family == "side" else 0.06),
             (master.get("world3d_master_alignment"), 0.12),
             (heavy_metrics.get("body_pose_delta_similarity"), 0.02),
             (clothing_invariant_score, 0.04),
             (angle_tolerance_score, 0.02),
             (lane_validity, 0.02),
+            (same_truth_projection_confidence, 0.06),
         ]
     )
     truth_proxy_confidence = _weighted_mean(
@@ -735,6 +950,7 @@ def _compute_review_only_v2(
             (heavy_coverage, 0.18),
             (face_shadow.get("face_pose_normalization_confidence"), 0.12),
             (lane_membership_confidence, 0.10),
+            (same_truth_projection_reliability, 0.12),
         ]
     )
 
@@ -813,6 +1029,38 @@ def _compute_review_only_v2(
     body_topology_floor = float(body_topology_soft_floors.get(lane_family, 0.72))
     if body_topology_support is not None and body_topology_support < body_topology_floor:
         soft_flags.append("BODY_TOPOLOGY_SUPPORT_WEAK")
+    body_partition_soft_floors = {
+        "front": 0.68,
+        "three_quarter": 0.64,
+        "side": 0.60,
+        "back": 0.60,
+    }
+    body_partition_floor = float(body_partition_soft_floors.get(lane_family, 0.64))
+    body_partition_pose_explained = (
+        body_pose_explained_delta_score is not None
+        and body_pose_explained_delta_score >= 0.70
+        and body_topology_weakest_part in {"leg_axis", "lower_body_volume"}
+        and body_topology_partition_mean is not None
+        and body_topology_partition_mean >= body_partition_floor
+    )
+    if (
+        body_topology_weakest_part_similarity is not None
+        and body_topology_weakest_part_similarity < body_partition_floor
+        and not body_partition_pose_explained
+    ):
+        soft_flags.append("BODY_TOPOLOGY_PARTITION_WEAK")
+    projection_confidence_floor = _safe_float(projection_features.get("pass_confidence_floor"))
+    projection_uncertainty_max = _safe_float(projection_features.get("pass_uncertainty_max"))
+    if same_truth_projection_confidence is None:
+        soft_flags.append("SAME_TRUTH_PROJECTION_UNAVAILABLE")
+    elif projection_confidence_floor is not None and same_truth_projection_confidence < projection_confidence_floor:
+        soft_flags.append("SAME_TRUTH_PROJECTION_CONFIDENCE_LOW")
+    if (
+        same_truth_projection_uncertainty is not None
+        and projection_uncertainty_max is not None
+        and same_truth_projection_uncertainty > projection_uncertainty_max
+    ):
+        soft_flags.append("SAME_TRUTH_PROJECTION_UNCERTAINTY_HIGH")
     if face_support_score is not None and face_support_score < 0.56 and lane_family in {"front", "three_quarter", "side"}:
         soft_flags.append("FACE_CANONICAL_SUPPORT_WEAK")
     topology_soft_floors = {
@@ -824,6 +1072,19 @@ def _compute_review_only_v2(
     topology_floor = float(topology_soft_floors.get(lane_family, 0.70))
     if face_topology_support is not None and lane_family != "back" and face_topology_support < topology_floor:
         soft_flags.append("FACE_CANONICAL_TOPOLOGY_WEAK")
+    head_topology_part_floors = {
+        "front": 0.76,
+        "three_quarter": 0.72,
+        "side": 0.68,
+        "back": 0.00,
+    }
+    head_topology_part_floor = float(head_topology_part_floors.get(lane_family, 0.72))
+    if (
+        head_topology_weakest_part_similarity is not None
+        and lane_family != "back"
+        and head_topology_weakest_part_similarity < head_topology_part_floor
+    ):
+        soft_flags.append("FACE_HEAD_TOPOLOGY_PART_WEAK")
     clothing_soft_floors = {
         "front": 0.72,
         "three_quarter": 0.70,
@@ -871,7 +1132,15 @@ def _compute_review_only_v2(
 
     policy_note = None
     if lane_family in {"side", "back"} and status == "PASS":
-        policy_note = "shadow lane PASS means priority review only; release and admission remain governed outside review_only"
+        uncertainty_text = (
+            "unknown"
+            if same_truth_projection_uncertainty is None
+            else str(_round_or_none(same_truth_projection_uncertainty))
+        )
+        policy_note = (
+            f"{projection_features.get('projection_mode')} PASS means priority review only; "
+            f"projection_uncertainty={uncertainty_text}; release and admission remain governed outside review_only"
+        )
 
     why_not_high: List[str] = []
     if len(hard_vetoes) > 0:
@@ -884,10 +1153,20 @@ def _compute_review_only_v2(
         why_not_high.append("REVIEW_SCORE_BELOW_PASS_RANGE")
     if angle_tolerance_score is not None and angle_tolerance_score < 0.60:
         why_not_high.append("ANGLE_VARIATION_REDUCES_CONFIDENCE")
+    if "FACE_HEAD_TOPOLOGY_PART_WEAK" in soft_flags:
+        why_not_high.append("FACE_HEAD_TOPOLOGY_PART_WEAK")
+    if "BODY_TOPOLOGY_PARTITION_WEAK" in soft_flags:
+        why_not_high.append("BODY_TOPOLOGY_PARTITION_WEAK")
     if clothing_invariant_confidence is not None and clothing_invariant_confidence < 0.56:
         why_not_high.append("CLOTHING_INVARIANT_EVIDENCE_WEAK")
     if garment_occlusion_index is not None and garment_occlusion_index > 0.72:
         why_not_high.append("GARMENT_OCCLUSION_REQUIRES_MANUAL_CHECK")
+    if (
+        same_truth_projection_uncertainty is not None
+        and projection_uncertainty_max is not None
+        and same_truth_projection_uncertainty > projection_uncertainty_max
+    ):
+        why_not_high.append("SAME_TRUTH_PROJECTION_UNCERTAINTY_HIGH")
 
     return {
         "lane_family": lane_family,
@@ -901,6 +1180,16 @@ def _compute_review_only_v2(
             "body_pose_independent_truth_alignment": _round_or_none(body_truth_alignment_metric),
             "body_core_measurement_similarity": _round_or_none(body_measurement_metric),
             "body_pose_sensitive_measurement_similarity": _round_or_none(body_pose_sensitive_metric),
+            "body_topology_partition_mean_similarity": _round_or_none(body_topology_partition_mean),
+            "body_topology_weakest_part": body_topology_weakest_part,
+            "body_topology_weakest_part_similarity": _round_or_none(body_topology_weakest_part_similarity),
+            "body_topology_torso_core_similarity": _round_or_none(body_topology_torso_core_similarity),
+            "body_topology_shoulder_neck_frame_similarity": _round_or_none(body_topology_shoulder_neck_frame_similarity),
+            "body_topology_waist_pelvis_similarity": _round_or_none(body_topology_waist_pelvis_similarity),
+            "body_topology_leg_axis_similarity": _round_or_none(body_topology_leg_axis_similarity),
+            "body_topology_lower_body_volume_similarity": _round_or_none(body_topology_lower_body_volume_similarity),
+            "body_topology_gait_phase_similarity": _round_or_none(body_topology_gait_phase_similarity),
+            "body_pose_explained_delta_score": _round_or_none(body_pose_explained_delta_score),
             "body_shape_truth_alignment_legacy": _round_or_none(legacy_body_truth_alignment),
             "canonical_measurement_similarity_legacy": _round_or_none(legacy_body_measurement_similarity),
             "body_topology_support": _round_or_none(body_topology_support),
@@ -909,6 +1198,14 @@ def _compute_review_only_v2(
             "support_only_score": _round_or_none(support_only_score),
             "absolute_truth_support": _round_or_none(absolute_truth_support),
             "canonical_invariant_score": _round_or_none(canonical_invariant_score),
+            "same_truth_projection_mode": projection_features.get("projection_mode"),
+            "same_truth_projection_policy": projection_features.get("truth_source_policy"),
+            "same_truth_projection_confidence": _round_or_none(same_truth_projection_confidence),
+            "same_truth_projection_uncertainty": _round_or_none(same_truth_projection_uncertainty),
+            "same_truth_projection_reliability": _round_or_none(same_truth_projection_reliability),
+            "face_projection_confidence": _round_or_none(projection_features.get("face_projection_confidence")),
+            "body_projection_confidence": _round_or_none(projection_features.get("body_projection_confidence")),
+            "projection_uncertainty_reasons": list(projection_features.get("uncertainty_reasons") or [])[:6],
             "outfit_invariant_score": _round_or_none(outfit_invariant_score),
             "clothing_invariant_score": _round_or_none(clothing_invariant_score),
             "clothing_invariant_confidence": _round_or_none(clothing_invariant_confidence),
@@ -933,6 +1230,9 @@ def _compute_review_only_v2(
             "pose_delta_score": _round_or_none(angle_features.get("pose_delta_score")),
             "face_support_score": _round_or_none(face_support_score),
             "face_topology_support": _round_or_none(face_topology_support),
+            "head_topology_mean_similarity": _round_or_none(head_topology_mean_similarity),
+            "head_topology_weakest_part": head_topology_weakest_part,
+            "head_topology_weakest_part_similarity": _round_or_none(head_topology_weakest_part_similarity),
             "evidence_agreement_score": _round_or_none(evidence_agreement_score),
             "truth_proxy": _round_or_none(truth_proxy),
             "truth_proxy_confidence": _round_or_none(truth_proxy_confidence),
@@ -978,6 +1278,20 @@ def _review_only_pass_guard_reasons(candidate_row: Dict[str, Any]) -> List[str]:
     clothing_invariant = _safe_float(breakdown.get("clothing_invariant_score"))
     clothing_confidence = _safe_float(breakdown.get("clothing_invariant_confidence"))
     garment_occlusion = _safe_float(breakdown.get("garment_occlusion_index"))
+    projection_confidence = _safe_float(breakdown.get("same_truth_projection_confidence"))
+    projection_uncertainty = _safe_float(breakdown.get("same_truth_projection_uncertainty"))
+    projection_confidence_floors = {
+        "front": 0.58,
+        "three_quarter": 0.54,
+        "side": 0.52,
+        "back": 0.50,
+    }
+    projection_uncertainty_budgets = {
+        "front": 0.46,
+        "three_quarter": 0.48,
+        "side": 0.50,
+        "back": 0.54,
+    }
 
     if lane_family == "front":
         if face_truth is not None and face_truth < 0.72:
@@ -1015,6 +1329,14 @@ def _review_only_pass_guard_reasons(candidate_row: Dict[str, Any]) -> List[str]:
         clothing_confidence is None or clothing_confidence < 0.62
     ):
         reasons.append("GARMENT_OCCLUSION_TOO_HIGH_FOR_PRIORITY_PASS")
+    if lane_family in {"side", "back"} and projection_confidence is None:
+        reasons.append(f"{lane_family.upper()}_SAME_TRUTH_PROJECTION_UNAVAILABLE_FOR_PASS")
+    projection_floor = projection_confidence_floors.get(lane_family)
+    if projection_floor is not None and projection_confidence is not None and projection_confidence < projection_floor:
+        reasons.append(f"{lane_family.upper()}_SAME_TRUTH_PROJECTION_CONFIDENCE_BELOW_PASS_FLOOR")
+    projection_budget = projection_uncertainty_budgets.get(lane_family)
+    if projection_budget is not None and projection_uncertainty is not None and projection_uncertainty > projection_budget:
+        reasons.append(f"{lane_family.upper()}_SAME_TRUTH_PROJECTION_UNCERTAINTY_ABOVE_PASS_BUDGET")
     return reasons
 
 
@@ -1026,6 +1348,8 @@ def _review_only_fail_guard_reasons(candidate_row: Dict[str, Any]) -> List[str]:
     truth_center = _safe_float(breakdown.get("truth_center_score"))
     clothing_invariant = _safe_float(breakdown.get("clothing_invariant_score"))
     garment_occlusion = _safe_float(breakdown.get("garment_occlusion_index"))
+    projection_confidence = _safe_float(breakdown.get("same_truth_projection_confidence"))
+    projection_uncertainty = _safe_float(breakdown.get("same_truth_projection_uncertainty"))
     review_score = _safe_float(candidate_row.get("review_only_score_v2"))
     review_confidence = _safe_float(candidate_row.get("review_only_confidence_v2"))
     reasons: List[str] = []
@@ -1083,6 +1407,19 @@ def _review_only_fail_guard_reasons(candidate_row: Dict[str, Any]) -> List[str]:
         reasons.append("BACK_REVIEW_FAIL_GUARD")
 
     if (
+        lane_family in {"side", "back"}
+        and projection_confidence is not None
+        and projection_uncertainty is not None
+        and body_truth is not None
+        and truth_center is not None
+        and projection_confidence < (0.44 if lane_family == "side" else 0.42)
+        and projection_uncertainty > (0.58 if lane_family == "side" else 0.62)
+        and body_truth < 0.60
+        and truth_center < 0.66
+    ):
+        reasons.append(f"{lane_family.upper()}_DERIVED_PROJECTION_FAIL_GUARD")
+
+    if (
         clothing_invariant is not None
         and truth_center is not None
         and review_score is not None
@@ -1100,8 +1437,13 @@ def _refresh_review_only_policy_note(candidate_row: Dict[str, Any]) -> None:
     lane_family = str(candidate_row.get("lane_family") or "").strip().lower()
     status = str(candidate_row.get("review_only_status_v2") or "").strip().upper()
     if lane_family in {"side", "back"} and status == "PASS":
+        breakdown = candidate_row.get("review_only_breakdown_v2") or {}
+        projection_mode = str(breakdown.get("same_truth_projection_mode") or "same_truth_projection").strip()
+        projection_uncertainty = _round_or_none(breakdown.get("same_truth_projection_uncertainty"))
+        uncertainty_text = "unknown" if projection_uncertainty is None else str(projection_uncertainty)
         candidate_row["review_only_policy_note_v2"] = (
-            "shadow lane PASS means priority review only; release and admission remain governed outside review_only"
+            f"{projection_mode} PASS means priority review only; projection_uncertainty={uncertainty_text}; "
+            "release and admission remain governed outside review_only"
         )
     else:
         candidate_row["review_only_policy_note_v2"] = None

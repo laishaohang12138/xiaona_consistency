@@ -435,6 +435,45 @@ def _extract_canonical_truth_summary(heavy_evidence: Any) -> Dict[str, Any]:
         _metric_value("body_pose_sensitive_measurement_similarity")
     )
     body_pose_measurement_gap = _round_or_none(body_canonical_summary.get("body_pose_measurement_gap"))
+    body_topology_partition = (
+        dict(body_canonical_summary.get("body_topology_partition") or {})
+        if isinstance(body_canonical_summary.get("body_topology_partition"), dict)
+        else {}
+    )
+    body_topology_partition_mean_similarity = _round_or_none(
+        _metric_value("body_topology_partition_mean_similarity")
+    )
+    if body_topology_partition_mean_similarity is None:
+        partition_mean_raw = body_canonical_summary.get("body_topology_partition_mean_similarity")
+        if partition_mean_raw is None:
+            partition_mean_raw = body_topology_partition.get("mean_similarity")
+        body_topology_partition_mean_similarity = _round_or_none(
+            partition_mean_raw
+        )
+    body_topology_weakest_part_similarity = _round_or_none(
+        _metric_value("body_topology_weakest_part_similarity")
+    )
+    if body_topology_weakest_part_similarity is None:
+        weakest_part_raw = body_canonical_summary.get("body_topology_weakest_part_similarity")
+        if weakest_part_raw is None:
+            weakest_part_raw = body_topology_partition.get("weakest_part_similarity")
+        body_topology_weakest_part_similarity = _round_or_none(
+            weakest_part_raw
+        )
+    body_topology_weakest_part = str(
+        body_canonical_summary.get("body_topology_weakest_part")
+        or body_topology_partition.get("weakest_part")
+        or ""
+    ).strip()
+
+    def _body_partition_metric(metric_name: str, summary_key: str, partition_key: str) -> Optional[float]:
+        value = _round_or_none(_metric_value(metric_name))
+        if value is None:
+            raw_value = body_canonical_summary.get(summary_key)
+            if raw_value is None:
+                raw_value = body_topology_partition.get(partition_key)
+            value = _round_or_none(raw_value)
+        return value
 
     return {
         "canonical_truth_available": available,
@@ -461,6 +500,45 @@ def _extract_canonical_truth_summary(heavy_evidence: Any) -> Dict[str, Any]:
         "body_pose_delta_similarity": _round_or_none(_metric_value("body_pose_delta_similarity")),
         "body_mesh_fit_confidence": _round_or_none(_metric_value("body_mesh_fit_confidence")),
         "body_pose_measurement_gap": body_pose_measurement_gap,
+        "body_topology_partition": body_topology_partition,
+        "body_topology_partition_mean_similarity": body_topology_partition_mean_similarity,
+        "body_topology_weakest_part": body_topology_weakest_part,
+        "body_topology_weakest_part_similarity": body_topology_weakest_part_similarity,
+        "body_topology_torso_core_similarity": _body_partition_metric(
+            "body_topology_torso_core_similarity",
+            "body_topology_torso_core_similarity",
+            "torso_core_similarity",
+        ),
+        "body_topology_shoulder_neck_frame_similarity": _body_partition_metric(
+            "body_topology_shoulder_neck_frame_similarity",
+            "body_topology_shoulder_neck_frame_similarity",
+            "shoulder_neck_frame_similarity",
+        ),
+        "body_topology_waist_pelvis_similarity": _body_partition_metric(
+            "body_topology_waist_pelvis_similarity",
+            "body_topology_waist_pelvis_similarity",
+            "waist_pelvis_similarity",
+        ),
+        "body_topology_leg_axis_similarity": _body_partition_metric(
+            "body_topology_leg_axis_similarity",
+            "body_topology_leg_axis_similarity",
+            "leg_axis_similarity",
+        ),
+        "body_topology_lower_body_volume_similarity": _body_partition_metric(
+            "body_topology_lower_body_volume_similarity",
+            "body_topology_lower_body_volume_similarity",
+            "lower_body_volume_similarity",
+        ),
+        "body_topology_gait_phase_similarity": _body_partition_metric(
+            "body_topology_gait_phase_similarity",
+            "body_topology_gait_phase_similarity",
+            "gait_phase_similarity",
+        ),
+        "body_pose_explained_delta_score": _body_partition_metric(
+            "body_pose_explained_delta_score",
+            "body_pose_explained_delta_score",
+            "pose_explained_delta_score",
+        ),
         "body_core_measurement_coverage": _round_or_none(body_canonical_summary.get("body_core_measurement_coverage")),
         "body_pose_sensitive_measurement_coverage": _round_or_none(
             body_canonical_summary.get("body_pose_sensitive_measurement_coverage")
@@ -483,6 +561,30 @@ def _extract_face_canonical_summary(debug: Any) -> Dict[str, Any]:
         "canonical_face_identity_similarity": _round_or_none(shadow.get("canonical_face_identity_similarity")),
         "canonical_face_topology_similarity": _round_or_none(shadow.get("canonical_face_topology_similarity")),
         "canonical_face_topology_delta": _round_or_none(shadow.get("canonical_face_topology_delta")),
+        "head_topology_partition": dict(shadow.get("head_topology_partition") or {}),
+        "head_topology_mean_similarity": _round_or_none(shadow.get("head_topology_mean_similarity")),
+        "head_topology_weakest_part": str(shadow.get("head_topology_weakest_part") or ""),
+        "head_topology_weakest_part_similarity": _round_or_none(
+            shadow.get("head_topology_weakest_part_similarity")
+        ),
+        "head_topology_upper_face_similarity": _round_or_none(
+            shadow.get("head_topology_upper_face_similarity")
+        ),
+        "head_topology_mid_face_similarity": _round_or_none(
+            shadow.get("head_topology_mid_face_similarity")
+        ),
+        "head_topology_lower_face_similarity": _round_or_none(
+            shadow.get("head_topology_lower_face_similarity")
+        ),
+        "head_topology_contour_similarity": _round_or_none(
+            shadow.get("head_topology_contour_similarity")
+        ),
+        "head_topology_center_axis_similarity": _round_or_none(
+            shadow.get("head_topology_center_axis_similarity")
+        ),
+        "head_topology_lateral_balance_similarity": _round_or_none(
+            shadow.get("head_topology_lateral_balance_similarity")
+        ),
         "pose_delta_similarity": _round_or_none(shadow.get("pose_delta_similarity")),
         "pose_delta_deg": _round_or_none(shadow.get("pose_delta_deg")),
         "guidance": list(shadow.get("guidance") or [])[:4] if shadow else [],
@@ -501,6 +603,8 @@ def _topology_review_focus(
     prompts: List[str] = []
 
     face_topology = _round_or_none((face_summary or {}).get("canonical_face_topology_similarity"))
+    head_topology_weakest = _round_or_none((face_summary or {}).get("head_topology_weakest_part_similarity"))
+    head_topology_part = str((face_summary or {}).get("head_topology_weakest_part") or "").strip()
     body_topology_metric = _round_or_none((truth_summary or {}).get("body_gait_tolerant_topology_similarity"))
     if body_topology_metric is None:
         body_topology_metric = _round_or_none((truth_summary or {}).get("body_topology_signature_similarity"))
@@ -512,10 +616,19 @@ def _topology_review_focus(
         body_measurement_metric = _round_or_none((truth_summary or {}).get("canonical_measurement_similarity"))
     body_pose_sensitive_metric = _round_or_none((truth_summary or {}).get("body_pose_sensitive_measurement_similarity"))
     body_pose_measurement_gap = _round_or_none((truth_summary or {}).get("body_pose_measurement_gap"))
+    body_topology_partition_mean = _round_or_none((truth_summary or {}).get("body_topology_partition_mean_similarity"))
+    body_topology_weakest_part = str((truth_summary or {}).get("body_topology_weakest_part") or "").strip()
+    body_topology_weakest_part_similarity = _round_or_none(
+        (truth_summary or {}).get("body_topology_weakest_part_similarity")
+    )
+    body_pose_explained_delta = _round_or_none((truth_summary or {}).get("body_pose_explained_delta_score"))
     body_topology_support = _round_or_none((breakdown or {}).get("body_topology_support"))
     angle_tolerance_score = _round_or_none((breakdown or {}).get("angle_tolerance_score"))
     body_angle_delta_deg = _round_or_none((breakdown or {}).get("body_angle_delta_deg"))
     face_angle_delta_deg = _round_or_none((breakdown or {}).get("face_angle_delta_deg"))
+    projection_confidence = _round_or_none((breakdown or {}).get("same_truth_projection_confidence"))
+    projection_uncertainty = _round_or_none((breakdown or {}).get("same_truth_projection_uncertainty"))
+    projection_mode = str((breakdown or {}).get("same_truth_projection_mode") or "").strip()
     clothing_invariant_score = _round_or_none((breakdown or {}).get("clothing_invariant_score"))
     clothing_invariant_confidence = _round_or_none((breakdown or {}).get("clothing_invariant_confidence"))
     garment_occlusion_index = _round_or_none((breakdown or {}).get("garment_occlusion_index"))
@@ -527,6 +640,12 @@ def _topology_review_focus(
         if float(face_topology) < face_floor:
             manual_focus.append("check nose bridge, lip-chin contour, and jawline continuity against A-Core_01")
             prompts.append("Face topology is weak. Judge the same head structure before trusting frontal resemblance.")
+    if head_topology_weakest is not None:
+        head_part_floor = 0.68 if "side" in lane_detail else 0.72 if "three_quarter" in lane_detail else 0.76
+        if float(head_topology_weakest) < head_part_floor:
+            part_text = head_topology_part or "weakest head partition"
+            manual_focus.append(f"check {part_text}: this is the weakest canonical head topology partition")
+            prompts.append("Head topology has a regional weak spot. Verify that this is pose/frontalization noise before calling the identity stable.")
 
     if body_topology_metric is not None or body_topology_support is not None:
         body_signal = body_topology_support if body_topology_support is not None else body_topology_metric
@@ -534,6 +653,28 @@ def _topology_review_focus(
         if body_signal is not None and float(body_signal) < body_floor:
             manual_focus.append("check shoulder-hip span, leg-to-torso ratio, and lower-body volume against 116-1")
             prompts.append("Body topology is weak. Compare 116-1 shape structure first, then treat pose/gait as secondary.")
+    if body_topology_weakest_part_similarity is not None:
+        body_part_floor = 0.60 if ("side" in lane_detail or "back" in lane_detail) else 0.64 if "three_quarter" in lane_detail else 0.68
+        if float(body_topology_weakest_part_similarity) < body_part_floor:
+            part_text = body_topology_weakest_part or "weakest body topology partition"
+            manual_focus.append(f"check {part_text}: weakest body topology partition against 116-1")
+            if (
+                body_pose_explained_delta is not None
+                and float(body_pose_explained_delta) >= 0.70
+                and body_topology_weakest_part in {"leg_axis", "lower_body_volume"}
+            ):
+                prompts.append("Weak body partition may be gait or stance projection. Verify trunk and shoulder-hip structure before calling drift.")
+            else:
+                prompts.append("Body topology has a regional weak spot. Confirm whether this is structural drift or pose projection.")
+    if (
+        body_topology_partition_mean is not None
+        and float(body_topology_partition_mean) >= 0.68
+        and body_pose_explained_delta is not None
+        and float(body_pose_explained_delta) >= 0.70
+        and body_pose_sensitive_metric is not None
+        and float(body_pose_sensitive_metric) < 0.50
+    ):
+        manual_focus.append("pose/gait explains much of the lower-body delta; keep review centered on stable structural partitions")
     if (
         body_pose_sensitive_metric is not None
         and float(body_pose_sensitive_metric) < 0.46
@@ -559,6 +700,11 @@ def _topology_review_focus(
         manual_focus.append("compare body topology first if this frame sits between lane centers")
     if face_angle_delta_deg is not None and float(face_angle_delta_deg) > 18.0:
         manual_focus.append("do not over-penalize face score when pose is between standard yaw buckets")
+    if projection_uncertainty is not None and float(projection_uncertainty) > 0.50:
+        manual_focus.append("review same-truth derived projection uncertainty before treating side/back as stable")
+        prompts.append("Derived projection uncertainty is high. Use it as review priority evidence, not as a new truth anchor.")
+    if projection_confidence is not None and float(projection_confidence) < 0.52 and projection_mode:
+        manual_focus.append(f"check {projection_mode} against canonical face/body truth before ranking this candidate high")
     if clothing_invariant_score is not None and float(clothing_invariant_score) < 0.68:
         manual_focus.append("verify identity under clothing using body topology before trusting garment shape")
         prompts.append("Clothing-invariant support is weak. Treat garment silhouette as a risk, not as identity evidence.")
@@ -890,6 +1036,29 @@ def _compact_face_canonical_for_gpt(payload: Any) -> Dict[str, Any]:
             "canonical_face_identity_similarity": _round_or_none(data.get("canonical_face_identity_similarity")),
             "canonical_face_landmark_similarity": _round_or_none(data.get("canonical_face_landmark_similarity")),
             "canonical_face_topology_similarity": _round_or_none(data.get("canonical_face_topology_similarity")),
+            "head_topology_mean_similarity": _round_or_none(data.get("head_topology_mean_similarity")),
+            "head_topology_weakest_part": str(data.get("head_topology_weakest_part") or ""),
+            "head_topology_weakest_part_similarity": _round_or_none(
+                data.get("head_topology_weakest_part_similarity")
+            ),
+            "head_topology_upper_face_similarity": _round_or_none(
+                data.get("head_topology_upper_face_similarity")
+            ),
+            "head_topology_mid_face_similarity": _round_or_none(
+                data.get("head_topology_mid_face_similarity")
+            ),
+            "head_topology_lower_face_similarity": _round_or_none(
+                data.get("head_topology_lower_face_similarity")
+            ),
+            "head_topology_contour_similarity": _round_or_none(
+                data.get("head_topology_contour_similarity")
+            ),
+            "head_topology_center_axis_similarity": _round_or_none(
+                data.get("head_topology_center_axis_similarity")
+            ),
+            "head_topology_lateral_balance_similarity": _round_or_none(
+                data.get("head_topology_lateral_balance_similarity")
+            ),
             "pose_delta_deg": _round_or_none(data.get("pose_delta_deg")),
             "face_pose_normalization_confidence": _round_or_none(data.get("face_pose_normalization_confidence")),
         }
@@ -908,6 +1077,16 @@ def _compact_candidate_for_gpt(row: Dict[str, Any]) -> Dict[str, Any]:
         "support_only_score": _round_or_none((breakdown or {}).get("support_only_score")),
         "angle_tolerance_score": _round_or_none((breakdown or {}).get("angle_tolerance_score")),
         "lane_membership_confidence": _round_or_none((breakdown or {}).get("lane_membership_confidence")),
+    }
+    same_truth_projection = {
+        "mode": str((breakdown or {}).get("same_truth_projection_mode") or "").strip(),
+        "policy": str((breakdown or {}).get("same_truth_projection_policy") or "").strip(),
+        "confidence": _round_or_none((breakdown or {}).get("same_truth_projection_confidence")),
+        "uncertainty": _round_or_none((breakdown or {}).get("same_truth_projection_uncertainty")),
+        "reliability": _round_or_none((breakdown or {}).get("same_truth_projection_reliability")),
+        "face_projection_confidence": _round_or_none((breakdown or {}).get("face_projection_confidence")),
+        "body_projection_confidence": _round_or_none((breakdown or {}).get("body_projection_confidence")),
+        "uncertainty_reasons": list((breakdown or {}).get("projection_uncertainty_reasons") or [])[:6],
     }
     clothing_invariant = {
         "clothing_invariant_score": _round_or_none((breakdown or {}).get("clothing_invariant_score")),
@@ -944,6 +1123,7 @@ def _compact_candidate_for_gpt(row: Dict[str, Any]) -> Dict[str, Any]:
             }
         ),
         "truth_center": _clean_dict(truth_center),
+        "same_truth_projection": _clean_dict(same_truth_projection),
         "clothing_invariant": _clean_dict(clothing_invariant),
         "canonical_truth_summary": _clean_dict(dict(row.get("canonical_truth_summary") or {})),
         "face_canonical_summary": _compact_face_canonical_for_gpt(row.get("face_canonical_summary") or {}),
@@ -1026,6 +1206,16 @@ def _build_gpt_review_packet(
                 "outputs/heavy_evidence_cache/**",
             ],
         },
+        "decision_boundary": {
+            "packet_role": "compact_review_evidence_only",
+            "does_not_decide": [
+                "final training-set admission",
+                "final image-set membership",
+                "dataset assembly",
+                "winner-bank freeze",
+            ],
+            "ranking_meaning": "review_priority_and_risk_routing_not_final_selection",
+        },
         "source_files": _clean_dict(
             {
                 "review_packet": str(review_packet_file),
@@ -1064,9 +1254,13 @@ def _build_gpt_review_packet(
             "lane_risk_focus": _clean_dict(dict(batch_summary.get("lane_risk_focus") or {})),
             "release_gate": _compact_release_gate(batch_summary.get("release_gate") or {}),
             "admission_advice": _compact_admission_advice(batch_summary.get("admission_advice") or {}),
+            "dataset_curation_governance": _clean_dict(
+                dict(review_packet.get("dataset_curation_status") or {})
+            ),
             "batch_preflight": _clean_dict(dict(batch_summary.get("batch_preflight") or {})),
             "evidence_completeness": _clean_dict(dict(batch_summary.get("evidence_completeness") or {})),
             "lane_governance_note": "Use observed lane family for QA governance. Prompt/view intent remains a weak prior for diagnosis only.",
+            "ranking_governance_note": "Top-ranked rows are review-priority evidence; this packet does not decide final image-set membership.",
         },
         "priority_review_queue": {
             "pass_candidates": _first_rows_by_status(items, status="PASS", limit=12),
@@ -1150,7 +1344,9 @@ def build_review_packet(
     project_scope = (report_payload.get("report_meta") or {}).get("project_scope") or {
         "role": "screening_and_evidence_only",
         "training_admission_participation": False,
+        "image_set_decision_participation": False,
         "final_training_decision_owner": "external_training_decision_flow",
+        "final_image_set_decision_owner": "external_dataset_curation_flow",
     }
     batch_summary = _build_batch_summary(report_payload)
     if not bool(project_scope.get("training_admission_participation", False)):
@@ -1159,7 +1355,9 @@ def build_review_packet(
             "enabled": False,
             "mode": "external_final_decision_out_of_scope",
             "participates_in_final_admission": False,
+            "participates_in_final_image_set_decision": False,
             "final_decision_owner": "external_training_decision_flow",
+            "final_image_set_decision_owner": "external_dataset_curation_flow",
             "local_role": "screening_evidence_only",
         }
     batch_admission = build_batch_admission_advice(batch_summary, {"report": winner_bank_report})
@@ -1177,15 +1375,28 @@ def build_review_packet(
         "system_role": "evidence_only",
         "project_scope": project_scope,
         "final_decision_owner": "external_training_decision_flow",
+        "decision_boundary": {
+            "local_role": "screening_risk_routing_review_priority_and_evidence_packaging",
+            "local_role_is_not": [
+                "final training-set admission",
+                "final image-set membership decision",
+                "dataset assembly decision",
+                "winner-bank freeze decision",
+            ],
+            "external_owners": {
+                "final_training_admission": "external_training_decision_flow",
+                "final_image_set": "external_dataset_curation_flow",
+            },
+        },
         "usage_protocol": {
             "machine_role": "provide explainable screening metrics, shortlist ranking, and drift evidence only",
-            "human_role": "custom_gpt_plus_human may review winners and candidates; external training flow owns final training admission",
+            "human_role": "custom_gpt_plus_human may review evidence; external flows own final training admission and final image-set construction",
             "manual_steps": [
                 "review batch_summary first",
                 "compare top candidates in ranked_review_packet and pairwise cards",
-                "classify candidates as strong screening, review-needed, diagnostic-only, or reroll/reject",
+                "tag candidates as strong evidence, review-needed, diagnostic-only, or reroll-priority evidence",
                 "optionally record a human-approved winner into mutable winner_bank memory",
-                "send evidence packets to the external training-decision flow when needed",
+                "send evidence packets to external training and dataset-curation flows when needed",
             ],
         },
         "source_files": {
@@ -1226,6 +1437,16 @@ def build_review_packet(
             },
         },
         "training_admission_status": (batch_summary.get("training_admission_governance") or {}),
+        "dataset_curation_status": (
+            (report_payload.get("report_meta") or {}).get("dataset_curation_governance")
+            or {
+                "enabled": False,
+                "mode": "external_final_image_set_decision_out_of_scope",
+                "participates_in_final_image_set_decision": False,
+                "final_image_set_decision_owner": "external_dataset_curation_flow",
+                "local_role": "screening_evidence_and_review_priority_only",
+            }
+        ),
         "items": item_rows,
         "debug": {
             "report_meta": report_payload.get("report_meta"),

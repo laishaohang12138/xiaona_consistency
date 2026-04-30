@@ -11,10 +11,13 @@ It does:
 - shortlist evidence for GPT plus human review
 - mutable winner-bank review memory and cross-batch drift notes
 - route Nano Banana 2 draw batches into review buckets
+- controlled replay collection queues for lighting, OUTER occlusion, and side/back topology validation
 
 It does not:
 
 - decide final training-set admission
+- decide final image-set membership
+- assemble or freeze the final image set
 - seal images into a final training set
 - auto-admit images into the final training set
 - replace custom GPT plus human review
@@ -24,7 +27,7 @@ It does not:
 ## Frozen Principles
 
 1. Machine role is `advisory_only` or `evidence_only`.
-2. Review decision owner is `custom_gpt_plus_human`; final training-set admission belongs to the external training decision flow.
+2. Review evidence owner is this repository; final image-set construction and final training-set admission belong to external decision flows.
 3. Absolute face identity is defined only by `A-Core_01_0deg_MASTER.png`.
 4. Absolute body identity is defined only by `Task-63987060-116-1.png`.
 5. Support anchors are assist-only and must never become identity masters by drift.
@@ -34,7 +37,7 @@ It does not:
 9. Input stays simple. The system adapts to a flat shot batch instead of forcing complex folder structure.
 10. Review outputs must be readable by humans and stable for GPT programmatic analysis.
 11. Mutable winner-bank entries must not feed final admission or parameter fitting.
-12. This repository does not participate in final training-set admission; it only screens, ranks, explains, and packages evidence.
+12. This repository does not participate in final training-set admission or final image-set membership; it only screens, ranks review priority, explains, and packages evidence.
 
 ## Current Review Model
 
@@ -51,6 +54,8 @@ Primary user-facing workflow entry:
 - `shot_review`
 - `inspect_review_packet`
 - `refresh_review_status_board`
+- `prepare_topology_replay_pack`
+- `prepare_replay_collection_plan`
 - `prepare_front_bootstrap_review`
 - `winner_bank_status`
 
@@ -71,6 +76,8 @@ For every shot batch:
 3. GPT plus human use top candidates for diagnostic review
 4. optional winner-bank recording remains manual and mutable
 5. no winner-bank entry can become final admission or fitting truth by itself
+6. no machine ranking can become final image-set membership by itself
+7. local admission manifest writes are audit records for already-external decisions only
 
 Before winner-bank freezing, external admission handoff, or parameter fitting is reopened:
 
@@ -87,3 +94,4 @@ For every future new winner:
 3. compare against mutable winner-bank memory
 4. keep the record mutable until freeze governance is explicitly reopened
 5. route evidence to the external training decision flow if needed
+6. route evidence to the external dataset-curation flow if image-set construction is being reviewed

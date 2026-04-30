@@ -20,8 +20,9 @@ def winner_bank_bootstrap_policy() -> Dict[str, Any]:
         "blocker": None,
         "reason": (
             "Winner bank may remain mutable for GPT-plus-human review memory. Do not freeze it, "
-            "use it as identity truth, or use it as a final-admission signal. This project only "
-            "screens and packages evidence for the external training decision flow."
+            "use it as identity truth, use it as a final-admission signal, or use it to decide the "
+            "final image set. This project only screens, routes review priority, and packages "
+            "evidence for external decision flows."
         ),
         "requirements": requirements,
         "allowed_now": [
@@ -35,6 +36,7 @@ def winner_bank_bootstrap_policy() -> Dict[str, Any]:
             "freeze winner_bank as a release reference",
             "treat winner_bank as a new identity or body truth source",
             "use winner_bank drift as a final-admission signal",
+            "use winner_bank entries as final image-set membership",
             "feed winner_bank entries into parameter fitting",
         ],
     }

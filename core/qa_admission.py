@@ -148,7 +148,7 @@ def build_batch_admission_advice(
         and bool(release_gate.get("training_admission_allowed"))
     )
     if not participates_in_final_admission:
-        suggested_action = "screen_and_route_candidates_to_external_training_decision"
+        suggested_action = "route_evidence_to_external_dataset_curation"
     elif "ENGINE_FATAL_UNAVAILABLE" in blockers:
         suggested_action = "hold_batch_until_engine_recovered"
     elif "NON_FRONT_BATCH_FOR_FRONT_CORE" in blockers:
@@ -165,9 +165,12 @@ def build_batch_admission_advice(
         suggested_action = "manual_hold_until_review"
 
     return {
-        "system_role": "advisory_only",
-        "project_scope": "screening_only",
+        "system_role": "routing_advice_only",
+        "project_scope": "screening_and_evidence_only",
         "training_admission_participation": participates_in_final_admission,
+        "image_set_decision_participation": False,
+        "final_training_decision_owner": "external_training_decision_flow",
+        "final_image_set_decision_owner": "external_dataset_curation_flow",
         "target_bucket": target_bucket,
         "dominant_lane_family": lane_family,
         "release_gate": release_gate,
@@ -176,6 +179,10 @@ def build_batch_admission_advice(
         "machine_ceiling": release_gate.get("machine_status_ceiling"),
         "eligible_for_training_seal": eligible_for_training_seal,
         "suggested_action": suggested_action,
+        "decision_boundary": {
+            "local_output_is": "screening_routing_and_review_priority_evidence",
+            "local_output_is_not": "training_admission_or_final_image_set_membership",
+        },
         "blockers": blockers[:8],
         "supports": supports[:8],
     }
@@ -233,11 +240,11 @@ def build_candidate_admission_advice(
     )
     if not participates_in_final_admission:
         if "ITEM_STATUS_FAIL" in blockers:
-            suggestion = "screening_reject_tail"
+            suggestion = "low_priority_review_evidence"
         elif len(blockers) == 0:
-            suggestion = "screening_priority_candidate"
+            suggestion = "priority_review_evidence"
         else:
-            suggestion = "screening_review_needed"
+            suggestion = "risk_review_evidence"
     elif "ITEM_STATUS_FAIL" in blockers:
         suggestion = "reject_tail"
     elif not training_admission_allowed:
@@ -254,8 +261,11 @@ def build_candidate_admission_advice(
         suggestion = "manual_hold_candidate"
 
     return {
-        "project_scope": "screening_only",
+        "project_scope": "screening_and_evidence_only",
         "training_admission_participation": participates_in_final_admission,
+        "image_set_decision_participation": False,
+        "final_training_decision_owner": "external_training_decision_flow",
+        "final_image_set_decision_owner": "external_dataset_curation_flow",
         "target_bucket": batch_admission.get("target_bucket"),
         "release_gate": release_gate,
         "batch_preflight": batch_preflight,
@@ -263,6 +273,10 @@ def build_candidate_admission_advice(
         "suggestion": suggestion,
         "machine_ceiling": release_gate.get("machine_status_ceiling") or "human_confirmation_required",
         "eligible_for_training_seal": eligible_for_training_seal,
+        "decision_boundary": {
+            "local_output_is": "candidate_review_priority_and_risk_evidence",
+            "local_output_is_not": "final_training_set_or_image_set_decision",
+        },
         "blockers": blockers[:8],
         "supports": supports[:8],
     }

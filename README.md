@@ -8,7 +8,7 @@ XiaoNa LoRA candidate screening and consistency-evidence repository.
 - Frozen project rules in `docs/`
 - Machine-readable project config in `configs/`
 - Versioned prompt assets in `prompts/`
-  `body_gold/` is active and both `bridge/` and `neckline/` are landed as scoped prompt asset packs
+  `body_gold/` is active; `bridge/`, `neckline/`, `outer/`, and `face_lock/` are landed as scoped prompt asset packs with separate governance
 - Custom GPT knowledge export in `kb_export/`
 - Anchor assets in `anchors/`
 - Offline benchmark replay support for threshold tuning
@@ -20,6 +20,7 @@ XiaoNa LoRA candidate screening and consistency-evidence repository.
 - Human Parsing is the default upstream provider for `subject_mask` and `skin_region`, with legacy fallback retained
 - BODY GOLD currently runs as a conservative front-core lane, while side/back work is staged through shadow profile lanes
 - BRIDGE `v0.3.1-nb2` and NECKLINE `v0.1.1-nb-clean` prompt assets are landed in `prompts/bridge/` and `prompts/neckline/`, but QA/runtime governance is still BODY GOLD centric
+- FACE_LOCK `v0.1.1-nb2-topology-16x1-copyready` is landed in `prompts/face_lock/` as review-only structured face-layer prompt evidence
 - `outputs/qa_report.json` now writes `report_meta` plus `items`, including provider policy, anchor snapshot, layer quota snapshot, and threshold hash
 - Benchmark replay can re-score a saved `qa_report.json` under threshold overrides without rerunning vision models
 - Optuna search can optimize replay metrics from `configs/optuna_search_space.template.json` without touching the main QA path
@@ -27,7 +28,10 @@ XiaoNa LoRA candidate screening and consistency-evidence repository.
 - `configs/optuna_mode_presets.json` provides user-facing review / front / 3q / side / full-release fit presets
 - Winner bank is currently mutable review memory, not frozen release truth or a fitting source
 - Body truth is pose/gait-aware: `Task-63987060-116-1.png` remains the only body truth while pose-sensitive deltas are interpreted separately
-- Final training-set admission is outside this repository; outputs are screening, ranking, risk routing, and evidence packets only
+- Side/back evidence now carries same-truth projection confidence and uncertainty; derived projections do not create new truth anchors
+- Final training-set admission and final image-set construction are outside this repository; outputs are screening, review-priority ranking, risk routing, and evidence packets only
+- `prepare_replay_collection_plan` turns manifest, lighting, OUTER, and side/back topology gaps into the next controlled replay collection queue
+- `prepare_topology_replay_pack` scaffolds controlled side/back topology replay directories under `input_replay/topology/`
 
 ## Confirmed Route
 1. Engineering decoupling first

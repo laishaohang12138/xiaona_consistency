@@ -186,7 +186,7 @@ The visible evidence still supports the two absolute truths under clothing varia
 It does not mean:
 
 ```text
-The image is approved for training admission.
+The image is approved for training admission or final image-set membership.
 ```
 
-Training admission remains governed by release gates and manual seal.
+Training admission and final image-set construction remain external decisions. This repository only reports clothing-invariant evidence.

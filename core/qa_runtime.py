@@ -804,7 +804,7 @@ def _default_release_gates() -> Dict[str, Any]:
                 "requires_frozen_benchmark": True,
                 "requires_curated_winner_bank": False,
                 "required_lane_families": ["side"],
-                "notes": "Side-90 lane is shadow-only and should not be promoted into the main training bank.",
+                "notes": "Side-90 lane is shadow-only and should not be treated as final image-set membership or training admission.",
             },
             "BODY_GOLD.back180_shadow": {
                 "release_state": "shadow",
@@ -815,7 +815,7 @@ def _default_release_gates() -> Dict[str, Any]:
                 "requires_frozen_benchmark": True,
                 "requires_curated_winner_bank": False,
                 "required_lane_families": ["back"],
-                "notes": "Back-180 lane is shadow-only and should not be promoted into the main training bank.",
+                "notes": "Back-180 lane is shadow-only and should not be treated as final image-set membership or training admission.",
             },
             "BRIDGE.simple_outfit": {
                 "release_state": "primary",

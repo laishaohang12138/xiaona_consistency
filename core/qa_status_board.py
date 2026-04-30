@@ -13,18 +13,23 @@ def _project_scope() -> Dict[str, Any]:
     return {
         "schema_version": "project_scope_v1",
         "role": "screening_and_evidence_only",
-        "machine_role": "rank_candidates_explain_risks_and_package_review_evidence",
+        "machine_role": "rank_candidates_explain_risks_route_review_priority_and_package_evidence",
         "training_admission_participation": False,
+        "image_set_decision_participation": False,
         "training_admission_status": "out_of_scope_for_this_project",
         "final_training_decision_owner": "external_training_decision_flow",
+        "final_image_set_decision_owner": "external_dataset_curation_flow",
         "outputs_are": [
             "candidate screening",
             "risk routing",
+            "review-priority ranking",
             "review evidence packets",
             "mutable winner-bank review memory",
         ],
         "outputs_are_not": [
             "final training-set admission",
+            "final image-set decision",
+            "dataset membership decision",
             "training sample seal",
             "frozen identity truth",
             "parameter-fitting data",
@@ -133,6 +138,42 @@ def _training_admission_summary(manifest_file: Path) -> Dict[str, Any]:
     }
 
 
+def _replay_collection_summary(plan_file: Path) -> Dict[str, Any]:
+    payload = _load_json(plan_file)
+    if not payload:
+        return {
+            "available": False,
+            "plan_file": str(plan_file.resolve()),
+            "overall_status": "",
+            "summary": {},
+            "immediate_operator_queue": [],
+        }
+    queue = payload.get("immediate_operator_queue") if isinstance(payload.get("immediate_operator_queue"), list) else []
+    compact_queue: List[Dict[str, Any]] = []
+    for raw_task in queue[:6]:
+        if not isinstance(raw_task, dict):
+            continue
+        compact_queue.append(
+            {
+                "priority_group": _first_text(raw_task.get("priority_group")),
+                "area": _first_text(raw_task.get("area")),
+                "task_type": _first_text(raw_task.get("task_type")),
+                "title": _first_text(raw_task.get("title")),
+                "status": _first_text(raw_task.get("status")),
+                "input_dir": _first_text(raw_task.get("input_dir")),
+                "image_count": _safe_int(raw_task.get("image_count")),
+                "images_needed_for_minimum": _safe_int(raw_task.get("images_needed_for_minimum")),
+            }
+        )
+    return {
+        "available": True,
+        "plan_file": str(plan_file.resolve()),
+        "overall_status": _first_text(payload.get("overall_status")),
+        "summary": payload.get("summary") if isinstance(payload.get("summary"), dict) else {},
+        "immediate_operator_queue": compact_queue,
+    }
+
+
 def _screening_risks(run: Dict[str, Any]) -> List[str]:
     risks: List[str] = []
     for item in (run.get("screening_risks") or run.get("admission_blockers") or []):
@@ -193,6 +234,9 @@ def _pose_gait_body_truth_summary(gpt_packet_file: Path) -> Dict[str, Any]:
         "body_gait_tolerant_topology_similarity",
         "body_core_measurement_similarity",
         "body_pose_sensitive_measurement_similarity",
+        "body_topology_partition_mean_similarity",
+        "body_topology_weakest_part_similarity",
+        "body_pose_explained_delta_score",
         "body_pose_measurement_gap",
     ]
     metric_sums: Dict[str, float] = {name: 0.0 for name in metric_names}
@@ -241,6 +285,16 @@ def _pose_gait_body_truth_summary(gpt_packet_file: Path) -> Dict[str, Any]:
             ),
             "body_pose_sensitive_measurement_similarity": _round_or_none(
                 summary.get("body_pose_sensitive_measurement_similarity")
+            ),
+            "body_topology_partition_mean_similarity": _round_or_none(
+                summary.get("body_topology_partition_mean_similarity")
+            ),
+            "body_topology_weakest_part": _first_text(summary.get("body_topology_weakest_part")),
+            "body_topology_weakest_part_similarity": _round_or_none(
+                summary.get("body_topology_weakest_part_similarity")
+            ),
+            "body_pose_explained_delta_score": _round_or_none(
+                summary.get("body_pose_explained_delta_score")
             ),
             "body_pose_measurement_gap": _round_or_none(summary.get("body_pose_measurement_gap")),
         }
@@ -345,10 +399,22 @@ def _optimization_focus(
         if isinstance(topology_metrics.get("three_quarter_truth_fusion_compare"), dict)
         else {}
     )
+    topology_pack = (
+        topology_metrics.get("side_back_topology_replay_pack")
+        if isinstance(topology_metrics.get("side_back_topology_replay_pack"), dict)
+        else {}
+    )
     topology_status = str(topology_gate.get("status") or "").strip().upper()
     if topology_status == "PASS" and bool(topology_compare.get("resolved_for_three_quarter_review")):
-        topology_state = "three_quarter_resolved_validate_side_back"
-        topology_next = "reuse segformer_body_truth_fusion on side/back review lanes before promotion"
+        if not bool(topology_pack.get("prepared")):
+            topology_state = "three_quarter_resolved_prepare_side_back_topology_pack"
+            topology_next = "prepare controlled side/back topology replay pack before promotion"
+        elif _safe_int(topology_pack.get("total_current_images")) <= 0:
+            topology_state = "three_quarter_resolved_side_back_collection_needed"
+            topology_next = "collect controlled side/back topology variants into input_replay/topology before promotion"
+        else:
+            topology_state = "three_quarter_resolved_run_side_back_topology_replay"
+            topology_next = "run side/back replay with profile-default truth-fusion before promotion"
     elif topology_status == "PASS":
         topology_state = "front_three_quarter_pass"
         topology_next = "keep topology monitoring active while clearing clothing and pose/gait review queues"
@@ -399,6 +465,7 @@ def _optimization_focus(
             if isinstance(topology_metrics.get("body_topology_top3_mean_by_lane"), dict)
             else {},
             "three_quarter_truth_fusion_compare": topology_compare,
+            "side_back_topology_replay_pack": topology_pack,
             "next_action": topology_next,
             "holds": [
                 "do not spend another optimization loop on three_quarter topology unless a new replay regresses",
@@ -420,6 +487,7 @@ def build_review_status_board(
     winner_bank_report = _load_json(outputs_dir / "winner_bank_report.json")
     winner_policy = winner_bank_bootstrap_policy()
     training_admission = _training_admission_summary(outputs_dir / "training_admission_manifest.json")
+    replay_collection = _replay_collection_summary(outputs_dir / "replay_collection_plan.json")
     pose_gait_body_truth = _pose_gait_body_truth_summary(outputs_dir / "gpt_review_packet.json")
     optimization_focus = _optimization_focus(invariance_status, pose_gait_body_truth)
     project_scope = _project_scope()
@@ -475,6 +543,7 @@ def build_review_status_board(
         next_actions.append("manually review front_bootstrap_review_sheet top-3 as mutable candidate memory only")
     if not bool(winner_bank_report.get("curated_bank_available")) and str(winner_policy.get("state") or "") != "deferred":
         next_actions.append("record mutable winner_bank entry only after manual review resolves current blockers")
+    next_actions.append("run prepare_replay_collection_plan and follow immediate_operator_queue for controlled replay collection")
     next_actions.append("route screened candidates and evidence packets to the external training-decision flow")
 
     payload = {
@@ -541,6 +610,7 @@ def build_review_status_board(
         },
         "pose_gait_body_truth": pose_gait_body_truth,
         "optimization_focus": optimization_focus,
+        "replay_collection_plan": replay_collection,
         "training_admission": training_admission,
         "input_manifests": manifest_states,
         "next_actions": next_actions,

@@ -119,6 +119,16 @@ def build_winner_bank_review_packet(
         ).strip(),
         "promotion_ready": promotion_ready,
         "promotion_blockers": blockers,
+        "decision_boundary": {
+            "packet_role": "winner_bank_review_memory_packet",
+            "winner_bank_role": "mutable_review_memory_only",
+            "does_not_decide": [
+                "final image-set membership",
+                "final training-set admission",
+                "identity truth",
+                "body truth",
+            ],
+        },
         "winner_bank_bootstrap_policy": bootstrap_policy,
         "recommended_candidate": recommended,
         "top_candidates": top_candidates,
@@ -135,9 +145,9 @@ def build_winner_bank_review_packet(
                 "Winner bank bootstrap is deferred until review-only invariance and 3D topology consistency mature."
                 if WINNER_BANK_BOOTSTRAP_DEFERRED_BLOCKER in blockers
                 else (
-                "Review the recommended candidate, but clear the remaining blockers before promoting into winner_bank.json."
+                "Review the recommended candidate, but clear the remaining blockers before recording it as mutable winner_bank memory."
                 if blockers
-                else "Review the recommended candidate and promote one winner into winner_bank.json."
+                else "Review the recommended candidate and optionally record one candidate into winner_bank.json as mutable review memory."
                 )
             )
         ),

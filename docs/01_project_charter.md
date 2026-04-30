@@ -40,6 +40,7 @@
 - Style-first prompt experimentation
 - Large unsupervised rule rewrites
 - Final training-set admission inside this repository
+- Final image-set construction or membership decision inside this repository
 
 ## Tool Roles
 - ChatGPT / Codex
@@ -70,6 +71,7 @@
 - Dynamic batch data is not a source of truth
 - `winner_bank` is mutable review memory in the current phase, not frozen truth
 - final training-set admission belongs to the external training decision flow, not this repository
+- final image-set construction belongs to the external dataset-curation flow, not this repository
 - Parameter fitting is disabled until project optimization is complete
 - `A-Core_01_0deg_MASTER.png` is the only face truth
 - `Task-63987060-116-1.png` is the only body truth, interpreted with pose/gait-aware consistency

@@ -13,6 +13,9 @@ Updated for the current review-only governance state.
 - `input_manifest_completion_plan.json` tracks which input-manifest fields still need operator confirmation.
 - `prepare_lighting_replay_pack` now scaffolds a controlled lighting replay workspace under `input_replay/lighting/`.
 - `prepare_outer_replay_pack` now scaffolds a controlled OUTER replay workspace under `input_replay/outer/`.
+- `prepare_topology_replay_pack` now scaffolds controlled side/back topology replay workspaces under `input_replay/topology/`.
+- `replay_collection_plan.json` turns manifest, lighting, OUTER, and side/back topology gaps into an operator queue.
+- Replay run commands now use isolated `outputs/replay/...` artifact directories so controlled variants do not overwrite main `outputs/`.
 - `promote_winner` supports shortlist-based manual promotion.
 - `winner_bank_status` exposes current curated-bank readiness.
 
@@ -23,6 +26,8 @@ Current shot-batch review stack includes:
 - absolute face anchor evidence
 - cloth-free body identity evidence
 - 3D and world3d cohesion evidence
+- head topology partition evidence for local face-structure drift review
+- body topology partition evidence for torso, shoulder/neck, waist/pelvis, leg axis, lower-body volume, and gait-phase review
 - shortlist-only heavy parser review
 - pairwise compare cards for top candidates
 - training-admission advice as evidence only
@@ -75,6 +80,7 @@ For the latest `three_quarter` replay:
 - `Task-63987060-116-1.png` is the only body truth.
 - Body truth is read as pose/gait-aware absolute truth, not as a rigid flat-template overlay.
 - Prefer `body_pose_independent_truth_alignment`, `body_gait_tolerant_topology_similarity`, and `body_core_measurement_similarity` when gait or stance differs.
+- Use `body_topology_partition_mean_similarity`, `body_topology_weakest_part_similarity`, and `body_pose_explained_delta_score` to separate regional body topology drift from pose/gait projection.
 - Use `body_pose_sensitive_measurement_similarity` and `body_pose_measurement_gap` to explain which deltas are likely pose/gait expression rather than body drift.
 - `review_status_board.json` and `review_handoff_packet.json` now expose `pose_gait_body_truth` read counts, metric means, and review examples before opening candidate-level JSON.
 - `gait_tolerant_topology_margin_review` separates high core body-truth support with marginal gait-tolerant topology from true body-drift risk.
@@ -101,6 +107,16 @@ For the latest `three_quarter` replay:
   - `input_replay/lighting/three_quarter/{neutral_base,bright_exposure,dim_exposure,warm_cast,cool_cast}`
   - every variant directory already contains `input_manifest.json` and `_input_manifest_metadata_template.json`
   - current replay image count is still `0`, so the lighting gate is prepared for collection but not yet validated from controlled replay
+- `replay_collection_plan.json` now prioritizes the next collection wave:
+  - clean-lane manifest completion first
+  - lighting variants by lane warning pressure
+  - OUTER starter-wave prompt leaves before the full prompt backlog
+  - controlled `input_replay/topology/` side/back variants before truth-fusion topology validation
+- a dedicated topology replay scaffold now exists:
+  - `input_replay/topology/side/{side_left_profile,side_right_profile}`
+  - `input_replay/topology/back/{back180_neutral,back180_subtle_gait_shift}`
+  - every variant directory already contains `input_manifest.json` and `_input_manifest_metadata_template.json`
+  - current topology replay image count is still `0`, so side/back topology validation is prepared for collection but not yet measured
 
 ## Current Known Interpretation
 
@@ -119,20 +135,25 @@ Then add detail files only when needed:
 
 1. `review_status_board.json`
 2. `review_invariance_status.json`
-3. `input_manifest_completion_plan.json`
-4. `gpt_review_packet.json`
-5. `review_packet.json`
+3. `replay_collection_plan.json`
+4. `input_manifest_completion_plan.json`
+5. `gpt_review_packet.json`
+6. `review_packet.json`
 
 For body-truth triage, start with `pose_gait_body_truth` in the handoff/status board; open `gpt_review_packet.json` only when a non-consistent read needs candidate-level inspection.
 For optimization triage, start with `optimization_focus`; it keeps clothing replay, gait/topology margin review, and side/back topology validation separate.
+For head-topology triage, use `face_canonical_summary.head_topology_*` in `gpt_review_packet.json` to identify local jaw, contour, center-axis, or lateral-balance drift when global face topology remains high.
+For body-topology triage, use `canonical_truth_summary.body_topology_*` to identify whether the weakest region is trunk/shoulder/waist structure or lower-limb gait projection.
 
 ## Current Governance State
 
 - machine output remains evidence only
 - no auto-promotion into winner bank
 - no final training-set admission inside this project
-- `project_scope` is now `screening_and_evidence_only`; final training decisions belong to the external training decision flow
+- no final image-set membership decision inside this project
+- `project_scope` is now `screening_and_evidence_only`; final training decisions belong to the external training decision flow and final image-set construction belongs to the external dataset-curation flow
+- `seal_training_admission` is disabled by default and can only record an already-external decision as an audit ledger with an explicit environment override
 - winner bank is mutable review memory and is not frozen release truth
-- mutable winner-bank entries must not feed parameter fitting or final admission
+- mutable winner-bank entries must not feed parameter fitting, final admission, or final image-set membership
 - front top candidates may be reviewed and manually recorded, but remain mutable until freeze governance is explicitly reopened
 - Nano Banana batches may use `seed_unavailable_reason` instead of a fabricated seed when the generator does not expose one.

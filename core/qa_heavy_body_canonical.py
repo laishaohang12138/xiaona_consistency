@@ -48,6 +48,60 @@ _BODY_POSE_SENSITIVE_MEASUREMENT_ORDER = [
     "left_right_leg_balance",
     "left_right_foot_balance",
 ]
+_BODY_TOPOLOGY_PARTITION_ORDERS = {
+    "torso_core": [
+        "shoulder_width_to_torso",
+        "hip_width_to_torso",
+        "shoulder_to_hip_ratio",
+    ],
+    "shoulder_neck_frame": [
+        "shoulder_width_to_torso",
+        "shoulder_to_hip_ratio",
+    ],
+    "waist_pelvis": [
+        "hip_width_to_torso",
+        "shoulder_to_hip_ratio",
+    ],
+    "leg_axis": [
+        "leg_length_to_torso",
+        "upper_to_lower_leg_ratio",
+        "left_right_leg_balance",
+    ],
+    "lower_body_volume": [
+        "upper_to_lower_leg_ratio",
+        "foot_length_to_leg",
+        "left_right_foot_balance",
+    ],
+    "gait_phase": [
+        "leg_length_to_torso",
+        "left_right_leg_balance",
+        "left_right_foot_balance",
+    ],
+}
+_BODY_TOPOLOGY_STRUCTURAL_PARTS = [
+    "torso_core",
+    "shoulder_neck_frame",
+    "waist_pelvis",
+    "leg_axis",
+    "lower_body_volume",
+]
+_BODY_TOPOLOGY_PARTITION_MIN_COUNTS = {
+    "torso_core": 2,
+    "shoulder_neck_frame": 2,
+    "waist_pelvis": 2,
+    "leg_axis": 2,
+    "lower_body_volume": 2,
+    "gait_phase": 2,
+}
+_BODY_TOPOLOGY_PARTITION_WEIGHTS = {
+    "torso_core": 0.24,
+    "shoulder_neck_frame": 0.16,
+    "waist_pelvis": 0.16,
+    "leg_axis": 0.18,
+    "lower_body_volume": 0.14,
+    "gait_phase": 0.06,
+    "pose_explained_delta_score": 0.06,
+}
 _MIN_BODY_CORE_MEASUREMENTS = 3
 _MIN_BODY_POSE_SENSITIVE_MEASUREMENTS = 2
 _DEFAULT_SMPL_MODEL = "basicModel_neutral_lbs_10_207_0_v1.0.0.pkl"
@@ -701,6 +755,148 @@ def _measurement_similarity(
     }
 
 
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _range_score(value: Optional[float], low: float, high: float) -> Optional[float]:
+    numeric = _safe_float(value, None)
+    if numeric is None:
+        return None
+    if high <= low:
+        return None
+    return _clamp01((float(numeric) - float(low)) / float(high - low))
+
+
+def _pose_explained_delta_score(
+    *,
+    core_measurement_score: Optional[float],
+    pose_sensitive_measurement_score: Optional[float],
+    pose_measurement_gap: Optional[float],
+    pose_delta_similarity: Optional[float],
+) -> Optional[float]:
+    core_score = _safe_float(core_measurement_score, None)
+    if core_score is None:
+        return None
+
+    stable_core = _range_score(core_score, 0.52, 0.78)
+    if stable_core is None:
+        return None
+
+    gap = max(0.0, float(_safe_float(pose_measurement_gap, 0.0) or 0.0))
+    gap_pressure = _clamp01(gap / 0.18)
+
+    pose_sensitive_score = _safe_float(pose_sensitive_measurement_score, None)
+    gait_pressure = None
+    if pose_sensitive_score is not None:
+        gait_pressure = _clamp01((float(core_score) - float(pose_sensitive_score)) / 0.30)
+
+    pose_delta_score = _safe_float(pose_delta_similarity, None)
+    pose_pressure = None
+    if pose_delta_score is not None:
+        pose_pressure = _clamp01((1.0 - float(pose_delta_score)) / 0.55)
+
+    pressures = [value for value in [gap_pressure, gait_pressure, pose_pressure] if value is not None]
+    if len(pressures) == 0:
+        return float(stable_core)
+
+    explanation_pressure = max(pressures)
+    if explanation_pressure <= 0.05:
+        return float(stable_core)
+    return float(stable_core * (0.70 + 0.30 * explanation_pressure))
+
+
+def _body_topology_partition_similarity(
+    master_values: Dict[str, float],
+    candidate_values: Dict[str, float],
+    scales: Dict[str, float],
+    *,
+    core_measurement_score: Optional[float],
+    pose_sensitive_measurement_score: Optional[float],
+    pose_measurement_gap: Optional[float],
+    pose_delta_similarity: Optional[float],
+) -> Dict[str, Any]:
+    part_scores: Dict[str, Optional[float]] = {}
+    coverage_by_part: Dict[str, Optional[float]] = {}
+    used_keys_by_part: Dict[str, List[str]] = {}
+    top_drifts_by_part: Dict[str, List[Dict[str, Any]]] = {}
+
+    for part_name, measurement_order in _BODY_TOPOLOGY_PARTITION_ORDERS.items():
+        diag = _measurement_similarity(
+            master_values,
+            candidate_values,
+            scales,
+            measurement_order=measurement_order,
+            min_measurements=_BODY_TOPOLOGY_PARTITION_MIN_COUNTS.get(part_name, 1),
+        )
+        part_scores[part_name] = _safe_float(diag.get("score"), None)
+        coverage_by_part[part_name] = _safe_float(diag.get("coverage"), None)
+        used_keys_by_part[part_name] = list(diag.get("used_keys") or [])
+        top_drifts_by_part[part_name] = list(diag.get("top_drifts") or [])[:3]
+
+    pose_explained = _pose_explained_delta_score(
+        core_measurement_score=core_measurement_score,
+        pose_sensitive_measurement_score=pose_sensitive_measurement_score,
+        pose_measurement_gap=pose_measurement_gap,
+        pose_delta_similarity=pose_delta_similarity,
+    )
+
+    weighted_terms: List[Tuple[float, float]] = []
+    for name, weight in _BODY_TOPOLOGY_PARTITION_WEIGHTS.items():
+        score = pose_explained if name == "pose_explained_delta_score" else part_scores.get(name)
+        numeric = _safe_float(score, None)
+        if numeric is None:
+            continue
+        weighted_terms.append((float(numeric), float(weight)))
+    mean_similarity = None
+    if weighted_terms:
+        numerator = sum(value * weight for value, weight in weighted_terms)
+        denominator = sum(weight for _, weight in weighted_terms)
+        mean_similarity = float(numerator / denominator) if denominator > 0.0 else None
+
+    weakest_part = ""
+    weakest_part_similarity = None
+    structural_scores = [
+        (name, _safe_float(part_scores.get(name), None))
+        for name in _BODY_TOPOLOGY_STRUCTURAL_PARTS
+        if _safe_float(part_scores.get(name), None) is not None
+    ]
+    if structural_scores:
+        weakest_part, weakest_part_similarity = min(structural_scores, key=lambda row: float(row[1]))
+
+    coverage_values = [
+        float(value)
+        for value in (_safe_float(value, None) for value in coverage_by_part.values())
+        if value is not None
+    ]
+    partition_coverage = float(sum(coverage_values) / max(1, len(coverage_values))) if coverage_values else None
+
+    return {
+        "schema_version": "body_topology_partition_v1",
+        "policy": "pose_gait_aware_absolute_116_1",
+        "method": "hmr2_canonical_measurement_partitions",
+        "available": mean_similarity is not None,
+        "mean_similarity": _round_or_none(mean_similarity),
+        "coverage": _round_or_none(partition_coverage),
+        "weakest_part": weakest_part,
+        "weakest_part_similarity": _round_or_none(weakest_part_similarity),
+        "torso_core_similarity": _round_or_none(part_scores.get("torso_core")),
+        "shoulder_neck_frame_similarity": _round_or_none(part_scores.get("shoulder_neck_frame")),
+        "waist_pelvis_similarity": _round_or_none(part_scores.get("waist_pelvis")),
+        "leg_axis_similarity": _round_or_none(part_scores.get("leg_axis")),
+        "lower_body_volume_similarity": _round_or_none(part_scores.get("lower_body_volume")),
+        "gait_phase_similarity": _round_or_none(part_scores.get("gait_phase")),
+        "pose_explained_delta_score": _round_or_none(pose_explained),
+        "coverage_by_part": {key: _round_or_none(value) for key, value in coverage_by_part.items()},
+        "used_keys_by_part": used_keys_by_part,
+        "top_drifts_by_part": top_drifts_by_part,
+        "notes": [
+            "waist_pelvis is a proxy from hip-width and shoulder-to-hip canonical ratios; no new body truth anchor is introduced.",
+            "gait_phase is reported separately so pose/gait projection noise is not treated as a new body-shape truth.",
+        ],
+    }
+
+
 def _pose_delta_similarity(master_pose: Any, candidate_pose: Any) -> tuple[Optional[float], Optional[float]]:
     master = _normalize_vector(master_pose)
     candidate = _normalize_vector(candidate_pose)
@@ -1120,6 +1316,26 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
         pose_measurement_gap = None
         if isinstance(core_measurement_diag.get("score"), (int, float)) and isinstance(measurement_diag.get("score"), (int, float)):
             pose_measurement_gap = float(core_measurement_diag["score"] - measurement_diag["score"])
+        body_topology_partition = _body_topology_partition_similarity(
+            dict(master_artifact.get("canonical_measurements") or {}),
+            dict(candidate_artifact.get("canonical_measurements") or {}),
+            dict(master_artifact.get("measurement_scales") or {}),
+            core_measurement_score=_safe_float(core_measurement_diag.get("score"), None),
+            pose_sensitive_measurement_score=_safe_float(pose_sensitive_measurement_diag.get("score"), None),
+            pose_measurement_gap=pose_measurement_gap,
+            pose_delta_similarity=pose_similarity,
+        )
+        partition_coverage_by_part = (
+            body_topology_partition.get("coverage_by_part")
+            if isinstance(body_topology_partition.get("coverage_by_part"), dict)
+            else {}
+        )
+
+        def _partition_metric(field_name: str) -> Optional[float]:
+            return _safe_float(body_topology_partition.get(field_name), None)
+
+        def _partition_coverage(part_name: str) -> Optional[float]:
+            return _safe_float(partition_coverage_by_part.get(part_name), body_topology_partition.get("coverage"))
 
         summary = {
             "integration_state": "artifact_compare_ready",
@@ -1136,7 +1352,7 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
             "body_pose_sensitive_top_drifts": list(pose_sensitive_measurement_diag.get("top_drifts") or []),
             "guidance": dedupe_keep_order(
                 [
-                    "Use this provider to separate 116-1 shape truth from gait pose before admission review.",
+                    "Use this provider to separate 116-1 shape truth from gait pose before external dataset review.",
                     "Prefer body_pose_independent_truth_alignment and body_gait_tolerant_topology_similarity when gait or stance differs from 116-1.",
                     "Promote HMR2 inference only after the artifact contract is stable on frozen benchmarks.",
                     *direct_guidance,
@@ -1201,6 +1417,60 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
                     coverage=_safe_float(core_measurement_diag.get("coverage"), coverage),
                 ),
                 _metric_spec(
+                    "body_topology_partition_mean_similarity",
+                    _partition_metric("mean_similarity"),
+                    confidence=confidence,
+                    coverage=_partition_metric("coverage"),
+                ),
+                _metric_spec(
+                    "body_topology_weakest_part_similarity",
+                    _partition_metric("weakest_part_similarity"),
+                    confidence=confidence,
+                    coverage=_partition_metric("coverage"),
+                ),
+                _metric_spec(
+                    "body_topology_torso_core_similarity",
+                    _partition_metric("torso_core_similarity"),
+                    confidence=confidence,
+                    coverage=_partition_coverage("torso_core"),
+                ),
+                _metric_spec(
+                    "body_topology_shoulder_neck_frame_similarity",
+                    _partition_metric("shoulder_neck_frame_similarity"),
+                    confidence=confidence,
+                    coverage=_partition_coverage("shoulder_neck_frame"),
+                ),
+                _metric_spec(
+                    "body_topology_waist_pelvis_similarity",
+                    _partition_metric("waist_pelvis_similarity"),
+                    confidence=confidence,
+                    coverage=_partition_coverage("waist_pelvis"),
+                ),
+                _metric_spec(
+                    "body_topology_leg_axis_similarity",
+                    _partition_metric("leg_axis_similarity"),
+                    confidence=confidence,
+                    coverage=_partition_coverage("leg_axis"),
+                ),
+                _metric_spec(
+                    "body_topology_lower_body_volume_similarity",
+                    _partition_metric("lower_body_volume_similarity"),
+                    confidence=confidence,
+                    coverage=_partition_coverage("lower_body_volume"),
+                ),
+                _metric_spec(
+                    "body_topology_gait_phase_similarity",
+                    _partition_metric("gait_phase_similarity"),
+                    confidence=confidence,
+                    coverage=_partition_coverage("gait_phase"),
+                ),
+                _metric_spec(
+                    "body_pose_explained_delta_score",
+                    _partition_metric("pose_explained_delta_score"),
+                    confidence=confidence,
+                    coverage=_partition_metric("coverage"),
+                ),
+                _metric_spec(
                     "canonical_measurement_similarity",
                     _safe_float(measurement_diag.get("score"), None),
                     confidence=confidence,
@@ -1242,6 +1512,17 @@ class BodyCanonicalHeavyEvidenceProvider(HeavyEvidenceProvider):
                 "body_core_topology_delta_l1": _round_or_none(core_topology_delta),
                 "pose_delta_l1": _round_or_none(pose_delta),
                 "body_pose_measurement_gap": _round_or_none(pose_measurement_gap),
+                "body_topology_partition": _json_ready(body_topology_partition),
+                "body_topology_partition_mean_similarity": _partition_metric("mean_similarity"),
+                "body_topology_weakest_part": str(body_topology_partition.get("weakest_part") or ""),
+                "body_topology_weakest_part_similarity": _partition_metric("weakest_part_similarity"),
+                "body_topology_torso_core_similarity": _partition_metric("torso_core_similarity"),
+                "body_topology_shoulder_neck_frame_similarity": _partition_metric("shoulder_neck_frame_similarity"),
+                "body_topology_waist_pelvis_similarity": _partition_metric("waist_pelvis_similarity"),
+                "body_topology_leg_axis_similarity": _partition_metric("leg_axis_similarity"),
+                "body_topology_lower_body_volume_similarity": _partition_metric("lower_body_volume_similarity"),
+                "body_topology_gait_phase_similarity": _partition_metric("gait_phase_similarity"),
+                "body_pose_explained_delta_score": _partition_metric("pose_explained_delta_score"),
                 "body_core_measurement_coverage": _round_or_none(_safe_float(core_measurement_diag.get("coverage"), None)),
                 "body_pose_sensitive_measurement_coverage": _round_or_none(
                     _safe_float(pose_sensitive_measurement_diag.get("coverage"), None)

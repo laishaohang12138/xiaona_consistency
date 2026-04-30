@@ -378,7 +378,9 @@ def promote_winner_entry(
         "policy": {
             "manual_promotion_required": True,
             "auto_promote_machine_top1": False,
-            "final_decision_owner": "custom_gpt_plus_human",
+            "final_decision_owner": "external_dataset_curation_flow",
+            "role": "mutable_review_memory_only",
+            "not_final_image_set": True,
         },
     }
     curated_bank_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -450,7 +452,9 @@ def build_winner_bank_governance(
         "policy": {
             "manual_promotion_required": True,
             "auto_promote_machine_top1": False,
-            "final_decision_owner": "custom_gpt_plus_human",
+            "final_decision_owner": "external_dataset_curation_flow",
+            "role": "mutable_review_memory_only",
+            "not_final_image_set": True,
             "source": "shortlist_candidates",
         },
     }
@@ -529,9 +533,9 @@ def build_winner_bank_governance(
         "drift_row_count": len(drift_rows),
         "status": "drift_checked" if bool(curated.get("available")) else "candidate_export_only",
         "manual_next_step": (
-            "promote a human-approved winner into outputs/winner_bank.json before using cross-batch drift checks"
+            "optionally record a human-reviewed candidate into outputs/winner_bank.json as mutable review memory before cross-batch drift checks"
             if not bool(curated.get("available"))
-            else "review drift flags before admitting the winner into the training bank"
+            else "review drift flags as review-memory evidence before any external dataset-curation decision"
         ),
         "top_drift_risks": top_drift_risks,
         "drift_rows": drift_rows,

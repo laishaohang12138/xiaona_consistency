@@ -122,7 +122,7 @@ FACE_CANONICAL_UI: Dict[str, str] = {
 WORKFLOW_UI: Dict[str, Dict[str, str]] = {
     "shot_review": {
         "label": "批次复核",
-        "summary": "对当前 input 图集运行 QA，输出排序、review packet 和 winner 候选。",
+        "summary": "对当前 input 候选批次运行 QA，输出证据排序、review packet 和复核优先级；不决定最终图集。",
     },
     "preflight_batch": {
         "label": "批次前置预检",
@@ -172,6 +172,14 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
         "label": "准备外套回放包",
         "summary": "在 input_replay/outer 下创建按 OUTER prompt 分组的 review-only 外套遮挡回放目录、manifest 模板和元数据补录模板。",
     },
+    "prepare_topology_replay_pack": {
+        "label": "准备拓扑回放包",
+        "summary": "在 input_replay/topology 下创建 side/back 3D topology 与姿态步态复核目录、manifest 模板和元数据补录模板。",
+    },
+    "prepare_replay_collection_plan": {
+        "label": "准备回放采集计划",
+        "summary": "把 manifest、lighting、OUTER 和 side/back topology 缺口汇总成可执行采集与回放队列。",
+    },
     "prepare_split_batch_plan": {
         "label": "准备拆批方案",
         "summary": "按 observed lane 汇总当前批次，生成 front / three_quarter / side / back 拆批方案。",
@@ -190,23 +198,23 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
     },
     "prepare_winner_bank_review": {
         "label": "准备 winner 复审包",
-        "summary": "汇总 winner candidate、batch preflight 和当前 bank 状态，生成一份人工确认用 review packet。",
+        "summary": "汇总 review-memory 候选、batch preflight 和当前 bank 状态，生成一份人工复核包。",
     },
     "promote_winner": {
-        "label": "确认 winner",
-        "summary": "把人工确认通过的 winner 写入 winner bank，不等于主训练集自动准入。",
+        "label": "记录 review memory",
+        "summary": "把人工确认过的候选写入 winner bank 作为可变复核记忆；不决定最终图集或训练准入。",
     },
     "seal_training_admission": {
-        "label": "封印训练准入",
-        "summary": "把通过 release gate 的候选写入 training admission manifest，和 winner bank 彻底分开。",
+        "label": "登记外部准入审计",
+        "summary": "仅登记外部流程已经裁决的训练准入审计记录；本项目不直接裁决准入。",
     },
     "winner_bank_status": {
         "label": "查看 winner bank",
         "summary": "查看已确认样本、最新漂移和下一步人工动作。",
     },
     "training_admission_status": {
-        "label": "查看训练准入",
-        "summary": "查看 training admission manifest 的已封印样本、bucket 分布和最近 seal 记录。",
+        "label": "查看外部准入审计",
+        "summary": "查看 training admission manifest 的外部审计记录；不是本项目的图集或准入裁决。",
     },
     "setup_external_models": {
         "label": "准备外部模型",
@@ -405,15 +413,17 @@ def _select_workflow_interactively(default: str = "shot_review") -> str:
             ("prepare_review_handoff", "生成 GPT/人工优先阅读的轻量复审包"),
             ("prepare_lighting_replay_pack", "创建灯光 replay 目录、manifest 模板和元数据模板"),
             ("prepare_outer_replay_pack", "创建 OUTER replay 目录、manifest 模板和元数据模板"),
+            ("prepare_topology_replay_pack", "创建 side/back topology replay 目录和 manifest 模板"),
+            ("prepare_replay_collection_plan", "生成下一轮 lighting / OUTER / side-back 拓扑采集队列"),
             ("prepare_split_batch_plan", "按 observed lane 生成当前批次的拆批方案"),
             ("materialize_split_batches", "把拆批方案落到 input_split/<lane>/ 目录"),
             ("refresh_review_artifacts", "基于现有 qa_report 和缓存刷新 review packet / GPT 包"),
             ("inspect_review_packet", "查看最近一次 review packet 的批次摘要和复核提示"),
-            ("prepare_winner_bank_review", "生成 winner bank 人工确认包，先看能不能 promote"),
-            ("promote_winner", "把人工确认的 winner 写入 winner bank"),
-            ("seal_training_admission", "把通过 release gate 的候选写入 training admission manifest"),
+            ("prepare_winner_bank_review", "生成 winner bank 可变复核记忆包"),
+            ("promote_winner", "把人工确认过的候选写入 winner bank 作为复核记忆"),
+            ("seal_training_admission", "登记外部流程已裁决的 training admission 审计记录"),
             ("winner_bank_status", "查看 winner bank 状态与最新跨批次漂移报告"),
-            ("training_admission_status", "查看 training admission manifest 的最新封印状态"),
+            ("training_admission_status", "查看 training admission manifest 的外部审计状态"),
             ("setup_external_models", "自动准备 external/3DDFA-V3 与 external/4D-Humans 及补丁"),
             ("advanced_cli", "进入高级工程模式（qa / benchmark / optuna / calibrate）"),
         ],
@@ -426,7 +436,7 @@ def _select_review_profile_interactively(default: str = "body_gold_fullbody") ->
         "请选择本轮 shot 批次最接近的训练层",
         [
             ("body_gold_fullbody", "BODY GOLD 前向/常规主体批次"),
-            ("bridge_simple_outfit", "简单穿搭 / BRIDGE 训练准入批次"),
+            ("bridge_simple_outfit", "简单穿搭 / BRIDGE 复核证据批次"),
             ("body_gold_side90_shadow", "90 度侧身 shadow 观察批次"),
             ("body_gold_back180_shadow", "180 度背身 shadow 观察批次"),
             ("full_body_outfit", "通用穿搭稳定性批次"),
@@ -535,6 +545,8 @@ def _default_review_paths(base_dir: Path, artifacts_dir: Optional[Path] = None) 
         "review_handoff_packet": output_dir / "review_handoff_packet.json",
         "lighting_replay_pack": output_dir / "lighting_replay_pack.json",
         "outer_replay_pack": output_dir / "outer_replay_pack.json",
+        "topology_replay_pack": output_dir / "topology_replay_pack.json",
+        "replay_collection_plan": output_dir / "replay_collection_plan.json",
         "manifest_completion_plan": output_dir / "input_manifest_completion_plan.json",
         "qa_report": output_dir / "qa_report.json",
         "ranked_candidates": output_dir / "ranked_candidates.json",
@@ -557,6 +569,30 @@ def _resolve_input_dir_arg(input_dir: Optional[Path], base_dir: Path) -> Path:
 
 def _override_runtime_input_dir(runtime: Any, input_dir: Path) -> None:
     runtime.config.paths = replace(runtime.config.paths, dir_input=input_dir)
+
+
+def _override_runtime_artifacts_dir(runtime: Any, output_dir: Path) -> None:
+    resolved = output_dir.resolve()
+    runtime.config.paths = replace(
+        runtime.config.paths,
+        dir_output=resolved,
+        dir_master_truth=resolved / "master_truth",
+        dir_heavy_cache=resolved / "heavy_evidence_cache",
+        dir_out_pass=resolved / "pass",
+        dir_out_warn=resolved / "warn",
+        dir_out_fail=resolved / "fail",
+        report_file=resolved / "qa_report.json",
+        thresh_file=resolved / "quality_thresholds.json",
+    )
+    for target in [
+        runtime.config.paths.dir_output,
+        runtime.config.paths.dir_master_truth,
+        runtime.config.paths.dir_heavy_cache,
+        runtime.config.paths.dir_out_pass,
+        runtime.config.paths.dir_out_warn,
+        runtime.config.paths.dir_out_fail,
+    ]:
+        target.mkdir(parents=True, exist_ok=True)
 
 
 def _powershell_executable() -> str:
@@ -749,11 +785,11 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
             f"bucket={release_gate.get('target_bucket')} "
             f"| state={release_gate.get('release_state')} "
             f"| ceiling={release_gate.get('machine_status_ceiling')} "
-            f"| seal_allowed={release_gate.get('training_admission_allowed')}"
+            f"| external_seal_allowed={release_gate.get('training_admission_allowed')}"
         )
     if training_admission:
         print(
-            "  准入封印: "
+            "  外部准入审计: "
             f"entries={training_manifest_summary.get('entry_count')} "
             f"| last={training_manifest_summary.get('last_sealed_at_utc')} "
             f"| file={training_admission.get('manifest_file')}"
@@ -898,9 +934,9 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
     else:
         print(f"  主要风险: {batch.get('primary_risks') or []}")
     print(
-        f"  复核建议: target={admission.get('target_bucket')} "
+        f"  证据路由: target={admission.get('target_bucket')} "
         f"| action={admission.get('suggested_action')} "
-        f"| seal={admission.get('eligible_for_training_seal')} "
+        f"| external_audit_seal={admission.get('eligible_for_training_seal')} "
         f"| blockers={admission.get('blockers') or []}"
     )
     print(f"  人工提示: {batch.get('review_guidance') or []}")
@@ -930,18 +966,18 @@ def _print_winner_bank_summary(report: Dict[str, Any]) -> None:
 
 
 def _print_training_admission_summary(summary: Dict[str, Any]) -> None:
-    print("\n[Training Admission 摘要]")
+    print("\n[外部 Training Admission 审计摘要]")
     print(f"  可用    : {summary.get('available')} | entries={summary.get('entry_count')}")
     print(f"  原因    : {summary.get('reason')}")
     print(f"  文件    : {summary.get('manifest_file')}")
-    print(f"  最近封印: {summary.get('last_sealed_at_utc')}")
+    print(f"  最近外部记录: {summary.get('last_sealed_at_utc')}")
     bucket_counts = summary.get("bucket_counts") or {}
     if bucket_counts:
         print(f"  Bucket 分布: {bucket_counts}")
     recent_entries = list(summary.get("recent_entries") or [])
     for row in recent_entries[:3]:
         print(
-            f"  已封印样本: {row.get('image')} | bucket={row.get('target_bucket')} "
+            f"  外部记录样本: {row.get('image')} | bucket={row.get('target_bucket')} "
             f"| owner={row.get('owner')} | at={row.get('sealed_at_utc')}"
         )
 
@@ -1234,7 +1270,7 @@ def _print_shortlist_review_for_promotion(packet: Dict[str, Any]) -> None:
         admission = row.get("admission_advice") or {}
         print(
             f"  rank {row.get('rank')}: {row.get('image')} | score={row.get('selection_score')} "
-            f"| master={master.get('hybrid_master_alignment')} | admit={admission.get('suggestion')}"
+            f"| master={master.get('hybrid_master_alignment')} | route={admission.get('suggestion')}"
         )
         winner_reasons = list(row.get("winner_reasons") or [])[:2]
         cautions = list((master.get("cautions") or []))[:2]
@@ -1361,6 +1397,8 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         "prepare_review_handoff",
         "prepare_lighting_replay_pack",
         "prepare_outer_replay_pack",
+        "prepare_topology_replay_pack",
+        "prepare_replay_collection_plan",
         "prepare_split_batch_plan",
         "materialize_split_batches",
         "refresh_review_artifacts",
@@ -1578,9 +1616,11 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         from core.qa_lighting_replay_pack import build_lighting_replay_pack
         from core.qa_outer_replay_pack import build_outer_replay_pack
         from core.qa_manifest_completion import build_manifest_completion_plan
+        from core.qa_replay_collection_plan import build_replay_collection_plan
         from core.qa_review_handoff import build_review_handoff_packet
         from core.qa_run_index import build_review_run_index
         from core.qa_status_board import build_review_status_board
+        from core.qa_topology_replay_pack import build_topology_replay_pack
 
         run_index_path = paths["review_run_index"]
         build_review_run_index(
@@ -1599,17 +1639,25 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             base_dir=base_dir,
             output_file=paths["outer_replay_pack"],
         )
+        build_topology_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["topology_replay_pack"],
+        )
         build_review_invariance_status(
             base_dir=base_dir,
             output_file=paths["review_invariance_status"],
         )
-        result = build_review_status_board(
-            base_dir=base_dir,
-            output_file=paths["review_status_board"],
-        )
         build_manifest_completion_plan(
             base_dir=base_dir,
             output_file=paths["manifest_completion_plan"],
+        )
+        build_replay_collection_plan(
+            base_dir=base_dir,
+            output_file=paths["replay_collection_plan"],
+        )
+        result = build_review_status_board(
+            base_dir=base_dir,
+            output_file=paths["review_status_board"],
         )
         build_review_handoff_packet(
             base_dir=base_dir,
@@ -1618,6 +1666,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         print(json.dumps(result, indent=2, ensure_ascii=False))
         print(f"[总控状态板] {paths['review_status_board']}")
         print(f"[轻量复审包] {paths['review_handoff_packet']}")
+        print(f"[回放采集计划] {paths['replay_collection_plan']}")
         print("[交互引导] 先看 next_actions，再决定补 manifest 还是进入 front bootstrap 人工复审。")
         return 0
 
@@ -1626,6 +1675,9 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         from core.qa_invariance_status import build_review_invariance_status
         from core.qa_lighting_replay_pack import build_lighting_replay_pack
         from core.qa_outer_replay_pack import build_outer_replay_pack
+        from core.qa_manifest_completion import build_manifest_completion_plan
+        from core.qa_replay_collection_plan import build_replay_collection_plan
+        from core.qa_topology_replay_pack import build_topology_replay_pack
 
         build_review_run_index(
             base_dir=base_dir,
@@ -1639,9 +1691,21 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             base_dir=base_dir,
             output_file=paths["outer_replay_pack"],
         )
+        build_topology_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["topology_replay_pack"],
+        )
         result = build_review_invariance_status(
             base_dir=base_dir,
             output_file=paths["review_invariance_status"],
+        )
+        build_manifest_completion_plan(
+            base_dir=base_dir,
+            output_file=paths["manifest_completion_plan"],
+        )
+        build_replay_collection_plan(
+            base_dir=base_dir,
+            output_file=paths["replay_collection_plan"],
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         print(f"[不变性状态] {paths['review_invariance_status']}")
@@ -1654,9 +1718,11 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         from core.qa_lighting_replay_pack import build_lighting_replay_pack
         from core.qa_manifest_completion import build_manifest_completion_plan
         from core.qa_outer_replay_pack import build_outer_replay_pack
+        from core.qa_replay_collection_plan import build_replay_collection_plan
         from core.qa_review_handoff import build_review_handoff_packet
         from core.qa_run_index import build_review_run_index
         from core.qa_status_board import build_review_status_board
+        from core.qa_topology_replay_pack import build_topology_replay_pack
 
         run_index_path = paths["review_run_index"]
         build_review_run_index(
@@ -1675,17 +1741,25 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             base_dir=base_dir,
             output_file=paths["outer_replay_pack"],
         )
+        build_topology_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["topology_replay_pack"],
+        )
         build_review_invariance_status(
             base_dir=base_dir,
             output_file=paths["review_invariance_status"],
         )
-        build_review_status_board(
-            base_dir=base_dir,
-            output_file=paths["review_status_board"],
-        )
         build_manifest_completion_plan(
             base_dir=base_dir,
             output_file=paths["manifest_completion_plan"],
+        )
+        build_replay_collection_plan(
+            base_dir=base_dir,
+            output_file=paths["replay_collection_plan"],
+        )
+        build_review_status_board(
+            base_dir=base_dir,
+            output_file=paths["review_status_board"],
         )
         result = build_review_handoff_packet(
             base_dir=base_dir,
@@ -1693,6 +1767,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         print(f"[轻量复审包] {paths['review_handoff_packet']}")
+        print(f"[回放采集计划] {paths['replay_collection_plan']}")
         print("[交互引导] 默认先发这一个 JSON 给 GPT；只有需要逐图证据时再追加 detail 文件。")
         return 0
 
@@ -1720,6 +1795,62 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         print(f"[外套回放包] {paths['outer_replay_pack']}")
         print("[交互引导] 把图放进 input_replay/outer/<lane>/<family>/<prompt_leaf>/，然后再次运行同一工作流刷新 manifest。")
         print("[交互引导] 每个 prompt leaf 目录都会带 input_manifest.json 和 _input_manifest_metadata_template.json。")
+        return 0
+
+    if workflow == "prepare_topology_replay_pack":
+        from core.qa_topology_replay_pack import build_topology_replay_pack
+
+        result = build_topology_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["topology_replay_pack"],
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[拓扑回放包] {paths['topology_replay_pack']}")
+        print("[交互引导] 把图放进 input_replay/topology/<lane>/<variant>/，然后再次运行同一工作流刷新 manifest。")
+        print("[交互引导] side/back 拓扑回放使用 profile 默认 truth-fusion 链，不需要手动拟合参数。")
+        return 0
+
+    if workflow == "prepare_replay_collection_plan":
+        from core.qa_invariance_status import build_review_invariance_status
+        from core.qa_lighting_replay_pack import build_lighting_replay_pack
+        from core.qa_manifest_completion import build_manifest_completion_plan
+        from core.qa_outer_replay_pack import build_outer_replay_pack
+        from core.qa_replay_collection_plan import build_replay_collection_plan
+        from core.qa_run_index import build_review_run_index
+        from core.qa_topology_replay_pack import build_topology_replay_pack
+
+        build_review_run_index(
+            base_dir=base_dir,
+            output_file=paths["review_run_index"],
+        )
+        build_lighting_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["lighting_replay_pack"],
+        )
+        build_outer_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["outer_replay_pack"],
+        )
+        build_topology_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["topology_replay_pack"],
+        )
+        build_review_invariance_status(
+            base_dir=base_dir,
+            output_file=paths["review_invariance_status"],
+        )
+        build_manifest_completion_plan(
+            base_dir=base_dir,
+            output_file=paths["manifest_completion_plan"],
+        )
+        result = build_replay_collection_plan(
+            base_dir=base_dir,
+            output_file=paths["replay_collection_plan"],
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[回放采集计划] {paths['replay_collection_plan']}")
+        print("[交互引导] 先看 immediate_operator_queue，按 P0/P1 顺序补图或补 metadata。")
+        print("[交互引导] 这些任务只产出筛选证据，不参与最终训练集准入。")
         return 0
 
     if workflow == "preflight_batch":
@@ -1754,6 +1885,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             target_profile=target_profile,
             manifest_path=args.input_manifest,
         )
+        paths["preflight_batch"].parent.mkdir(parents=True, exist_ok=True)
         paths["preflight_batch"].write_text(
             json.dumps(result, indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -1886,7 +2018,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
 
         summary = load_training_admission_manifest_summary(paths["training_admission_manifest"])
         _print_training_admission_summary(summary)
-        print(f"[Training Admission 清单] {paths['training_admission_manifest']}")
+        print(f"[外部 Training Admission 审计清单] {paths['training_admission_manifest']}")
         return 0
 
     if workflow == "promote_winner":
@@ -1935,7 +2067,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             manual_note=manual_note,
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
-        print("[交互引导] 已写入 winner bank。建议下一次重新跑 shot review，让系统用新的 curated bank 做跨批次漂移检查。")
+        print("[交互引导] 已写入 winner bank 作为可变复核记忆。它不决定最终图集或训练准入；下一次可用于跨批次漂移检查。")
         return 0
 
     if workflow == "seal_training_admission":
@@ -1957,6 +2089,14 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             _print_review_packet_summary(review_packet)
             _describe_canonical_truth_state(review_packet)
             _print_shortlist_review_for_promotion(review_packet)
+        allow_external_audit = str(os.getenv("XIAONA_ALLOW_EXTERNAL_ADMISSION_AUDIT", "")).strip() == "1"
+        project_scope = (review_packet.get("project_scope") or {}) if review_packet else {}
+        if not allow_external_audit and not bool(project_scope.get("training_admission_participation", False)):
+            raise ValueError(
+                "seal_training_admission is disabled for this screening-only project. "
+                "The repository does not decide training admission or final image-set membership. "
+                "Set XIAONA_ALLOW_EXTERNAL_ADMISSION_AUDIT=1 only to record an already-external decision as an audit ledger."
+            )
         selected_entry: Optional[Dict[str, Any]] = None
         if args.winner_rank is not None:
             selected_entry = _select_winner_candidate_by_rank(entries, args.winner_rank)
@@ -1982,13 +2122,13 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
 
         manual_owner = str(args.admission_owner or "").strip()
         if args.interactive and not manual_owner:
-            manual_owner = _prompt_text("请输入这次 training admission seal 的负责人", os.environ.get("USERNAME", ""))
+            manual_owner = _prompt_text("请输入这次外部 training admission 审计记录的负责人", os.environ.get("USERNAME", ""))
         if not manual_owner:
-            raise ValueError("seal_training_admission requires --admission-owner")
+            raise ValueError("external admission audit requires --admission-owner")
 
         manual_note = args.admission_note
         if args.interactive and not manual_note:
-            manual_note = _prompt_text("可选：为这次 training admission seal 写一句备注", "")
+            manual_note = _prompt_text("可选：为这次外部 admission 审计记录写一句备注", "")
 
         batch_summary = (review_packet.get("batch_summary") or {}) if review_packet else {}
         admission = batch_summary.get("admission_advice") or {}
@@ -2014,11 +2154,11 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         if result.get("status") != "ok":
-            print("[交互引导] 当前批次不满足 training admission 硬门。请先看 review packet 的 release gate、batch_preflight、evidence_completeness 和 blockers。")
+            print("[交互引导] 当前批次不满足外部 admission 审计登记条件。请先看 review packet 的 release gate、batch_preflight、evidence_completeness 和 blockers。")
             return 1
         summary = load_training_admission_manifest_summary(paths["training_admission_manifest"])
         _print_training_admission_summary(summary)
-        print("[交互引导] 已写入 training admission manifest。winner bank 与正式训练准入现已物理分开。")
+        print("[交互引导] 已写入 training admission manifest 作为外部审计记录；本项目仍不裁决训练准入或最终图集。")
         return 0
 
     raise ValueError(f"unsupported workflow: {workflow}")
@@ -2099,6 +2239,7 @@ def _run_shot_review_preflight(
     target_profile: Optional[str],
     input_manifest: Optional[Path],
     input_dir: Optional[Path] = None,
+    artifacts_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     from core.qa_preflight import create_lightweight_preflight_config, run_preflight_batch
 
@@ -2125,7 +2266,8 @@ def _run_shot_review_preflight(
         target_profile=resolved_profile,
         manifest_path=input_manifest,
     )
-    paths = _default_review_paths(base_dir)
+    paths = _default_review_paths(base_dir, artifacts_dir)
+    paths["preflight_batch"].parent.mkdir(parents=True, exist_ok=True)
     paths["preflight_batch"].write_text(
         json.dumps(result, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -2250,6 +2392,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "prepare_review_handoff",
             "prepare_lighting_replay_pack",
             "prepare_outer_replay_pack",
+            "prepare_topology_replay_pack",
+            "prepare_replay_collection_plan",
             "prepare_split_batch_plan",
             "materialize_split_batches",
             "refresh_review_artifacts",
@@ -2350,7 +2494,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--artifacts-dir",
         type=Path,
-        help="Override the review artifact directory for inspect_review_packet, prepare_winner_bank_review, and other review-oriented workflows.",
+        help="Override the artifact/output directory for replay QA, inspect_review_packet, prepare_winner_bank_review, and other review-oriented workflows.",
     )
     parser.add_argument(
         "--allow-preflight-fail",
@@ -2634,6 +2778,7 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             target_profile=selected_profile,
             input_manifest=_resolve_cli_path(args.input_manifest, base_dir) if args.input_manifest else None,
             input_dir=_resolve_input_dir_arg(args.input_dir, base_dir),
+            artifacts_dir=args.artifacts_dir,
         )
         _print_preflight_summary(preflight_payload)
         print(f"[预检文件] {_default_review_paths(base_dir, args.artifacts_dir)['preflight_batch']}")
@@ -2648,6 +2793,8 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
     if effective_mode == "qa" and args.input_dir is not None:
         runtime = create_runtime(base_dir)
         _override_runtime_input_dir(runtime, _resolve_input_dir_arg(args.input_dir, base_dir))
+        if args.artifacts_dir is not None:
+            _override_runtime_artifacts_dir(runtime, _resolve_artifacts_dir_arg(args.artifacts_dir, base_dir))
         if args.mode is not None:
             runtime.config.run_mode = str(args.mode)
         if selected_profile is not None:
