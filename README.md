@@ -32,6 +32,8 @@ XiaoNa LoRA candidate screening and consistency-evidence repository.
 - Final training-set admission and final image-set construction are outside this repository; outputs are screening, review-priority ranking, risk routing, and evidence packets only
 - `prepare_replay_collection_plan` turns manifest, lighting, OUTER, and side/back topology gaps into the next controlled replay collection queue
 - `prepare_topology_replay_pack` scaffolds controlled side/back topology replay directories under `input_replay/topology/`
+- `refresh_consistency_confidence_matrix` writes `outputs/consistency_confidence_matrix.json` as a per-image confidence/evidence-gap view for review routing only
+- `prepare_pose_gait_margin_review` writes `outputs/pose_gait_margin_review_sheet.json` so pose/gait margin rows are reviewed before any body-drift call
 
 ## Confirmed Route
 1. Engineering decoupling first

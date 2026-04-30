@@ -110,6 +110,18 @@ def _manifest_board_entry(input_dir: Path) -> Dict[str, Any]:
     }
 
 
+def _manifest_missing_action(label: str, manifest_state: Dict[str, Any]) -> str:
+    missing_fields = [
+        str(field or "").strip()
+        for field in (manifest_state.get("missing_fields") or [])
+        if str(field or "").strip()
+    ]
+    if not missing_fields:
+        return f"verify {label} split manifest prompt intent metadata"
+    field_text = " / ".join(missing_fields)
+    return f"fill {label} split manifest fields: {field_text}"
+
+
 def _training_admission_summary(manifest_file: Path) -> Dict[str, Any]:
     payload = _load_json(manifest_file)
     scope = _project_scope()
@@ -171,6 +183,71 @@ def _replay_collection_summary(plan_file: Path) -> Dict[str, Any]:
         "overall_status": _first_text(payload.get("overall_status")),
         "summary": payload.get("summary") if isinstance(payload.get("summary"), dict) else {},
         "immediate_operator_queue": compact_queue,
+    }
+
+
+def _consistency_confidence_summary(matrix_file: Path) -> Dict[str, Any]:
+    payload = _load_json(matrix_file)
+    if not payload:
+        return {
+            "available": False,
+            "matrix_file": str(matrix_file.resolve()),
+            "overall_status": "",
+            "item_count": 0,
+            "weakest_axes": [],
+            "top_unresolved_evidence_gaps": [],
+            "ranking_stability": {},
+        }
+    batch = payload.get("batch_confidence") if isinstance(payload.get("batch_confidence"), dict) else {}
+    return {
+        "available": True,
+        "matrix_file": str(matrix_file.resolve()),
+        "overall_status": _first_text(batch.get("overall_status")),
+        "item_count": _safe_int(batch.get("item_count")),
+        "evidence_confidence_band_counts": batch.get("evidence_confidence_band_counts")
+        if isinstance(batch.get("evidence_confidence_band_counts"), dict)
+        else {},
+        "review_priority_counts": batch.get("review_priority_counts")
+        if isinstance(batch.get("review_priority_counts"), dict)
+        else {},
+        "pose_gait_read_counts": batch.get("pose_gait_read_counts")
+        if isinstance(batch.get("pose_gait_read_counts"), dict)
+        else {},
+        "weakest_axes": batch.get("weakest_axes") if isinstance(batch.get("weakest_axes"), list) else [],
+        "top_unresolved_evidence_gaps": batch.get("top_unresolved_evidence_gaps")
+        if isinstance(batch.get("top_unresolved_evidence_gaps"), list)
+        else [],
+        "ranking_stability": batch.get("ranking_stability")
+        if isinstance(batch.get("ranking_stability"), dict)
+        else {},
+    }
+
+
+def _pose_gait_margin_review_summary(sheet_file: Path) -> Dict[str, Any]:
+    payload = _load_json(sheet_file)
+    if not payload:
+        return {
+            "available": False,
+            "sheet_file": str(sheet_file.resolve()),
+            "review_row_count": 0,
+            "p0_review_row_count": 0,
+            "category_counts": {},
+            "priority_counts": {},
+            "current_primary_limit": "",
+        }
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    return {
+        "available": True,
+        "sheet_file": str(sheet_file.resolve()),
+        "review_row_count": _safe_int(summary.get("review_row_count")),
+        "p0_review_row_count": _safe_int(summary.get("p0_review_row_count")),
+        "category_counts": summary.get("category_counts") if isinstance(summary.get("category_counts"), dict) else {},
+        "priority_counts": summary.get("priority_counts") if isinstance(summary.get("priority_counts"), dict) else {},
+        "body_truth_pose_gait_read_counts": summary.get("body_truth_pose_gait_read_counts")
+        if isinstance(summary.get("body_truth_pose_gait_read_counts"), dict)
+        else {},
+        "axis_means": summary.get("axis_means") if isinstance(summary.get("axis_means"), dict) else {},
+        "current_primary_limit": _first_text(summary.get("current_primary_limit")),
     }
 
 
@@ -488,6 +565,8 @@ def build_review_status_board(
     winner_policy = winner_bank_bootstrap_policy()
     training_admission = _training_admission_summary(outputs_dir / "training_admission_manifest.json")
     replay_collection = _replay_collection_summary(outputs_dir / "replay_collection_plan.json")
+    consistency_confidence = _consistency_confidence_summary(outputs_dir / "consistency_confidence_matrix.json")
+    pose_gait_margin_review = _pose_gait_margin_review_summary(outputs_dir / "pose_gait_margin_review_sheet.json")
     pose_gait_body_truth = _pose_gait_body_truth_summary(outputs_dir / "gpt_review_packet.json")
     optimization_focus = _optimization_focus(invariance_status, pose_gait_body_truth)
     project_scope = _project_scope()
@@ -529,9 +608,9 @@ def build_review_status_board(
         else []
     )
     if not manifest_states["input_split_front"]["required_field_ready"]:
-        next_actions.append("fill front split manifest fields: prompt_id / seed-or-unavailable / anchor_source")
+        next_actions.append(_manifest_missing_action("front", manifest_states["input_split_front"]))
     if not manifest_states["input_split_three_quarter"]["required_field_ready"]:
-        next_actions.append("fill three_quarter split manifest fields: prompt_id / seed-or-unavailable / anchor_source")
+        next_actions.append(_manifest_missing_action("three_quarter", manifest_states["input_split_three_quarter"]))
     if str(winner_policy.get("state") or "") == "deferred":
         next_actions.append("defer winner_bank bootstrap until review-only invariance and 3D topology consistency mature")
         for action in invariance_next_actions:
@@ -544,6 +623,14 @@ def build_review_status_board(
     if not bool(winner_bank_report.get("curated_bank_available")) and str(winner_policy.get("state") or "") != "deferred":
         next_actions.append("record mutable winner_bank entry only after manual review resolves current blockers")
     next_actions.append("run prepare_replay_collection_plan and follow immediate_operator_queue for controlled replay collection")
+    if bool(consistency_confidence.get("available")):
+        weakest_axes = consistency_confidence.get("weakest_axes") if isinstance(consistency_confidence.get("weakest_axes"), list) else []
+        if weakest_axes:
+            axis = _first_text((weakest_axes[0] or {}).get("axis") if isinstance(weakest_axes[0], dict) else "")
+            if axis:
+                next_actions.append(f"review consistency_confidence_matrix weakest axis first: {axis}")
+    if _safe_int(pose_gait_margin_review.get("p0_review_row_count")) > 0:
+        next_actions.append("review pose_gait_margin_review_sheet P0 rows before calling body drift")
     next_actions.append("route screened candidates and evidence packets to the external training-decision flow")
 
     payload = {
@@ -609,7 +696,9 @@ def build_review_status_board(
             "gates": invariance_status.get("gates") if isinstance(invariance_status.get("gates"), dict) else {},
         },
         "pose_gait_body_truth": pose_gait_body_truth,
+        "pose_gait_margin_review": pose_gait_margin_review,
         "optimization_focus": optimization_focus,
+        "consistency_confidence_matrix": consistency_confidence,
         "replay_collection_plan": replay_collection,
         "training_admission": training_admission,
         "input_manifests": manifest_states,

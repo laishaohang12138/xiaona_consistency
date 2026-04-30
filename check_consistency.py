@@ -164,6 +164,14 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
         "label": "准备轻量复审包",
         "summary": "把总控状态板、不变性闸门和推荐运行压缩成一份 GPT/人工优先阅读的小包。",
     },
+    "refresh_consistency_confidence_matrix": {
+        "label": "刷新一致性信度矩阵",
+        "summary": "生成逐图一致性信度、证据缺口和人工复核优先级矩阵；不决定最终图集或训练准入。",
+    },
+    "prepare_pose_gait_margin_review": {
+        "label": "准备姿态步态边界复核表",
+        "summary": "把 gait margin / manual body-truth rows 拆成复核队列，避免把姿态投影误判成身材漂移。",
+    },
     "prepare_lighting_replay_pack": {
         "label": "准备灯光回放包",
         "summary": "在 input_replay/lighting 下创建 front / three_quarter 灯光回放目录、manifest 模板和元数据补录模板。",
@@ -543,6 +551,8 @@ def _default_review_paths(base_dir: Path, artifacts_dir: Optional[Path] = None) 
         "review_status_board": output_dir / "review_status_board.json",
         "review_invariance_status": output_dir / "review_invariance_status.json",
         "review_handoff_packet": output_dir / "review_handoff_packet.json",
+        "consistency_confidence_matrix": output_dir / "consistency_confidence_matrix.json",
+        "pose_gait_margin_review_sheet": output_dir / "pose_gait_margin_review_sheet.json",
         "lighting_replay_pack": output_dir / "lighting_replay_pack.json",
         "outer_replay_pack": output_dir / "outer_replay_pack.json",
         "topology_replay_pack": output_dir / "topology_replay_pack.json",
@@ -1395,6 +1405,8 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         "refresh_review_status_board",
         "refresh_review_invariance_status",
         "prepare_review_handoff",
+        "refresh_consistency_confidence_matrix",
+        "prepare_pose_gait_margin_review",
         "prepare_lighting_replay_pack",
         "prepare_outer_replay_pack",
         "prepare_topology_replay_pack",
@@ -1611,10 +1623,12 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         return 0
 
     if workflow == "refresh_review_status_board":
+        from core.qa_consistency_confidence_matrix import build_consistency_confidence_matrix
         from core.qa_front_bootstrap_review import build_front_bootstrap_review_sheet
         from core.qa_invariance_status import build_review_invariance_status
         from core.qa_lighting_replay_pack import build_lighting_replay_pack
         from core.qa_outer_replay_pack import build_outer_replay_pack
+        from core.qa_pose_gait_margin_review import build_pose_gait_margin_review_sheet
         from core.qa_manifest_completion import build_manifest_completion_plan
         from core.qa_replay_collection_plan import build_replay_collection_plan
         from core.qa_review_handoff import build_review_handoff_packet
@@ -1659,12 +1673,26 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             base_dir=base_dir,
             output_file=paths["review_status_board"],
         )
+        build_consistency_confidence_matrix(
+            base_dir=base_dir,
+            output_file=paths["consistency_confidence_matrix"],
+        )
+        build_pose_gait_margin_review_sheet(
+            base_dir=base_dir,
+            output_file=paths["pose_gait_margin_review_sheet"],
+        )
+        result = build_review_status_board(
+            base_dir=base_dir,
+            output_file=paths["review_status_board"],
+        )
         build_review_handoff_packet(
             base_dir=base_dir,
             output_file=paths["review_handoff_packet"],
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         print(f"[总控状态板] {paths['review_status_board']}")
+        print(f"[一致性信度矩阵] {paths['consistency_confidence_matrix']}")
+        print(f"[姿态步态边界复核表] {paths['pose_gait_margin_review_sheet']}")
         print(f"[轻量复审包] {paths['review_handoff_packet']}")
         print(f"[回放采集计划] {paths['replay_collection_plan']}")
         print("[交互引导] 先看 next_actions，再决定补 manifest 还是进入 front bootstrap 人工复审。")
@@ -1713,11 +1741,13 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         return 0
 
     if workflow == "prepare_review_handoff":
+        from core.qa_consistency_confidence_matrix import build_consistency_confidence_matrix
         from core.qa_front_bootstrap_review import build_front_bootstrap_review_sheet
         from core.qa_invariance_status import build_review_invariance_status
         from core.qa_lighting_replay_pack import build_lighting_replay_pack
         from core.qa_manifest_completion import build_manifest_completion_plan
         from core.qa_outer_replay_pack import build_outer_replay_pack
+        from core.qa_pose_gait_margin_review import build_pose_gait_margin_review_sheet
         from core.qa_replay_collection_plan import build_replay_collection_plan
         from core.qa_review_handoff import build_review_handoff_packet
         from core.qa_run_index import build_review_run_index
@@ -1761,14 +1791,178 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             base_dir=base_dir,
             output_file=paths["review_status_board"],
         )
+        build_consistency_confidence_matrix(
+            base_dir=base_dir,
+            output_file=paths["consistency_confidence_matrix"],
+        )
+        build_pose_gait_margin_review_sheet(
+            base_dir=base_dir,
+            output_file=paths["pose_gait_margin_review_sheet"],
+        )
+        build_review_status_board(
+            base_dir=base_dir,
+            output_file=paths["review_status_board"],
+        )
         result = build_review_handoff_packet(
             base_dir=base_dir,
             output_file=paths["review_handoff_packet"],
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[一致性信度矩阵] {paths['consistency_confidence_matrix']}")
+        print(f"[姿态步态边界复核表] {paths['pose_gait_margin_review_sheet']}")
         print(f"[轻量复审包] {paths['review_handoff_packet']}")
         print(f"[回放采集计划] {paths['replay_collection_plan']}")
         print("[交互引导] 默认先发这一个 JSON 给 GPT；只有需要逐图证据时再追加 detail 文件。")
+        return 0
+
+    if workflow == "refresh_consistency_confidence_matrix":
+        from core.qa_consistency_confidence_matrix import build_consistency_confidence_matrix
+        from core.qa_front_bootstrap_review import build_front_bootstrap_review_sheet
+        from core.qa_invariance_status import build_review_invariance_status
+        from core.qa_lighting_replay_pack import build_lighting_replay_pack
+        from core.qa_manifest_completion import build_manifest_completion_plan
+        from core.qa_outer_replay_pack import build_outer_replay_pack
+        from core.qa_pose_gait_margin_review import build_pose_gait_margin_review_sheet
+        from core.qa_replay_collection_plan import build_replay_collection_plan
+        from core.qa_review_handoff import build_review_handoff_packet
+        from core.qa_run_index import build_review_run_index
+        from core.qa_status_board import build_review_status_board
+        from core.qa_topology_replay_pack import build_topology_replay_pack
+
+        run_index_path = paths["review_run_index"]
+        build_review_run_index(
+            base_dir=base_dir,
+            output_file=run_index_path,
+        )
+        build_front_bootstrap_review_sheet(
+            run_index_file=run_index_path,
+            output_file=paths["front_bootstrap_review_sheet"],
+        )
+        build_lighting_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["lighting_replay_pack"],
+        )
+        build_outer_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["outer_replay_pack"],
+        )
+        build_topology_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["topology_replay_pack"],
+        )
+        build_review_invariance_status(
+            base_dir=base_dir,
+            output_file=paths["review_invariance_status"],
+        )
+        build_manifest_completion_plan(
+            base_dir=base_dir,
+            output_file=paths["manifest_completion_plan"],
+        )
+        build_replay_collection_plan(
+            base_dir=base_dir,
+            output_file=paths["replay_collection_plan"],
+        )
+        build_review_status_board(
+            base_dir=base_dir,
+            output_file=paths["review_status_board"],
+        )
+        result = build_consistency_confidence_matrix(
+            base_dir=base_dir,
+            output_file=paths["consistency_confidence_matrix"],
+        )
+        build_pose_gait_margin_review_sheet(
+            base_dir=base_dir,
+            output_file=paths["pose_gait_margin_review_sheet"],
+        )
+        build_review_status_board(
+            base_dir=base_dir,
+            output_file=paths["review_status_board"],
+        )
+        build_review_handoff_packet(
+            base_dir=base_dir,
+            output_file=paths["review_handoff_packet"],
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[一致性信度矩阵] {paths['consistency_confidence_matrix']}")
+        print(f"[姿态步态边界复核表] {paths['pose_gait_margin_review_sheet']}")
+        print(f"[总控状态板] {paths['review_status_board']}")
+        print(f"[轻量复审包] {paths['review_handoff_packet']}")
+        print("[交互引导] 该矩阵只用于证据解释和复核优先级，不用于最终图集或训练准入。")
+        return 0
+
+    if workflow == "prepare_pose_gait_margin_review":
+        from core.qa_consistency_confidence_matrix import build_consistency_confidence_matrix
+        from core.qa_front_bootstrap_review import build_front_bootstrap_review_sheet
+        from core.qa_invariance_status import build_review_invariance_status
+        from core.qa_lighting_replay_pack import build_lighting_replay_pack
+        from core.qa_manifest_completion import build_manifest_completion_plan
+        from core.qa_outer_replay_pack import build_outer_replay_pack
+        from core.qa_pose_gait_margin_review import build_pose_gait_margin_review_sheet
+        from core.qa_replay_collection_plan import build_replay_collection_plan
+        from core.qa_review_handoff import build_review_handoff_packet
+        from core.qa_run_index import build_review_run_index
+        from core.qa_status_board import build_review_status_board
+        from core.qa_topology_replay_pack import build_topology_replay_pack
+
+        run_index_path = paths["review_run_index"]
+        build_review_run_index(
+            base_dir=base_dir,
+            output_file=run_index_path,
+        )
+        build_front_bootstrap_review_sheet(
+            run_index_file=run_index_path,
+            output_file=paths["front_bootstrap_review_sheet"],
+        )
+        build_lighting_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["lighting_replay_pack"],
+        )
+        build_outer_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["outer_replay_pack"],
+        )
+        build_topology_replay_pack(
+            base_dir=base_dir,
+            output_file=paths["topology_replay_pack"],
+        )
+        build_review_invariance_status(
+            base_dir=base_dir,
+            output_file=paths["review_invariance_status"],
+        )
+        build_manifest_completion_plan(
+            base_dir=base_dir,
+            output_file=paths["manifest_completion_plan"],
+        )
+        build_replay_collection_plan(
+            base_dir=base_dir,
+            output_file=paths["replay_collection_plan"],
+        )
+        build_review_status_board(
+            base_dir=base_dir,
+            output_file=paths["review_status_board"],
+        )
+        build_consistency_confidence_matrix(
+            base_dir=base_dir,
+            output_file=paths["consistency_confidence_matrix"],
+        )
+        result = build_pose_gait_margin_review_sheet(
+            base_dir=base_dir,
+            output_file=paths["pose_gait_margin_review_sheet"],
+        )
+        build_review_status_board(
+            base_dir=base_dir,
+            output_file=paths["review_status_board"],
+        )
+        build_review_handoff_packet(
+            base_dir=base_dir,
+            output_file=paths["review_handoff_packet"],
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"[姿态步态边界复核表] {paths['pose_gait_margin_review_sheet']}")
+        print(f"[一致性信度矩阵] {paths['consistency_confidence_matrix']}")
+        print(f"[总控状态板] {paths['review_status_board']}")
+        print(f"[轻量复审包] {paths['review_handoff_packet']}")
+        print("[交互引导] 先复核 P0 行；本表不判定最终图集、不判定训练准入、不拟合参数。")
         return 0
 
     if workflow == "prepare_lighting_replay_pack":
@@ -2390,6 +2584,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "refresh_review_status_board",
             "refresh_review_invariance_status",
             "prepare_review_handoff",
+            "refresh_consistency_confidence_matrix",
+            "prepare_pose_gait_margin_review",
             "prepare_lighting_replay_pack",
             "prepare_outer_replay_pack",
             "prepare_topology_replay_pack",

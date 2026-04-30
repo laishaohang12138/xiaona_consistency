@@ -251,8 +251,10 @@ def _compact_project_scope(status_board: Dict[str, Any]) -> Dict[str, Any]:
         "role": str(scope.get("role") or "screening_and_evidence_only").strip(),
         "machine_role": str(scope.get("machine_role") or "rank_candidates_explain_risks_and_package_review_evidence").strip(),
         "training_admission_participation": bool(scope.get("training_admission_participation", False)),
+        "image_set_decision_participation": bool(scope.get("image_set_decision_participation", False)),
         "training_admission_status": str(scope.get("training_admission_status") or "out_of_scope_for_this_project").strip(),
         "final_training_decision_owner": str(scope.get("final_training_decision_owner") or "external_training_decision_flow").strip(),
+        "final_image_set_decision_owner": str(scope.get("final_image_set_decision_owner") or "external_dataset_curation_flow").strip(),
     }
 
 
@@ -291,6 +293,102 @@ def _compact_replay_collection_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _compact_consistency_confidence(matrix: Dict[str, Any]) -> Dict[str, Any]:
+    if not matrix:
+        return {
+            "available": False,
+            "overall_status": "",
+            "item_count": 0,
+            "weakest_axes": [],
+            "top_unresolved_evidence_gaps": [],
+            "top_review_queue": [],
+        }
+    batch = matrix.get("batch_confidence") if isinstance(matrix.get("batch_confidence"), dict) else {}
+    queue = matrix.get("top_review_queue") if isinstance(matrix.get("top_review_queue"), list) else []
+    compact_queue: List[Dict[str, Any]] = []
+    for raw_row in queue[:5]:
+        if not isinstance(raw_row, dict):
+            continue
+        compact_queue.append(
+            {
+                "rank": raw_row.get("rank"),
+                "image": str(raw_row.get("image") or "").strip(),
+                "review_only_status": str(raw_row.get("review_only_status") or "").strip(),
+                "evidence_confidence_score": _round_or_none(raw_row.get("evidence_confidence_score")),
+                "evidence_confidence_band": str(raw_row.get("evidence_confidence_band") or "").strip(),
+                "review_priority": str(raw_row.get("review_priority") or "").strip(),
+                "body_truth_pose_gait_read": str(raw_row.get("body_truth_pose_gait_read") or "").strip(),
+                "unresolved_evidence_gaps": raw_row.get("unresolved_evidence_gaps")
+                if isinstance(raw_row.get("unresolved_evidence_gaps"), list)
+                else [],
+            }
+        )
+    return {
+        "available": True,
+        "overall_status": str(batch.get("overall_status") or "").strip(),
+        "item_count": _safe_int(batch.get("item_count")),
+        "evidence_confidence_band_counts": batch.get("evidence_confidence_band_counts")
+        if isinstance(batch.get("evidence_confidence_band_counts"), dict)
+        else {},
+        "review_priority_counts": batch.get("review_priority_counts")
+        if isinstance(batch.get("review_priority_counts"), dict)
+        else {},
+        "pose_gait_read_counts": batch.get("pose_gait_read_counts")
+        if isinstance(batch.get("pose_gait_read_counts"), dict)
+        else {},
+        "weakest_axes": batch.get("weakest_axes") if isinstance(batch.get("weakest_axes"), list) else [],
+        "top_unresolved_evidence_gaps": batch.get("top_unresolved_evidence_gaps")
+        if isinstance(batch.get("top_unresolved_evidence_gaps"), list)
+        else [],
+        "ranking_stability": batch.get("ranking_stability")
+        if isinstance(batch.get("ranking_stability"), dict)
+        else {},
+        "top_review_queue": compact_queue,
+    }
+
+
+def _compact_pose_gait_margin_review(sheet: Dict[str, Any]) -> Dict[str, Any]:
+    if not sheet:
+        return {
+            "available": False,
+            "review_row_count": 0,
+            "p0_review_row_count": 0,
+            "category_counts": {},
+            "p0_review_queue": [],
+        }
+    summary = sheet.get("summary") if isinstance(sheet.get("summary"), dict) else {}
+    queue = sheet.get("p0_review_queue") if isinstance(sheet.get("p0_review_queue"), list) else []
+    compact_queue: List[Dict[str, Any]] = []
+    for raw_row in queue[:6]:
+        if not isinstance(raw_row, dict):
+            continue
+        compact_queue.append(
+            {
+                "priority": str(raw_row.get("priority") or "").strip(),
+                "rank": raw_row.get("rank"),
+                "image": str(raw_row.get("image") or "").strip(),
+                "review_category": str(raw_row.get("review_category") or "").strip(),
+                "body_truth_pose_gait_read": str(raw_row.get("body_truth_pose_gait_read") or "").strip(),
+                "evidence_confidence_score": _round_or_none(raw_row.get("evidence_confidence_score")),
+                "axis_scores": raw_row.get("axis_scores") if isinstance(raw_row.get("axis_scores"), dict) else {},
+                "review_focus": raw_row.get("review_focus") if isinstance(raw_row.get("review_focus"), list) else [],
+            }
+        )
+    return {
+        "available": True,
+        "review_row_count": _safe_int(summary.get("review_row_count")),
+        "p0_review_row_count": _safe_int(summary.get("p0_review_row_count")),
+        "category_counts": summary.get("category_counts") if isinstance(summary.get("category_counts"), dict) else {},
+        "priority_counts": summary.get("priority_counts") if isinstance(summary.get("priority_counts"), dict) else {},
+        "body_truth_pose_gait_read_counts": summary.get("body_truth_pose_gait_read_counts")
+        if isinstance(summary.get("body_truth_pose_gait_read_counts"), dict)
+        else {},
+        "axis_means": summary.get("axis_means") if isinstance(summary.get("axis_means"), dict) else {},
+        "current_primary_limit": str(summary.get("current_primary_limit") or "").strip(),
+        "p0_review_queue": compact_queue,
+    }
+
+
 def build_review_handoff_packet(
     *,
     base_dir: Path,
@@ -301,6 +399,8 @@ def build_review_handoff_packet(
     invariance_status = _load_json(outputs_dir / "review_invariance_status.json")
     manifest_completion = _load_json(outputs_dir / "input_manifest_completion_plan.json")
     replay_collection = _load_json(outputs_dir / "replay_collection_plan.json")
+    consistency_matrix = _load_json(outputs_dir / "consistency_confidence_matrix.json")
+    pose_gait_margin_sheet = _load_json(outputs_dir / "pose_gait_margin_review_sheet.json")
     run_index = _load_json(outputs_dir / "review_run_index.json")
     front_sheet = _load_json(outputs_dir / "front_bootstrap_review_sheet.json")
     gates = invariance_status.get("gates") if isinstance(invariance_status.get("gates"), dict) else {}
@@ -335,6 +435,7 @@ def build_review_handoff_packet(
             "current_phase": "review_only_invariance_hardening",
             "machine_role": project_scope["role"],
             "final_training_decision_owner": project_scope["final_training_decision_owner"],
+            "final_image_set_decision_owner": project_scope["final_image_set_decision_owner"],
             "review_invariance_overall_status": str(invariance_status.get("overall_status") or "").strip(),
             "winner_bank_bootstrap_allowed": bool(invariance_status.get("winner_bank_bootstrap_allowed")),
             "winner_bank_freeze_allowed": bool(invariance_status.get("winner_bank_freeze_allowed")),
@@ -343,6 +444,7 @@ def build_review_handoff_packet(
             "winner_bank_freeze_state": str(winner_policy.get("freeze_state") or "").strip(),
             "parameter_fitting_allowed": bool(invariance_status.get("parameter_fitting_allowed")),
             "training_admission_participation": bool(project_scope["training_admission_participation"]),
+            "image_set_decision_participation": bool(project_scope["image_set_decision_participation"]),
             "training_admission_status": project_scope["training_admission_status"],
             "legacy_or_external_training_manifest_available": bool(training_admission.get("available")),
             "training_admission_allowed_now": False,
@@ -357,6 +459,8 @@ def build_review_handoff_packet(
                 "outputs/topology_replay_pack.json",
                 "outputs/replay_collection_plan.json",
                 "outputs/input_manifest_completion_plan.json",
+                "outputs/consistency_confidence_matrix.json",
+                "outputs/pose_gait_margin_review_sheet.json",
                 "outputs/review_run_index.json",
                 "outputs/body_topology_truth_fusion_compare.json",
                 "outputs/front_bootstrap_review_sheet.json",
@@ -381,6 +485,8 @@ def build_review_handoff_packet(
             else [],
         },
         "replay_collection_plan": _compact_replay_collection_plan(replay_collection),
+        "consistency_confidence_matrix": _compact_consistency_confidence(consistency_matrix),
+        "pose_gait_margin_review": _compact_pose_gait_margin_review(pose_gait_margin_sheet),
         "gate_summary": _compact_gate_rows(gates),
         "pose_gait_body_truth": pose_gait_body_truth,
         "optimization_focus": optimization_focus,
@@ -401,6 +507,7 @@ def build_review_handoff_packet(
         "explicit_holds": [
             "Do not freeze winner_bank until review_invariance_overall_status is READY.",
             "Training admission is outside this project's scope; route evidence to the external training-decision flow.",
+            "Final image-set decisions are outside this project's scope; route evidence to the external dataset-curation flow.",
             "Do not treat mutable winner_bank entries or front diagnostic top candidates as identity truth.",
             "Do not run parameter fitting before project optimization is complete.",
         ],

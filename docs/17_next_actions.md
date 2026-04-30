@@ -25,6 +25,8 @@
 19. Treat final training-set admission as out of scope; route evidence packets to the external training decision flow.
 20. Treat final image-set membership as out of scope; route evidence packets to the external dataset-curation flow.
 21. Use body topology partition fields before calling multi-pose lower-body drift.
+22. Use `refresh_consistency_confidence_matrix` to review per-image evidence confidence before opening raw packets.
+23. Use `prepare_pose_gait_margin_review` to split gait-margin rows before calling body drift.
 
 ### P1
 
@@ -69,6 +71,8 @@ For a new shot batch:
 16. run `prepare_outer_replay_pack` before collecting the next OUTER replay batch
 17. run `prepare_topology_replay_pack` before collecting side/back topology replay images
 18. run `prepare_replay_collection_plan` and follow `immediate_operator_queue` before expanding the replay backlog
+19. run `refresh_consistency_confidence_matrix` when you need a compact per-image view of confidence axes, evidence gaps, and review priority
+20. run `prepare_pose_gait_margin_review` before treating any gait-margin or manual body-truth row as body drift
 
 ## Acceptance Checks
 
@@ -86,6 +90,8 @@ The current workflow is in a good state when:
 - GPT/human review can see the weakest head-topology partition for each face-canonical row without opening raw debug caches
 - GPT/human review can see the weakest body-topology partition and pose-explained delta for each body-canonical row without opening raw HMR2 caches
 - machine ranking is visibly labeled as review-priority evidence, not final image-set membership
+- `consistency_confidence_matrix.json` can explain why a candidate is high-priority review without deciding final dataset membership
+- `pose_gait_margin_review_sheet.json` can route gait/stance/body-truth margin rows without turning them into final drift decisions
 
 ## Do Not Do
 
