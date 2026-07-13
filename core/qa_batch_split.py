@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .qa_input_manifest import create_or_update_input_manifest
+from .qa_io import atomic_write_json
 
 
 _PROFILE_BY_LANE = {
@@ -35,7 +36,7 @@ def _load_json(path: Path) -> Dict[str, Any]:
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, payload)
 
 
 def _candidate_lane(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -178,7 +179,7 @@ def build_batch_split_plan(
         ),
         "lane_groups": groups,
     }
-    output_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(output_file, payload)
     return payload
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .qa_collection_metadata import parse_collection_metadata
+from .qa_io import atomic_write_json
 
 _DEFAULT_MANIFEST_NAMES = (
     "input_manifest.json",
@@ -328,8 +329,7 @@ def create_or_update_input_manifest(
         "notes": "Fill prompt_id, seed or seed_unavailable_reason, anchor_source, and intended_view for generated batches.",
         "items": items,
     }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(output_path, payload)
     return {
         "status": "ok",
         "path": str(output_path),
@@ -461,7 +461,7 @@ def fill_input_manifest_defaults(
             else:
                 payload["notes"] = note_text
 
-    output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(output_path, payload)
     coverage = _field_coverage(items)
     return {
         "status": "ok",
@@ -546,7 +546,7 @@ def merge_input_manifest_item_metadata(
 
     payload["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
     payload["items"] = items
-    output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(output_path, payload)
     coverage = _field_coverage(items)
     return {
         "status": "ok",

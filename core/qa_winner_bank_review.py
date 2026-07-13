@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .qa_io import atomic_write_json
 from .qa_winner_bank_policy import WINNER_BANK_BOOTSTRAP_DEFERRED_BLOCKER, winner_bank_bootstrap_policy
 
 
@@ -152,5 +153,5 @@ def build_winner_bank_review_packet(
             )
         ),
     }
-    output_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(output_file, payload)
     return payload

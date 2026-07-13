@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -9,6 +10,7 @@ import cv2
 import numpy as np
 
 from .providers import HeavyEvidenceProvider
+from .qa_io import atomic_write_json
 from .qa_utils import image_read_bgr
 
 try:
@@ -811,7 +813,19 @@ def _load_heavy_bundle() -> Dict[str, Any]:
         return bundle
 
     try:
-        device = "cuda" if bool(torch.cuda.is_available()) else "cpu"
+        device_preference = str(os.getenv("XIAONA_SEGFORMER_DEVICE", "auto") or "auto").strip().lower()
+        require_gpu = str(os.getenv("XIAONA_REQUIRE_GPU", "")).strip().lower() in {"1", "true", "yes", "on"}
+        if device_preference == "cuda":
+            if not bool(torch.cuda.is_available()):
+                if require_gpu:
+                    raise RuntimeError("CUDA requested for Segformer parser but torch.cuda.is_available() is False")
+                device = "cpu"
+            else:
+                device = "cuda"
+        elif device_preference == "cpu":
+            device = "cpu"
+        else:
+            device = "cuda" if bool(torch.cuda.is_available()) else "cpu"
         processor = SegformerImageProcessor.from_pretrained(_HEAVY_MODEL_ID, local_files_only=True)
         model = AutoModelForSemanticSegmentation.from_pretrained(_HEAVY_MODEL_ID, local_files_only=True)
         model.to(device)
@@ -925,8 +939,7 @@ def _write_cached_parser_metrics(
 ) -> bool:
     try:
         payload = _serialize_parser_metrics(metrics, image_path=image_path, cache_key=cache_key, runtime=runtime)
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        atomic_write_json(cache_file, payload)
         return True
     except Exception:
         return False
@@ -1207,6 +1220,8 @@ def apply_shortlist_heavy_review(
         "enabled": bool(provider_status.get("enabled")),
         "advisory_only": True,
         "mode": summary_mode,
+        "requested_candidate_mode": candidate_mode,
+        "requested_max_candidates": max_candidates,
         "evidence_schema_version": str(provider_status.get("evidence_schema_version") or HEAVY_EVIDENCE_SCHEMA),
         "provider_name": str(provider_status.get("provider_name") or _HEAVY_PROVIDER_NAME),
         "provider_family": str(provider_status.get("provider_family") or _HEAVY_PROVIDER_FAMILY),
@@ -1293,7 +1308,15 @@ def apply_shortlist_heavy_review(
                 mode=evidence_mode,
             )
             continue
-        process_count = min(len(candidate_source_rows), max(1, max_candidates))
+        try:
+            candidate_limit = int(max_candidates)
+        except Exception:
+            candidate_limit = 5
+        process_count = (
+            len(candidate_source_rows)
+            if candidate_limit <= 0
+            else min(len(candidate_source_rows), candidate_limit)
+        )
         candidate_rows: List[Dict[str, Any]] = []
         group_failure_reasons: List[str] = []
         for row in candidate_source_rows[:process_count]:
@@ -1520,6 +1543,8 @@ def apply_shortlist_heavy_review(
             "enabled": True,
             "advisory_only": True,
             "candidate_count": len(advisory_rows),
+            "candidate_source_count": len(candidate_source_rows),
+            "candidate_process_count": process_count,
             "consensus_top_image": consensus_top,
             "parser_boundary_cohesion": _round_or_none(boundary_cohesion),
             "parser_visible_body_cohesion": _round_or_none(visible_cohesion),

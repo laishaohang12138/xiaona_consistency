@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from .qa_admission import build_batch_admission_advice, build_candidate_admission_advice
+from .qa_io import atomic_write_json
 
 
 def _round_or_none(value: Optional[float], digits: int = 4) -> Optional[float]:
@@ -1453,13 +1454,13 @@ def build_review_packet(
             "collection_summary": (report_payload.get("collection_aggregates") or {}).get("summary"),
         },
     }
-    review_packet_file.write_text(json.dumps(review_packet, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(review_packet_file, review_packet)
     gpt_review_packet = _build_gpt_review_packet(
         review_packet,
         review_packet_file=review_packet_file,
         gpt_review_packet_file=gpt_review_packet_file,
     )
-    gpt_review_packet_file.write_text(json.dumps(gpt_review_packet, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(gpt_review_packet_file, gpt_review_packet)
     review_artifacts = _build_review_artifacts_index(
         output_dir=output_dir,
         review_packet_file=review_packet_file,
@@ -1470,5 +1471,5 @@ def build_review_packet(
         training_admission_manifest_file=((report_payload.get("report_meta") or {}).get("training_admission_governance") or {}).get("manifest_file"),
     )
     review_artifacts_file = output_dir / "review_artifacts.json"
-    review_artifacts_file.write_text(json.dumps(review_artifacts, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(review_artifacts_file, review_artifacts)
     return review_packet

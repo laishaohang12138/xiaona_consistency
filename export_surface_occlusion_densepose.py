@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -77,6 +78,7 @@ def _run_densepose_dump(
     checkpoint: str,
     staged_image: str,
     dump_file: str,
+    device: str,
 ) -> None:
     command = _wsl_python_args(distro, user) + [
         f"{workspace}/detectron2/projects/DensePose/apply_net.py",
@@ -87,6 +89,8 @@ def _run_densepose_dump(
         "--output",
         dump_file,
     ]
+    if device:
+        command.extend(["MODEL.DEVICE", str(device)])
     subprocess.run(command, check=True, capture_output=True, text=True, timeout=1800)
 
 
@@ -124,6 +128,7 @@ def _process_image(
     source_image: Path,
     output: Path,
     min_score: float,
+    device: str,
 ) -> dict:
     staged_image = _copy_to_wsl(distro, user, source_image, workspace)
     dump_file = f"{workspace}/inference_dumps/{_stable_id(source_image)}.pkl"
@@ -135,6 +140,7 @@ def _process_image(
         checkpoint=checkpoint,
         staged_image=staged_image,
         dump_file=dump_file,
+        device=device,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     _convert_dump_to_sidecar(
@@ -146,7 +152,7 @@ def _process_image(
         workspace=workspace,
         min_score=min_score,
     )
-    return {"image": str(source_image.resolve()), "output": str(output.resolve()), "dump_file": dump_file}
+    return {"image": str(source_image.resolve()), "output": str(output.resolve()), "dump_file": dump_file, "device": device}
 
 
 def main() -> None:
@@ -164,6 +170,7 @@ def main() -> None:
     parser.add_argument("--config", default=DEFAULT_CONFIG)
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument("--min-score", type=float, default=0.5)
+    parser.add_argument("--device", default=os.getenv("XIAONA_DENSEPOSE_DEVICE", os.getenv("XIAONA_SURFACE_OCCLUSION_DEVICE", "cuda")))
     args = parser.parse_args()
 
     _ensure_wsl_ready(args.distro, args.user)
@@ -211,6 +218,7 @@ def main() -> None:
                 source_image=image_path,
                 output=output,
                 min_score=float(args.min_score),
+                device=str(args.device or ""),
             )
         )
     print(json.dumps({"status": "ok", "count": len(rows), "items": rows}, ensure_ascii=False))

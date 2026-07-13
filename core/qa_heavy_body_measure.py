@@ -10,6 +10,7 @@ import numpy as np
 from .providers import HeavyEvidenceProvider
 from .qa_consistency import extract_body_constitution_metrics, extract_depth_3d_lite_metrics
 from .qa_features import extract_face_feat, extract_pose_feat
+from .qa_io import atomic_write_json
 from .qa_master_consistency import (
     build_body_identity_signature,
     build_depth_identity_signature,
@@ -182,8 +183,7 @@ def _write_cached_metrics(
         "metrics": _json_ready(metrics),
     }
     try:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        atomic_write_json(cache_file, payload)
         return True
     except Exception:
         return False

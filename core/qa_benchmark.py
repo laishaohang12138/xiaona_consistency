@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .providers import build_provider_bundle
+from .qa_io import atomic_write_json
 from .qa_consistency import (
     apply_consistency_soft_gate,
     compute_body_constitution_confidence,
@@ -136,8 +137,7 @@ def _read_json_object(path: Path) -> Dict[str, Any]:
 
 
 def _write_json_object(path: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, payload)
     return payload
 
 

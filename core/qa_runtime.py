@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .qa_io import atomic_write_json
+
 try:
     import yaml as pyyaml
 except Exception:  # pragma: no cover - optional dependency fallback
@@ -352,6 +354,8 @@ class ReviewPolicy:
     face_no_signal_conf_th: float = 0.08
     allow_classic_cv_fallback: bool = False
     fatal_on_engine_unavailable: bool = True
+    heavy_review_candidate_mode: str = "auto"
+    heavy_review_max_candidates: Optional[int] = None
 
 
 @dataclass
@@ -1285,6 +1289,16 @@ def apply_external_project_configs(config: RuntimeConfig) -> None:
                 config.review.fatal_on_engine_unavailable = bool(
                     review_policy["fatal_on_engine_unavailable"]
                 )
+            if isinstance(review_policy.get("heavy_review_candidate_mode"), str):
+                mode = str(review_policy["heavy_review_candidate_mode"]).strip().lower()
+                if mode in {"auto", "shortlist", "full_group"}:
+                    config.review.heavy_review_candidate_mode = mode
+            if review_policy.get("heavy_review_max_candidates") is not None:
+                raw_max = review_policy.get("heavy_review_max_candidates")
+                if str(raw_max).strip().lower() in {"", "none", "null", "auto"}:
+                    config.review.heavy_review_max_candidates = None
+                else:
+                    config.review.heavy_review_max_candidates = int(raw_max)
             if isinstance(review_policy.get("consistency_mode"), str):
                 config.consistency.mode = str(review_policy["consistency_mode"])
 
@@ -1713,8 +1727,7 @@ def anchor_registry_snapshot(config: RuntimeConfig) -> Dict[str, Any]:
 
 
 def save_thresholds_to_file(thresholds: Dict[str, float], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(thresholds, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, thresholds)
 
 
 def load_thresholds_from_file(config: RuntimeConfig, path: Path) -> None:

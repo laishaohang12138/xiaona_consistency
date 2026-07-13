@@ -1,5 +1,8 @@
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any, Dict, List, Optional, Sequence
 
 from .providers import HeavyEvidenceProvider
@@ -60,6 +63,86 @@ def _load_json(path: Path) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _auto_export_order() -> List[str]:
+    raw = str(os.getenv("XIAONA_SURFACE_OCCLUSION_AUTO_EXPORT", "") or "").strip().lower()
+    if not raw or raw in {"off", "none", "false", "0"}:
+        return []
+    aliases = {
+        "densepose_then_sam2": ["densepose", "sam2"],
+        "sam2_then_densepose": ["sam2", "densepose"],
+        "all": ["densepose", "sam2"],
+    }
+    if raw in aliases:
+        return aliases[raw]
+    order: List[str] = []
+    for item in raw.replace(";", ",").split(","):
+        name = item.strip().lower()
+        if name in {"densepose", "sam2"} and name not in order:
+            order.append(name)
+    return order
+
+
+def _run_export_command(command: List[str], *, timeout_s: int) -> Dict[str, Any]:
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout_s)
+    except Exception as exc:
+        return {"ok": False, "reason": f"surface_export_exception:{exc}", "command": command}
+    return {
+        "ok": completed.returncode == 0,
+        "returncode": completed.returncode,
+        "stdout": (completed.stdout or "")[-800:],
+        "stderr": (completed.stderr or "")[-800:],
+        "command": command,
+    }
+
+
+def _try_auto_export_sidecar(image_path: Path) -> List[Dict[str, Any]]:
+    order = _auto_export_order()
+    if not order:
+        return []
+    repo_root = Path(__file__).resolve().parents[1]
+    attempts: List[Dict[str, Any]] = []
+    device = str(
+        os.getenv(
+            "XIAONA_SURFACE_OCCLUSION_DEVICE",
+            os.getenv("XIAONA_SAM2_DEVICE", os.getenv("XIAONA_DENSEPOSE_DEVICE", "cuda")),
+        )
+        or "cuda"
+    ).strip()
+    for exporter in order:
+        if exporter == "densepose":
+            output = image_path.with_suffix(image_path.suffix + ".densepose.json")
+            command = [
+                sys.executable,
+                str(repo_root / "export_surface_occlusion_densepose.py"),
+                "--image",
+                str(image_path),
+                "--output",
+                str(output),
+                "--device",
+                device,
+            ]
+            result = _run_export_command(command, timeout_s=1800)
+        else:
+            output = image_path.with_suffix(image_path.suffix + ".surface_occlusion.json")
+            command = [
+                sys.executable,
+                str(repo_root / "export_surface_occlusion_sam2.py"),
+                "--image",
+                str(image_path),
+                "--output",
+                str(output),
+                "--device",
+                device,
+            ]
+            result = _run_export_command(command, timeout_s=1200)
+        result.update({"exporter": exporter, "output": str(output), "device": device})
+        attempts.append(result)
+        if output.exists() and _load_json(output) is not None:
+            break
+    return attempts
 
 
 def _metric_spec(metric_name: str, value: Any, *, confidence: Optional[float], coverage: Optional[float]) -> Dict[str, Any]:
@@ -191,6 +274,7 @@ class ClothingSurfaceOcclusionBridgeProvider(HeavyEvidenceProvider):
             "device": "external_sidecar",
             "integration_state": "sidecar_bridge_ready",
             "requires_candidate_artifact": True,
+            "auto_export_order": _auto_export_order(),
             "candidate_artifact_suffixes": [
                 ".surface_occlusion.json",
                 ".densepose.json",
@@ -209,6 +293,18 @@ class ClothingSurfaceOcclusionBridgeProvider(HeavyEvidenceProvider):
             if payload is None:
                 continue
             return _normalize_artifact(payload, image_path=resolved, sidecar_file=sidecar)
+        auto_export_attempts = _try_auto_export_sidecar(resolved)
+        for sidecar in _sidecar_candidates(resolved):
+            if not sidecar.exists():
+                continue
+            payload = _load_json(sidecar)
+            if payload is None:
+                continue
+            artifact = _normalize_artifact(payload, image_path=resolved, sidecar_file=sidecar)
+            summary = dict(artifact.get("summary") or {})
+            summary["auto_export_attempts"] = auto_export_attempts
+            artifact["summary"] = summary
+            return artifact
         return {
             "ok": False,
             "provider_name": self.provider_name,
@@ -223,6 +319,8 @@ class ClothingSurfaceOcclusionBridgeProvider(HeavyEvidenceProvider):
             "metric_specs": [],
             "summary": {
                 "candidate_count": 1,
+                "auto_export_order": _auto_export_order(),
+                "auto_export_attempts": auto_export_attempts,
                 "guidance": [
                     "DensePose/SAM2 surface occlusion sidecar is missing; clothing-invariant review falls back to parser and body topology.",
                 ],

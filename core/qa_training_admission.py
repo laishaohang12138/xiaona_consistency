@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from .qa_admission import resolve_target_bucket
+from .qa_io import atomic_write_json
 
 
 def training_admission_manifest_path(output_dir: Path) -> Path:
@@ -245,7 +246,7 @@ def seal_training_admission_entry(
             ],
         },
     }
-    manifest_file.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(manifest_file, manifest_payload)
     return {
         "status": "ok",
         "action": action,

@@ -1,9 +1,0 @@
-{
-  "schema_version": "input_manifest_metadata_patch_v1",
-  "source_manifest": "D:\\xiaona_consistency\\input_replay\\outer\\three_quarter\\blazer\\ot_a03_blazer_three_quarter_left_lapel_tracking_shortlist_v0_3_0_nb2_8x3\\input_manifest.json",
-  "outer_replay_lane": "three_quarter",
-  "outer_family": "blazer",
-  "outer_prompt_id": "OT-A03",
-  "outer_prompt_file": "prompts/outer/assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_a03_blazer_three_quarter_left_lapel_tracking_shortlist_v0_3_0_nb2_8x3.txt",
-  "items": {}
-}

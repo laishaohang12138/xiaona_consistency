@@ -14,6 +14,7 @@ from .qa_benchmark import (
 )
 from .qa_pipeline import print_runtime_config
 from .qa_runtime import EngineState, RuntimeContext, anchor_registry_snapshot, create_runtime_config
+from .qa_io import atomic_write_json
 
 
 OPTUNA_SEARCH_SPACE_SCHEMA = "qa_optuna_search_space_v1"
@@ -857,15 +858,10 @@ def run_optuna_search(
 
     if output_path is not None:
         output_path = output_path.resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+        atomic_write_json(output_path, result)
 
     if best_override_out is not None:
         best_override_out = best_override_out.resolve()
-        best_override_out.parent.mkdir(parents=True, exist_ok=True)
-        best_override_out.write_text(
-            json.dumps(best_override, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        atomic_write_json(best_override_out, best_override)
 
     return result

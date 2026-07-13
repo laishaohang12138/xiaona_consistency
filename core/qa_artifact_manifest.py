@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .qa_io import atomic_write_json
+
 
 _MANIFEST_SCHEMA = "artifact_manifest_v1"
 
@@ -250,7 +252,7 @@ def register_artifact_manifest(
     manifest["manifest_root"] = str(manifest_file.parent.resolve())
     manifest["entries"] = entries
     manifest["summary"] = _rebuild_summary(entries)
-    manifest_file.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(manifest_file, manifest)
     return entry
 
 

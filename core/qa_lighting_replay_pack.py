@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .qa_input_manifest import create_or_update_input_manifest
+from .qa_io import atomic_write_json
 
 _REPLAY_ROOT = Path("input_replay") / "lighting"
 _DOC_PATH = Path("docs") / "27_lighting_replay_pack.md"
@@ -77,8 +78,7 @@ def _load_json(path: Path) -> Dict[str, Any]:
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, payload)
 
 
 def _append_note(existing: Any, note: str) -> str:
@@ -92,6 +92,11 @@ def _append_note(existing: Any, note: str) -> str:
 
 def _safe_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _has_images(path: Path) -> bool:
+    suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    return any(child.is_file() and child.suffix.lower() in suffixes for child in path.iterdir()) if path.exists() else False
 
 
 def _variant_dir(base_dir: Path, lane_key: str, variant_key: str) -> Path:
@@ -164,11 +169,16 @@ def _refresh_variant_manifest(
     lane_spec: Dict[str, Any],
     variant: Dict[str, Any],
 ) -> Dict[str, Any]:
-    previous_payload = _load_json(variant_dir / "input_manifest.json")
+    manifest_file = variant_dir / "input_manifest.json"
+    previous_payload = _load_json(manifest_file)
     previous_generated_at = _safe_text(previous_payload.get("generated_at_utc"))
-    manifest_result = create_or_update_input_manifest(variant_dir)
-    manifest_path = Path(str(manifest_result.get("path") or variant_dir / "input_manifest.json")).resolve()
-    payload = _load_json(manifest_path)
+    if previous_payload and not _has_images(variant_dir):
+        manifest_path = manifest_file.resolve()
+        payload = dict(previous_payload)
+    else:
+        manifest_result = create_or_update_input_manifest(variant_dir)
+        manifest_path = Path(str(manifest_result.get("path") or manifest_file)).resolve()
+        payload = _load_json(manifest_path)
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
 
     payload["schema_version"] = "input_manifest_v1"
@@ -207,7 +217,8 @@ def _refresh_variant_manifest(
         )
 
     payload["items"] = items
-    _write_json(manifest_path, payload)
+    if payload != previous_payload:
+        _write_json(manifest_path, payload)
 
     metadata_template_path = (variant_dir / "_input_manifest_metadata_template.json").resolve()
     metadata_template = _manifest_metadata_template(

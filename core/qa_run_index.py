@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .qa_io import atomic_write_json
+
 
 def _load_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
@@ -173,5 +175,5 @@ def build_review_run_index(
         },
     }
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(output_file, payload)
     return payload

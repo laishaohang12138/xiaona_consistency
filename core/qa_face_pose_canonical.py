@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from .providers import FaceCanonicalProvider
+from .qa_io import atomic_write_json
 from .qa_utils import dedupe_keep_order
 
 _PROVIDER_NAME = "face_pose_canonical_bridge"
@@ -398,8 +399,7 @@ def _write_cached_candidate(cache_file: Path, cache_key: str, artifact: Dict[str
         "artifact": _json_ready(artifact),
     }
     try:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        atomic_write_json(cache_file, payload)
         return True
     except Exception:
         return False

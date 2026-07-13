@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .qa_io import atomic_write_json
 from .qa_winner_bank_policy import WINNER_BANK_BOOTSTRAP_DEFERRED_BLOCKER, winner_bank_bootstrap_policy
 
 
@@ -87,13 +88,82 @@ def build_front_bootstrap_review_sheet(
     run_index = _load_json(run_index_file)
     recommended = (run_index.get("recommended_runs") or {}).get("front_bootstrap_snapshot")
     if not isinstance(recommended, dict) or not str(recommended.get("artifact_root") or "").strip():
-        raise ValueError("review_run_index does not contain a front_bootstrap_snapshot recommendation")
+        bootstrap_policy = winner_bank_bootstrap_policy()
+        payload = {
+            "schema_version": "front_bootstrap_review_sheet_v1",
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "available": False,
+            "status": "front_bootstrap_snapshot_unavailable",
+            "artifact_root": "",
+            "target_profile": "",
+            "top_ranked_image": "",
+            "bootstrap_required": False,
+            "promotion_ready": False,
+            "promotion_blockers": [
+                "FRONT_BOOTSTRAP_SNAPSHOT_UNAVAILABLE",
+                WINNER_BANK_BOOTSTRAP_DEFERRED_BLOCKER,
+            ],
+            "winner_bank_bootstrap_policy": bootstrap_policy,
+            "manual_goal": "Run a front-core review batch before using this diagnostic sheet.",
+            "manual_rule": (
+                "This empty sheet is a clean-workspace placeholder. It is not evidence for "
+                "winner_bank freeze, training admission, or final image-set membership."
+            ),
+            "top_candidates": [],
+            "suggested_commands": {
+                "preflight_front": (
+                    "python check_consistency.py --workflow preflight_batch "
+                    "--input-dir input_split\\front --profile body_gold_fullbody "
+                    "--artifacts-dir outputs\\current_input_review_<date>_front"
+                ),
+                "shot_review_front": (
+                    "python check_consistency.py --workflow shot_review "
+                    "--input-dir input_split\\front --profile body_gold_fullbody "
+                    "--artifacts-dir outputs\\current_input_review_<date>_front"
+                ),
+            },
+        }
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(output_file, payload)
+        return payload
 
     artifact_root = Path(str(recommended.get("artifact_root"))).resolve()
     winner_review = _load_json(artifact_root / "winner_bank_review_packet.json")
     gpt_packet = _load_json(artifact_root / "gpt_review_packet.json")
     if not winner_review or not gpt_packet:
-        raise ValueError(f"front bootstrap snapshot is missing review artifacts: {artifact_root}")
+        bootstrap_policy = winner_bank_bootstrap_policy()
+        blockers = [
+            "FRONT_BOOTSTRAP_REVIEW_ARTIFACTS_MISSING",
+            WINNER_BANK_BOOTSTRAP_DEFERRED_BLOCKER,
+        ]
+        payload = {
+            "schema_version": "front_bootstrap_review_sheet_v1",
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "available": False,
+            "status": "front_bootstrap_review_artifacts_missing",
+            "artifact_root": str(artifact_root),
+            "target_profile": str(recommended.get("target_profile") or "").strip(),
+            "top_ranked_image": str(recommended.get("top_ranked_image") or "").strip(),
+            "bootstrap_required": False,
+            "promotion_ready": False,
+            "promotion_blockers": blockers,
+            "winner_bank_bootstrap_policy": bootstrap_policy,
+            "manual_goal": "Refresh review artifacts for the front-core snapshot before manual bootstrap review.",
+            "manual_rule": (
+                "Missing review artifacts cannot support winner_bank freeze, training admission, "
+                "or final image-set membership."
+            ),
+            "top_candidates": [],
+            "suggested_commands": {
+                "refresh_review_artifacts": (
+                    "python check_consistency.py --workflow refresh_review_artifacts "
+                    f'--artifacts-dir "{artifact_root}"'
+                ),
+            },
+        }
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(output_file, payload)
+        return payload
 
     pass_lookup = _pass_candidate_lookup(gpt_packet)
     top_candidates: List[Dict[str, Any]] = []
@@ -138,6 +208,8 @@ def build_front_bootstrap_review_sheet(
     payload = {
         "schema_version": "front_bootstrap_review_sheet_v1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "available": True,
+        "status": "ok",
         "artifact_root": str(artifact_root),
         "target_profile": str(recommended.get("target_profile") or "").strip(),
         "top_ranked_image": str(recommended.get("top_ranked_image") or "").strip(),
@@ -169,5 +241,5 @@ def build_front_bootstrap_review_sheet(
         },
     }
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(output_file, payload)
     return payload

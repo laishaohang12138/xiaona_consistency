@@ -30,6 +30,17 @@ segformer_body_truth_fusion
 If no sidecar exists, it returns structured unavailable evidence and the review
 chain falls back to parser + body topology.
 
+When `XIAONA_SURFACE_OCCLUSION_AUTO_EXPORT` is set, the bridge can create a
+missing sidecar before returning evidence. The maximum-evidence GPU review path
+sets:
+
+```text
+XIAONA_SURFACE_OCCLUSION_AUTO_EXPORT=densepose,sam2
+XIAONA_SURFACE_OCCLUSION_DEVICE=cuda
+```
+
+Use `sam2` when DensePose WSL is not ready, and `off` for sidecar-only review.
+
 ## Candidate Sidecar Files
 
 For `input/example.png`, any of these files will be consumed:

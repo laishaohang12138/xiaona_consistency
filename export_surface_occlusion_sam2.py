@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -249,7 +250,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=None, help="Output file for --image mode.")
     parser.add_argument("--output-dir", type=Path, default=None, help="Output directory for --input-dir mode.")
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--device", default=os.getenv("XIAONA_SAM2_DEVICE", os.getenv("XIAONA_SURFACE_OCCLUSION_DEVICE", "cuda")))
     parser.add_argument("--checkpoint", type=Path, default=None, help="Local SAM2 checkpoint path. Defaults to external/models/SAM2/<checkpoint_name> if present.")
     parser.add_argument("--deploy-dir", type=Path, default=DEFAULT_DEPLOY_DIR, help="Directory holding locally deployed SAM2 checkpoints.")
     parser.add_argument("--prefer-hf", action="store_true", help="Ignore local deployment and always use Hugging Face cache/download.")

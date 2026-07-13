@@ -64,9 +64,9 @@ class HumanParsingOutput:
 
 
 class HumanParsingEngine:
-    def __init__(self, model_name: str = DEFAULT_HUMAN_PARSING_MODEL, device: str = "auto") -> None:
+    def __init__(self, model_name: str = DEFAULT_HUMAN_PARSING_MODEL, device: Optional[str] = None) -> None:
         self.model_name = str(model_name)
-        self.device_preference = str(device)
+        self.device_preference = str(device or os.getenv("XIAONA_HUMAN_PARSING_DEVICE", "auto") or "auto")
         self._processor = None
         self._model = None
         self._torch = None
@@ -88,8 +88,16 @@ class HumanParsingEngine:
         return "missing dependencies: " + ", ".join(missing) if missing else ""
 
     def _resolve_device(self, torch_module) -> str:
-        if self.device_preference != "auto":
-            return self.device_preference
+        preference = str(self.device_preference or "auto").strip().lower()
+        require_gpu = str(os.getenv("XIAONA_REQUIRE_GPU", "")).strip().lower() in {"1", "true", "yes", "on"}
+        if preference == "cuda":
+            if not torch_module.cuda.is_available():
+                if require_gpu:
+                    raise RuntimeError("CUDA requested for human parsing but torch.cuda.is_available() is False")
+                return "cpu"
+            return "cuda"
+        if preference == "cpu":
+            return "cpu"
         return "cuda" if torch_module.cuda.is_available() else "cpu"
 
     def _local_snapshot_path(self) -> Optional[Path]:

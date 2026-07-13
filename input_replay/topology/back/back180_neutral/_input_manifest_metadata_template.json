@@ -1,8 +1,0 @@
-{
-  "schema_version": "input_manifest_metadata_patch_v1",
-  "source_manifest": "D:\\xiaona_consistency\\input_replay\\topology\\back\\back180_neutral\\input_manifest.json",
-  "topology_replay_lane": "back",
-  "topology_variant": "back180_neutral",
-  "pose_control_bucket": "strict_back_neutral",
-  "items": {}
-}

@@ -840,7 +840,12 @@ algorithm_policy:
   provider_defaults:
     subject_mask: human_parsing
     skin_region: human_parsing
-    heavy_evidence: segformer_body_fusion
+    heavy_evidence: segformer_body_truth_fusion
     view_classifier: view_classifier_lite
     face_canonical: face_pose_canonical_3ddfa
     anchor_source: registry_then_directory_fallback
+  device_policy:
+    default_device: cuda
+    require_gpu: false
+    truth_fusion_gpu_stack: true
+    surface_occlusion_auto_export: densepose,sam2

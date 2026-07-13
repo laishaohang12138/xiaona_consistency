@@ -15,6 +15,7 @@ Read in this order:
 9. [34_body_topology_partition.md](./34_body_topology_partition.md) when reviewing pose/gait-aware body topology partition drift.
 10. [25_clothing_invariant_surface_bridge.md](./25_clothing_invariant_surface_bridge.md) when reviewing clothing-invariant surface evidence.
 11. [26_densepose_wsl_deployment.md](./26_densepose_wsl_deployment.md) when preparing official DensePose deployment.
+12. [37_truth_fusion_gpu_stack.md](./37_truth_fusion_gpu_stack.md) when running maximum-evidence GPU truth-fusion review.
 
 Use this pack when:
 
@@ -38,6 +39,7 @@ Recommended new-window prompt:
 Operational shortcut:
 
 - Run `python check_consistency.py --workflow shot_review --profile <profile>` for a new shot batch.
+- Add `--heavy-provider segformer_body_truth_fusion --device-policy cuda` for maximum-evidence GPU review.
 - Run `python check_consistency.py --workflow prepare_topology_replay_pack` before side/back topology replay collection.
 - Run `python check_consistency.py --workflow prepare_replay_collection_plan` before the next controlled replay collection.
 - Read `outputs/review_packet.json` for GPT-assisted review.

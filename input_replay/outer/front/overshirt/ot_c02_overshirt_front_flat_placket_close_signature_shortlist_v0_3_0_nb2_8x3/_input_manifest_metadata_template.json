@@ -1,9 +1,0 @@
-{
-  "schema_version": "input_manifest_metadata_patch_v1",
-  "source_manifest": "D:\\xiaona_consistency\\input_replay\\outer\\front\\overshirt\\ot_c02_overshirt_front_flat_placket_close_signature_shortlist_v0_3_0_nb2_8x3\\input_manifest.json",
-  "outer_replay_lane": "front",
-  "outer_family": "overshirt",
-  "outer_prompt_id": "OT-C02",
-  "outer_prompt_file": "prompts/outer/assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_c02_overshirt_front_flat_placket_close_signature_shortlist_v0_3_0_nb2_8x3.txt",
-  "items": {}
-}

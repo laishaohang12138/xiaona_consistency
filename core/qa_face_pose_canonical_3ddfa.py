@@ -17,6 +17,7 @@ import torch
 from .qa_artifact_manifest import register_artifact_manifest
 from .providers import FaceCanonicalProvider
 from .qa_features import extract_face_feat
+from .qa_io import atomic_write_json
 
 _PROVIDER_NAME = "face_pose_canonical_3ddfa"
 _PROVIDER_FAMILY = "face_canonical_shadow"
@@ -192,8 +193,15 @@ def _resolve_settings() -> Dict[str, Any]:
 
 def _resolved_device(device_name: str) -> str:
     device_name = str(device_name or "auto").strip().lower()
-    if device_name in {"cpu", "cuda"}:
-        return device_name
+    require_gpu = str(os.getenv("XIAONA_REQUIRE_GPU", "")).strip().lower() in {"1", "true", "yes", "on"}
+    if device_name == "cpu":
+        return "cpu"
+    if device_name == "cuda":
+        if not torch.cuda.is_available():
+            if require_gpu:
+                raise RuntimeError("CUDA requested for 3DDFA-V3 but torch.cuda.is_available() is False")
+            return "cpu"
+        return "cuda"
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -475,8 +483,7 @@ class FacePoseCanonical3DDFAProvider(FaceCanonicalProvider):
             face_confidence=face_confidence,
         )
         master_path = bridge_mod._master_truth_dir(runtime) / bridge_mod._MASTER_ARTIFACT_NAME
-        master_path.parent.mkdir(parents=True, exist_ok=True)
-        master_path.write_text(json.dumps(_json_ready(artifact), indent=2, ensure_ascii=False), encoding="utf-8")
+        atomic_write_json(master_path, _json_ready(artifact))
         register_artifact_manifest(
             artifact_path=master_path,
             manifest_root=bridge_mod._master_truth_dir(runtime),

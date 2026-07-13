@@ -1,9 +1,0 @@
-{
-  "schema_version": "input_manifest_metadata_patch_v1",
-  "source_manifest": "D:\\xiaona_consistency\\input_replay\\outer\\front\\collarless_jacket\\ot_b02_collarless_jacket_front_hidden_close_neckline_signature_shortlist_v0_3_0_nb2_8x3\\input_manifest.json",
-  "outer_replay_lane": "front",
-  "outer_family": "collarless_jacket",
-  "outer_prompt_id": "OT-B02",
-  "outer_prompt_file": "prompts/outer/assembled_shortlist_v0_3_0_nb2_8x3/assembled_ot_b02_collarless_jacket_front_hidden_close_neckline_signature_shortlist_v0_3_0_nb2_8x3.txt",
-  "items": {}
-}

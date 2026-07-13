@@ -30,6 +30,7 @@ from .qa_industrial_summary import (
     build_evidence_completeness_summary,
 )
 from .qa_input_manifest import load_input_manifest_index, resolve_input_manifest_entry
+from .qa_io import atomic_write_json
 from .qa_master_consistency import (
     build_absolute_master_reference,
     build_body_identity_signature as _shared_body_identity_signature,
@@ -140,6 +141,8 @@ def print_runtime_config(runtime: RuntimeContext) -> None:
     print(f"[CONFIG] MIN_CONF_FOR_STRICT_FAIL = {config.review.min_conf_for_strict_fail}")
     print(f"[CONFIG] ALLOW_CLASSIC_CV_FALLBACK = {config.review.allow_classic_cv_fallback}")
     print(f"[CONFIG] FATAL_ON_ENGINE_UNAVAILABLE = {config.review.fatal_on_engine_unavailable}")
+    print(f"[CONFIG] HEAVY_REVIEW_CANDIDATE_MODE = {config.review.heavy_review_candidate_mode}")
+    print(f"[CONFIG] HEAVY_REVIEW_MAX_CANDIDATES = {config.review.heavy_review_max_candidates}")
     print(f"[CONFIG] ENGINE_STATUS={_engine_status_payload(runtime)}")
     print(f"[CONFIG] CONSISTENCY_MODE={config.consistency.mode}")
 
@@ -596,11 +599,9 @@ def _refresh_report_meta_artifacts(runtime: RuntimeContext, report_meta: Dict[st
 
 def _write_report_outputs(runtime: RuntimeContext, report_payload: Dict[str, Any]) -> Path:
     config = runtime.config
-    with open(config.paths.report_file, "w", encoding="utf-8") as file:
-        json.dump(report_payload, file, indent=2, ensure_ascii=False)
+    atomic_write_json(config.paths.report_file, report_payload)
     ranked_candidates_file = config.paths.dir_output / "ranked_candidates.json"
-    with open(ranked_candidates_file, "w", encoding="utf-8") as file:
-        json.dump(report_payload.get("shot_selection") or {}, file, indent=2, ensure_ascii=False)
+    atomic_write_json(ranked_candidates_file, report_payload.get("shot_selection") or {})
     build_review_packet(
         report_payload,
         config.paths.dir_output,
@@ -1872,8 +1873,26 @@ def _run_pipeline_impl(
         "body_gold_side90_shadow",
         "body_gold_threequarter_review",
     }
-    heavy_review_mode = "full_group" if str(target_profile or "").strip() in heavy_full_group_profiles else "shortlist"
-    heavy_review_max_candidates = len(report_items) if heavy_review_mode == "full_group" else 5
+    configured_heavy_review_mode = str(config.review.heavy_review_candidate_mode or "auto").strip().lower()
+    if configured_heavy_review_mode not in {"auto", "shortlist", "full_group"}:
+        configured_heavy_review_mode = "auto"
+    heavy_review_mode = (
+        "full_group"
+        if (
+            configured_heavy_review_mode == "full_group"
+            or (
+                configured_heavy_review_mode == "auto"
+                and str(target_profile or "").strip() in heavy_full_group_profiles
+            )
+        )
+        else "shortlist"
+    )
+    default_heavy_review_max = len(report_items) if heavy_review_mode == "full_group" else 5
+    heavy_review_max_candidates = (
+        default_heavy_review_max
+        if config.review.heavy_review_max_candidates is None
+        else int(config.review.heavy_review_max_candidates)
+    )
     shot_selection = apply_shortlist_heavy_review(
         runtime,
         report_items,
@@ -1933,6 +1952,8 @@ def main(
     profile_name: Optional[str] = None,
     run_mode: Optional[str] = None,
     heavy_evidence_provider: Optional[str] = None,
+    heavy_review_candidate_mode: Optional[str] = None,
+    heavy_review_max_candidates: Optional[int] = None,
     auto_load_thresholds: Optional[bool] = None,
     threshold_override: Optional[Dict[str, Any]] = None,
     benchmark_report_path: Optional[Path] = None,
@@ -1963,6 +1984,13 @@ def main(
             runtime.config.run_mode = str(run_mode)
     if profile_name is not None:
         runtime.config.review.active_profile = str(profile_name)
+    if heavy_review_candidate_mode is not None:
+        mode = str(heavy_review_candidate_mode).strip().lower()
+        if mode not in {"auto", "shortlist", "full_group"}:
+            raise ValueError("heavy_review_candidate_mode must be one of: auto, shortlist, full_group")
+        runtime.config.review.heavy_review_candidate_mode = mode
+    if heavy_review_max_candidates is not None:
+        runtime.config.review.heavy_review_max_candidates = int(heavy_review_max_candidates)
     resolved_heavy_provider = str(heavy_evidence_provider) if heavy_evidence_provider is not None else None
     if resolved_heavy_provider is None:
         resolved_heavy_provider = get_preferred_heavy_evidence_for_profile(
@@ -2068,11 +2096,7 @@ def main(
                 threshold_override=threshold_override,
             )
         if benchmark_output_path is not None:
-            benchmark_output_path.resolve().parent.mkdir(parents=True, exist_ok=True)
-            benchmark_output_path.resolve().write_text(
-                json.dumps(result, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            atomic_write_json(benchmark_output_path.resolve(), result)
             print(f"[Benchmark 输出] {benchmark_output_path.resolve()}")
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return

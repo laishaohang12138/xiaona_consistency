@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -38,18 +39,32 @@ def _try_init_insightface(allow_classic_fallback: bool) -> Tuple[str, object, Op
 
         providers = ort.get_available_providers()
         print(f"[系统] ONNXRuntime providers: {providers}")
+        device_preference = str(os.getenv("XIAONA_INSIGHTFACE_DEVICE", "auto") or "auto").strip().lower()
+        require_gpu = str(os.getenv("XIAONA_REQUIRE_GPU", "")).strip().lower() in {"1", "true", "yes", "on"}
 
-        if "CUDAExecutionProvider" in providers:
+        if device_preference == "cpu":
+            app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
+            app.prepare(ctx_id=-1, det_size=(640, 640))
+            print("[系统] InsightFace 已按 XIAONA_INSIGHTFACE_DEVICE=cpu 强制使用 CPU")
+        elif "CUDAExecutionProvider" in providers:
             app = FaceAnalysis(name="buffalo_l", providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
             try:
                 app.prepare(ctx_id=0, det_size=(640, 640))
                 print("[系统] InsightFace 已启用：GPU (CUDAExecutionProvider)")
             except Exception as exc:
+                if require_gpu:
+                    reason = f"INSIGHTFACE_CUDA_INIT_FAILED:{exc}"
+                    print(f"[致命] InsightFace CUDA 初始化失败，且当前要求 GPU：{exc}")
+                    return "disabled", None, reason
                 print(f"[警告] InsightFace GPU 初始化失败，回退 CPU。原因: {exc}")
                 app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
                 app.prepare(ctx_id=-1, det_size=(640, 640))
                 print("[系统] InsightFace 已启用：CPU")
         else:
+            if require_gpu:
+                reason = "INSIGHTFACE_CUDA_PROVIDER_MISSING"
+                print("[致命] InsightFace 缺少 CUDAExecutionProvider，且当前要求 GPU。")
+                return "disabled", None, reason
             app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
             app.prepare(ctx_id=-1, det_size=(640, 640))
             print("[系统] InsightFace 已启用：CPU（未检测到 CUDAExecutionProvider）")

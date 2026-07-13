@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import subprocess
@@ -10,6 +11,8 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from core.qa_io import acquire_workflow_lock, atomic_write_json
 
 _PIPELINE_IMPORT_ERROR: Optional[ModuleNotFoundError] = None
 try:
@@ -453,7 +456,7 @@ def _select_review_profile_interactively(default: str = "body_gold_fullbody") ->
     )
 
 
-def _select_heavy_provider_interactively(default: str = "segformer_body_fusion") -> str:
+def _select_heavy_provider_interactively(default: str = "segformer_body_truth_fusion") -> str:
     options = [
         "segformer_body_fusion",
         "segformer_body_truth_fusion",
@@ -631,6 +634,8 @@ def _run_local_powershell_script(
 def _external_setup_status(base_dir: Path) -> Dict[str, Any]:
     repo_3ddfa = (base_dir / "external" / "3DDFA-V3").resolve()
     repo_hmr2 = (base_dir / "external" / "4D-Humans").resolve()
+    sam2_dir = (base_dir / "external" / "models" / "SAM2").resolve()
+    densepose_dir = (base_dir / "external" / "models" / "DensePose").resolve()
     smpl_candidates = [
         base_dir / "external" / "4D-Humans" / "data" / "basicModel_neutral_lbs_10_207_0_v1.0.0.pkl",
         base_dir / "data" / "basicModel_neutral_lbs_10_207_0_v1.0.0.pkl",
@@ -643,6 +648,13 @@ def _external_setup_status(base_dir: Path) -> Dict[str, Any]:
         repo_3ddfa / "assets" / "retinaface_resnet50_2020-07-20_old_torch.pth",
         repo_3ddfa / "assets" / "similarity_Lm3D_all.mat",
     ]
+    try:
+        from core.qa_gpu_device_policy import detect_gpu_status
+
+        gpu_status = detect_gpu_status()
+    except Exception as exc:
+        gpu_status = {"probe_error": str(exc)}
+    sam2_checkpoints = sorted(str(path) for path in sam2_dir.glob("*.pt")) if sam2_dir.exists() else []
     return {
         "repo_3ddfa_ready": repo_3ddfa.exists(),
         "repo_hmr2_ready": repo_hmr2.exists(),
@@ -650,6 +662,11 @@ def _external_setup_status(base_dir: Path) -> Dict[str, Any]:
         "smpl_path": str(next((path for path in smpl_candidates if path.exists()), smpl_candidates[0])),
         "assets_3ddfa_ready": all(path.exists() for path in asset_3ddfa),
         "missing_3ddfa_assets": [str(path) for path in asset_3ddfa if not path.exists()],
+        "sam2_ready": len(sam2_checkpoints) > 0,
+        "sam2_checkpoints": sam2_checkpoints,
+        "densepose_wsl_manifest_ready": (densepose_dir / "bootstrap_densepose_wsl.json").exists(),
+        "densepose_wsl_script_ready": (densepose_dir / "bootstrap_densepose_wsl.sh").exists(),
+        "gpu_status": gpu_status,
     }
 
 
@@ -665,13 +682,126 @@ def _print_external_setup_status(status: Dict[str, Any]) -> None:
         f"3DDFA_assets={'ok' if status.get('assets_3ddfa_ready') else 'missing'} "
         f"| SMPL={'ok' if status.get('smpl_ready') else 'missing'}"
     )
+    gpu_status = status.get("gpu_status") if isinstance(status.get("gpu_status"), dict) else {}
+    torch_status = gpu_status.get("torch") if isinstance(gpu_status.get("torch"), dict) else {}
+    ort_status = gpu_status.get("onnxruntime") if isinstance(gpu_status.get("onnxruntime"), dict) else {}
+    print(
+        "  GPU     : "
+        f"torch_cuda={'ok' if torch_status.get('cuda_available') else 'missing'} "
+        f"| onnxruntime_cuda={'ok' if ort_status.get('cuda_execution_provider') else 'missing'}"
+    )
+    print(
+        "  表面证据: "
+        f"SAM2={'ok' if status.get('sam2_ready') else 'missing'} "
+        f"| DensePose_WSL={'ok' if status.get('densepose_wsl_manifest_ready') and status.get('densepose_wsl_script_ready') else 'missing'}"
+    )
+    device_names = list(torch_status.get("device_names") or [])
+    if device_names:
+        print(f"  GPU 名称 : {', '.join(str(name) for name in device_names)}")
     if status.get("smpl_ready"):
         print(f"  SMPL 路径: {status.get('smpl_path')}")
+    sam2_checkpoints = list(status.get("sam2_checkpoints") or [])
+    if sam2_checkpoints:
+        print(f"  SAM2    : {sam2_checkpoints[0]}")
     missing_assets = list(status.get("missing_3ddfa_assets") or [])
     if missing_assets:
         print("  缺少 3DDFA 资产:")
         for item in missing_assets[:5]:
             print(f"    - {item}")
+
+
+def _resolve_cli_heavy_provider_for_device_policy(
+    *,
+    base_dir: Path,
+    selected_profile: Optional[str],
+    explicit_heavy_provider: Optional[str],
+) -> str:
+    if explicit_heavy_provider:
+        return str(explicit_heavy_provider)
+    try:
+        from core.qa_runtime import create_runtime_config, get_preferred_heavy_evidence_for_profile
+
+        config = create_runtime_config(base_dir)
+        profile = str(selected_profile or config.review.active_profile or "").strip()
+        preferred = get_preferred_heavy_evidence_for_profile(config, profile)
+        return str(preferred or config.provider_policy.get("heavy_evidence") or "")
+    except Exception:
+        return ""
+
+
+def _print_gpu_policy_summary(policy: Dict[str, Any]) -> None:
+    status = policy.get("gpu_status") if isinstance(policy.get("gpu_status"), dict) else {}
+    torch_status = status.get("torch") if isinstance(status.get("torch"), dict) else {}
+    ort_status = status.get("onnxruntime") if isinstance(status.get("onnxruntime"), dict) else {}
+    print(
+        "[GPU策略] "
+        f"device={policy.get('device')} "
+        f"| require_gpu={policy.get('require_gpu')} "
+        f"| surface_auto={policy.get('surface_auto_export') or 'off'} "
+        f"| torch_cuda={torch_status.get('cuda_available')} "
+        f"| ort_cuda={ort_status.get('cuda_execution_provider')}"
+    )
+    device_names = list(torch_status.get("device_names") or [])
+    if device_names:
+        print(f"[GPU策略] torch devices: {', '.join(str(name) for name in device_names)}")
+    blockers = list(policy.get("requirement_blockers") or [])
+    if blockers:
+        print(f"[GPU策略] blockers: {', '.join(str(item) for item in blockers)}")
+
+
+def _apply_cli_device_policy(
+    *,
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    base_dir: Path,
+    selected_profile: Optional[str],
+    effective_mode: str,
+) -> Optional[Dict[str, Any]]:
+    requested_heavy = _resolve_cli_heavy_provider_for_device_policy(
+        base_dir=base_dir,
+        selected_profile=selected_profile,
+        explicit_heavy_provider=args.heavy_provider,
+    )
+    compare_targets = [str(item) for item in (getattr(args, "benchmark_compare_heavy_providers", None) or [])]
+    truth_fusion_requested = (
+        requested_heavy == "segformer_body_truth_fusion"
+        or "segformer_body_truth_fusion" in compare_targets
+    )
+    explicit_device_request = getattr(args, "device_policy", None) is not None
+    explicit_surface_request = getattr(args, "surface_occlusion_auto", None) is not None
+    if (
+        effective_mode not in {"qa", "benchmark"}
+        and not explicit_device_request
+        and not bool(getattr(args, "require_gpu", False))
+    ):
+        return None
+    if not truth_fusion_requested and not explicit_device_request and not explicit_surface_request and not bool(getattr(args, "require_gpu", False)):
+        return None
+
+    device = str(args.device_policy or ("cuda" if truth_fusion_requested else "auto"))
+    surface_auto = str(
+        args.surface_occlusion_auto
+        if args.surface_occlusion_auto is not None
+        else ("densepose,sam2" if truth_fusion_requested and device != "cpu" else "off")
+    )
+    try:
+        from core.qa_gpu_device_policy import apply_truth_fusion_gpu_env
+
+        policy = apply_truth_fusion_gpu_env(
+            device=device,
+            require_gpu=bool(args.require_gpu),
+            surface_auto_export=surface_auto,
+            force=explicit_device_request or explicit_surface_request or bool(args.require_gpu),
+        )
+    except Exception as exc:
+        parser.error(f"failed to apply GPU device policy: {exc}")
+    if policy.get("requirement_blockers"):
+        parser.error(
+            "GPU is required but unavailable: "
+            + ", ".join(str(item) for item in policy.get("requirement_blockers") or [])
+        )
+    _print_gpu_policy_summary(policy)
+    return policy
 
 
 def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
@@ -1387,7 +1517,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         if args.profile is None:
             args.profile = _select_review_profile_interactively(default=str(args.profile or "body_gold_fullbody"))
         if getattr(args, "heavy_provider", None) is None:
-            args.heavy_provider = _select_heavy_provider_interactively(default="segformer_body_fusion")
+            args.heavy_provider = _select_heavy_provider_interactively(default="segformer_body_truth_fusion")
         _print_heavy_provider_explanation(args.heavy_provider)
         return
 
@@ -1427,7 +1557,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         args.mode = _select_run_mode_interactively(default=effective_mode)
         effective_mode = str(args.mode)
     if effective_mode == "qa" and getattr(args, "heavy_provider", None) is None:
-        args.heavy_provider = _select_heavy_provider_interactively(default="segformer_body_fusion")
+        args.heavy_provider = _select_heavy_provider_interactively(default="segformer_body_truth_fusion")
         _print_heavy_provider_explanation(args.heavy_provider)
 
     if effective_mode == "benchmark":
@@ -1531,6 +1661,30 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         return None
 
     paths = _default_review_paths(base_dir, args.artifacts_dir)
+    locked_workflows = {
+        "refresh_review_run_index",
+        "prepare_front_bootstrap_review",
+        "refresh_review_status_board",
+        "refresh_review_invariance_status",
+        "prepare_review_handoff",
+        "refresh_consistency_confidence_matrix",
+        "prepare_pose_gait_margin_review",
+        "prepare_lighting_replay_pack",
+        "prepare_outer_replay_pack",
+        "prepare_topology_replay_pack",
+        "prepare_replay_collection_plan",
+        "refresh_review_artifacts",
+        "prepare_winner_bank_review",
+        "promote_winner",
+        "winner_bank_status",
+    }
+    if workflow in locked_workflows:
+        lock = acquire_workflow_lock(
+            paths["review_handoff_packet"].parent / ".workflow_refresh.lock",
+            owner=workflow,
+        )
+        atexit.register(lock.release)
+
     if workflow == "prepare_input_manifest":
         from core.qa_input_manifest import create_or_update_input_manifest
 
@@ -2079,11 +2233,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             target_profile=target_profile,
             manifest_path=args.input_manifest,
         )
-        paths["preflight_batch"].parent.mkdir(parents=True, exist_ok=True)
-        paths["preflight_batch"].write_text(
-            json.dumps(result, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        atomic_write_json(paths["preflight_batch"], result)
         _print_preflight_summary(result)
         print(f"[预检文件] {paths['preflight_batch']}")
         print("[交互引导] 如果这里已经 WARN/FAIL，先拆批或补齐 input manifest，再跑 shot_review。")
@@ -2111,10 +2261,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             input_dir=(base_dir / "input").resolve(),
             output_root=(base_dir / "input_split").resolve(),
         )
-        paths["materialized_batch_split"].write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        atomic_write_json(paths["materialized_batch_split"], payload)
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         _print_materialized_split_summary(payload)
         print(f"[拆批落盘摘要] {paths['materialized_batch_split']}")
@@ -2140,9 +2287,10 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         status_after = _external_setup_status(base_dir)
         _print_external_setup_status(status_after)
         print("[交互引导] 下一步：")
-        print("  1. 运行批次复核，确认 3DDFA/HMR2 真相链状态。")
+        print("  1. 运行批次复核，确认 3DDFA/HMR2/InsightFace GPU 真相链状态。")
         print("  2. 如 3DDFA 仍缺资产，请按上面的缺失清单补齐 external/3DDFA-V3/assets。")
         print("  3. 如 HMR2 仍缺 SMPL，请确认 basicModel_neutral_lbs_10_207_0_v1.0.0.pkl 路径。")
+        print("  4. 如 SAM2/DensePose 仍缺资产，可先运行 deploy_surface_occlusion_sam2.py 或 deploy_surface_occlusion_densepose_wsl.py。")
         return 0
 
     if workflow == "refresh_review_artifacts":
@@ -2461,11 +2609,7 @@ def _run_shot_review_preflight(
         manifest_path=input_manifest,
     )
     paths = _default_review_paths(base_dir, artifacts_dir)
-    paths["preflight_batch"].parent.mkdir(parents=True, exist_ok=True)
-    paths["preflight_batch"].write_text(
-        json.dumps(result, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_write_json(paths["preflight_batch"], result)
     return result
 
 
@@ -2634,6 +2778,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "disabled",
         ],
         help="Override the heavy evidence provider for QA mode.",
+    )
+    parser.add_argument(
+        "--heavy-candidate-mode",
+        choices=["auto", "shortlist", "full_group"],
+        help=(
+            "Candidate source for heavy review evidence. auto keeps profile defaults; "
+            "full_group lets --heavy-max-candidates cover the ranked batch beyond the shortlist."
+        ),
+    )
+    parser.add_argument(
+        "--heavy-max-candidates",
+        type=int,
+        help="Maximum heavy-review candidates per group. Use 0 for all candidates in the selected candidate mode.",
+    )
+    parser.add_argument(
+        "--device-policy",
+        choices=["auto", "cuda", "cpu"],
+        help="Runtime device policy for the heavy truth stack. Truth-fusion review defaults to cuda.",
+    )
+    parser.add_argument(
+        "--require-gpu",
+        action="store_true",
+        help="Fail fast when the requested GPU stack cannot see CUDA / CUDAExecutionProvider.",
+    )
+    parser.add_argument(
+        "--surface-occlusion-auto",
+        help=(
+            "Optional auto-export order for clothing surface sidecars, for example "
+            "densepose,sam2 / sam2 / off. Truth-fusion GPU review defaults to densepose,sam2."
+        ),
     )
     parser.add_argument(
         "--input-manifest",
@@ -2821,6 +2995,9 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_arg_parser()
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     args = parser.parse_args(argv)
+    if not raw_argv and not (sys.stdin.isatty() and sys.stdout.isatty()):
+        parser.print_help()
+        return 0
     _maybe_enable_interactive_wizard(args, raw_argv)
     base_dir = _resolve_cli_path(args.base_dir, BASE_DIR)
     _prepare_interactive_args(args, base_dir)
@@ -2968,6 +3145,14 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             default_freeze_tag,
         )
 
+    _apply_cli_device_policy(
+        parser=parser,
+        args=args,
+        base_dir=base_dir,
+        selected_profile=selected_profile,
+        effective_mode=effective_mode,
+    )
+
     if effective_mode == "qa":
         preflight_payload = _run_shot_review_preflight(
             base_dir=base_dir,
@@ -2995,6 +3180,10 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             runtime.config.run_mode = str(args.mode)
         if selected_profile is not None:
             runtime.config.review.active_profile = str(selected_profile)
+        if args.heavy_candidate_mode is not None:
+            runtime.config.review.heavy_review_candidate_mode = str(args.heavy_candidate_mode)
+        if args.heavy_max_candidates is not None:
+            runtime.config.review.heavy_review_max_candidates = int(args.heavy_max_candidates)
         resolved_heavy_provider = str(args.heavy_provider) if args.heavy_provider is not None else None
         if resolved_heavy_provider is None:
             from core.qa_runtime import get_preferred_heavy_evidence_for_profile
@@ -3022,6 +3211,8 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             profile_name=selected_profile,
             run_mode=args.mode,
             heavy_evidence_provider=args.heavy_provider,
+            heavy_review_candidate_mode=args.heavy_candidate_mode,
+            heavy_review_max_candidates=args.heavy_max_candidates,
             auto_load_thresholds=True if args.auto_load_thresholds else None,
             threshold_override=threshold_override,
             benchmark_report_path=_resolve_cli_path(args.benchmark_report, base_dir) if args.benchmark_report else None,
@@ -3084,5 +3275,3 @@ __all__ = [
 
 if __name__ == "__main__":
     raise SystemExit(cli())
-
-

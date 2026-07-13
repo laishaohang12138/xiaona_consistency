@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .qa_input_manifest import create_or_update_input_manifest
+from .qa_io import atomic_write_json
 
 _REPLAY_ROOT = Path("input_replay") / "outer"
 _DOC_PATH = Path("docs") / "28_outer_replay_pack.md"
@@ -42,6 +43,11 @@ def _append_note(existing: Any, note: str) -> str:
     return f"{current}; {note}"
 
 
+def _has_images(path: Path) -> bool:
+    suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    return any(child.is_file() and child.suffix.lower() in suffixes for child in path.iterdir()) if path.exists() else False
+
+
 def _load_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
@@ -53,8 +59,7 @@ def _load_json(path: Path) -> Dict[str, Any]:
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(path, payload)
 
 
 def _manifest_summary(base_dir: Path) -> Dict[str, Any]:
@@ -225,11 +230,16 @@ def _write_replay_root_readme(base_dir: Path, rows: List[Dict[str, Any]]) -> Pat
 
 
 def _refresh_prompt_manifest(leaf_dir: Path, row: Dict[str, Any]) -> Dict[str, Any]:
-    previous_payload = _load_json(leaf_dir / "input_manifest.json")
+    manifest_file = leaf_dir / "input_manifest.json"
+    previous_payload = _load_json(manifest_file)
     previous_generated_at = _safe_text(previous_payload.get("generated_at_utc"))
-    manifest_result = create_or_update_input_manifest(leaf_dir)
-    manifest_path = Path(str(manifest_result.get("path") or leaf_dir / "input_manifest.json")).resolve()
-    payload = _load_json(manifest_path)
+    if previous_payload and not _has_images(leaf_dir):
+        manifest_path = manifest_file.resolve()
+        payload = dict(previous_payload)
+    else:
+        manifest_result = create_or_update_input_manifest(leaf_dir)
+        manifest_path = Path(str(manifest_result.get("path") or manifest_file)).resolve()
+        payload = _load_json(manifest_path)
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
 
     payload["schema_version"] = "input_manifest_v1"
@@ -273,7 +283,8 @@ def _refresh_prompt_manifest(leaf_dir: Path, row: Dict[str, Any]) -> Dict[str, A
         raw_item["notes"] = _append_note(raw_item.get("notes"), note)
 
     payload["items"] = items
-    _write_json(manifest_path, payload)
+    if payload != previous_payload:
+        _write_json(manifest_path, payload)
 
     metadata_template_path = (leaf_dir / "_input_manifest_metadata_template.json").resolve()
     _write_json(metadata_template_path, _metadata_template(manifest_path, payload, row))
@@ -384,5 +395,5 @@ def build_outer_replay_pack(
         "lanes": lanes,
     }
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(output_file, payload)
     return payload

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from .qa_io import atomic_write_json
 from .qa_face_pose_canonical import _load_json_object as _load_face_json_object
 from .qa_face_pose_canonical import _normalize_artifact as _normalize_face_artifact
 from .qa_face_pose_canonical import _topology_signature_similarity
@@ -317,12 +318,9 @@ def rebuild_review_artifacts_from_report(
     payload["report_meta"] = report_meta
 
     resolved_output.mkdir(parents=True, exist_ok=True)
-    resolved_report.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(resolved_report, payload)
     ranked_candidates_file = resolved_output / "ranked_candidates.json"
-    ranked_candidates_file.write_text(
-        json.dumps(payload.get("shot_selection") or {}, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_write_json(ranked_candidates_file, payload.get("shot_selection") or {})
     review_packet = build_review_packet(
         payload,
         resolved_output,

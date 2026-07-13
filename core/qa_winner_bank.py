@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
+from .qa_io import atomic_write_json
+
 
 def _round_or_none(value: Optional[float], digits: int = 4) -> Optional[float]:
     if value is None:
@@ -383,7 +385,7 @@ def promote_winner_entry(
             "not_final_image_set": True,
         },
     }
-    curated_bank_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(curated_bank_file, payload)
     return {
         "status": "ok",
         "action": action,
@@ -458,7 +460,7 @@ def build_winner_bank_governance(
             "source": "shortlist_candidates",
         },
     }
-    candidate_file.write_text(json.dumps(candidate_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(candidate_file, candidate_payload)
 
     curated = _load_curated_bank(curated_bank_file)
     drift_rows: List[Dict[str, Any]] = []
@@ -541,7 +543,7 @@ def build_winner_bank_governance(
         "drift_rows": drift_rows,
         "manual_promotion_required": True,
     }
-    drift_file.write_text(json.dumps(drift_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(drift_file, drift_payload)
 
     return {
         "enabled": True,

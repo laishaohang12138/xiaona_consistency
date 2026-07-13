@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .qa_input_manifest import load_input_manifest_index, required_prompt_intent_fields
+from .qa_io import atomic_write_json
 from .qa_winner_bank_policy import winner_bank_bootstrap_policy
 
 
@@ -705,5 +706,5 @@ def build_review_status_board(
         "next_actions": next_actions,
     }
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(output_file, payload)
     return payload

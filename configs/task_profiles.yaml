@@ -189,6 +189,8 @@ review_policy:
   face_no_signal_conf: 0.08
   allow_classic_cv_fallback: false
   fatal_on_engine_unavailable: true
+  heavy_review_candidate_mode: auto
+  heavy_review_max_candidates: null
 
 profile_policy:
   identity_lock:
