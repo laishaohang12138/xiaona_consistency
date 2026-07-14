@@ -759,6 +759,78 @@ def _print_gpu_policy_summary(policy: Dict[str, Any]) -> None:
         print(f"[GPU策略] blockers: {', '.join(str(item) for item in blockers)}")
 
 
+def _require_cli_project_permission(
+    *,
+    parser: argparse.ArgumentParser,
+    permission: str,
+    action: str,
+) -> None:
+    try:
+        from core.qa_project_stage import require_project_permission
+
+        require_project_permission(permission, action=action)
+    except RuntimeError as exc:
+        parser.error(str(exc))
+
+
+def _prepare_cuda_hardware_risk(
+    *,
+    device: str,
+    allow_override: bool,
+    context: str,
+    gpu_status: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    from core.qa_gpu_device_policy import (
+        WINDOWS_NVIDIA_WHEA_RISK_SCHEMA,
+        detect_windows_nvidia_whea_risk,
+    )
+
+    if allow_override:
+        from core.qa_project_stage import require_project_permission
+
+        require_project_permission(
+            "allow_gpu_hardware_risk_override",
+            action=f"{context} GPU hardware-risk override",
+        )
+
+    normalized_device = str(device or "auto").strip().lower()
+    status = gpu_status if isinstance(gpu_status, dict) else {}
+    cuda_selected = normalized_device == "cuda" or (
+        normalized_device == "auto"
+        and (
+            bool(status.get("gpu_ready_for_torch_models"))
+            or bool(status.get("gpu_ready_for_insightface"))
+        )
+    )
+    if not cuda_selected:
+        return {
+            "schema_version": WINDOWS_NVIDIA_WHEA_RISK_SCHEMA,
+            "probe_state": "BYPASSED_CPU_EXECUTION"
+            if normalized_device == "cpu"
+            else "BYPASSED_NO_CUDA_CAPABILITY",
+            "risk_state": "CPU_EXECUTION_SELECTED"
+            if normalized_device == "cpu"
+            else "NO_CUDA_CAPABILITY_SELECTED",
+            "blockers": [],
+        }
+
+    hardware_risk = detect_windows_nvidia_whea_risk()
+    print(
+        "[GPU硬件风险] "
+        f"probe={hardware_risk.get('probe_state')} "
+        f"| state={hardware_risk.get('risk_state')} "
+        f"| nvidia_whea17_since_boot={hardware_risk.get('nvidia_whea17_count_since_boot')}"
+    )
+    blockers = list(hardware_risk.get("blockers") or [])
+    if blockers and not allow_override:
+        raise ValueError(
+            f"{context} CUDA run blocked by hardware-risk preflight: "
+            + ", ".join(str(blocker) for blocker in blockers)
+            + "; use --device-policy cpu or remediate/reboot before retrying"
+        )
+    return hardware_risk
+
+
 def _apply_cli_device_policy(
     *,
     parser: argparse.ArgumentParser,
@@ -785,7 +857,13 @@ def _apply_cli_device_policy(
         and not bool(getattr(args, "require_gpu", False))
     ):
         return None
-    if not truth_fusion_requested and not explicit_device_request and not explicit_surface_request and not bool(getattr(args, "require_gpu", False)):
+    if (
+        effective_mode != "qa"
+        and not truth_fusion_requested
+        and not explicit_device_request
+        and not explicit_surface_request
+        and not bool(getattr(args, "require_gpu", False))
+    ):
         return None
 
     device = str(args.device_policy or ("cuda" if truth_fusion_requested else "auto"))
@@ -794,6 +872,22 @@ def _apply_cli_device_policy(
         if args.surface_occlusion_auto is not None
         else ("densepose,sam2" if truth_fusion_requested and device != "cpu" else "off")
     )
+    if bool(args.allow_gpu_hardware_risk):
+        _require_cli_project_permission(
+            parser=parser,
+            permission="allow_gpu_hardware_risk_override",
+            action=f"{effective_mode} GPU hardware-risk override",
+        )
+    hardware_risk: Optional[Dict[str, Any]] = None
+    if device != "auto":
+        try:
+            hardware_risk = _prepare_cuda_hardware_risk(
+                device=device,
+                allow_override=bool(args.allow_gpu_hardware_risk),
+                context="shot_review" if effective_mode == "qa" else effective_mode,
+            )
+        except (RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
     try:
         from core.qa_gpu_device_policy import apply_truth_fusion_gpu_env
 
@@ -810,6 +904,18 @@ def _apply_cli_device_policy(
             "GPU is required but unavailable: "
             + ", ".join(str(item) for item in policy.get("requirement_blockers") or [])
         )
+    if hardware_risk is None:
+        try:
+            hardware_risk = _prepare_cuda_hardware_risk(
+                device=str(policy.get("device") or device),
+                allow_override=bool(args.allow_gpu_hardware_risk),
+                context="shot_review" if effective_mode == "qa" else effective_mode,
+                gpu_status=policy.get("gpu_status") if isinstance(policy.get("gpu_status"), dict) else None,
+            )
+        except (RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
+    policy["gpu_hardware_risk"] = hardware_risk
+    policy["gpu_hardware_risk_override"] = bool(args.allow_gpu_hardware_risk)
     _print_gpu_policy_summary(policy)
     return policy
 
@@ -1674,34 +1780,13 @@ def _prepare_repeatability_device_policy(
     device = str(args.device_policy or "cuda")
     require_gpu = bool(args.require_gpu or device == "cuda")
     try:
-        from core.qa_gpu_device_policy import (
-            apply_truth_fusion_gpu_env,
-            detect_windows_nvidia_whea_risk,
-        )
+        from core.qa_gpu_device_policy import apply_truth_fusion_gpu_env
 
-        hardware_risk = (
-            detect_windows_nvidia_whea_risk()
-            if device == "cuda"
-            else {
-                "schema_version": "windows_nvidia_whea_risk_v0_1",
-                "probe_state": "BYPASSED_CPU_EXECUTION",
-                "risk_state": "CPU_EXECUTION_SELECTED",
-                "blockers": [],
-            }
+        hardware_risk = _prepare_cuda_hardware_risk(
+            device=device,
+            allow_override=bool(args.allow_gpu_hardware_risk),
+            context="repeatability",
         )
-        print(
-            "[GPU硬件风险] "
-            f"probe={hardware_risk.get('probe_state')} "
-            f"| state={hardware_risk.get('risk_state')} "
-            f"| nvidia_whea17_since_boot={hardware_risk.get('nvidia_whea17_count_since_boot')}"
-        )
-        hardware_blockers = list(hardware_risk.get("blockers") or [])
-        if hardware_blockers and not bool(args.allow_gpu_hardware_risk):
-            raise ValueError(
-                "repeatability CUDA run blocked by hardware-risk preflight: "
-                + ", ".join(str(blocker) for blocker in hardware_blockers)
-                + "; use --device-policy cpu, or explicitly acknowledge risk with --allow-gpu-hardware-risk"
-            )
 
         gpu_policy = apply_truth_fusion_gpu_env(
             device=device,
@@ -2397,7 +2482,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
 
     if workflow == "preflight_batch":
         try:
-            from core.qa_preflight import create_lightweight_preflight_config, run_preflight_batch
+            from core.qa_preflight import static_preflight_blockers
         except ModuleNotFoundError as exc:
             missing_name = str(getattr(exc, "name", "") or "unknown")
             raise RuntimeError(
@@ -2405,29 +2490,28 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
                 "Run it with .venv\\Scripts\\python.exe or install the full QA dependencies."
             ) from exc
 
-        runtime = None
-        config = create_lightweight_preflight_config(base_dir)
-        try:
-            runtime = create_runtime(base_dir)
-            config = runtime.config
-        except Exception:
-            runtime = None
         input_dir = _resolve_input_dir_arg(args.input_dir, base_dir)
-        if runtime is not None:
-            _override_runtime_input_dir(runtime, input_dir)
-            config = runtime.config
-        target_profile = str(args.profile or config.review.active_profile or "").strip()
-        if not target_profile:
-            raise ValueError("preflight_batch could not resolve an active profile")
-
-        result = run_preflight_batch(
-            runtime,
-            config=config,
+        manifest_path = _resolve_cli_path(args.input_manifest, base_dir) if args.input_manifest else None
+        result = _run_shot_review_preflight(
+            base_dir=base_dir,
+            target_profile=args.profile,
+            input_manifest=manifest_path,
             input_dir=input_dir,
-            target_profile=target_profile,
-            manifest_path=args.input_manifest,
+            artifacts_dir=args.artifacts_dir,
+            initialize_runtime=False,
         )
-        atomic_write_json(paths["preflight_batch"], result)
+        blockers = static_preflight_blockers(result)
+        if blockers:
+            print(f"[预检] 静态阻断，跳过视觉 runtime: {', '.join(blockers)}")
+        else:
+            result = _run_shot_review_preflight(
+                base_dir=base_dir,
+                target_profile=args.profile,
+                input_manifest=manifest_path,
+                input_dir=input_dir,
+                artifacts_dir=args.artifacts_dir,
+                initialize_runtime=True,
+            )
         _print_preflight_summary(result)
         print(f"[预检文件] {paths['preflight_batch']}")
         print("[交互引导] 如果这里已经 WARN/FAIL，先拆批或补齐 input manifest，再跑 shot_review。")
@@ -2777,20 +2861,25 @@ def _run_shot_review_preflight(
     input_manifest: Optional[Path],
     input_dir: Optional[Path] = None,
     artifacts_dir: Optional[Path] = None,
+    initialize_runtime: bool = True,
 ) -> Dict[str, Any]:
     from core.qa_preflight import create_lightweight_preflight_config, run_preflight_batch
 
     runtime = None
     config = create_lightweight_preflight_config(base_dir)
     resolved_input_dir = input_dir or config.paths.dir_input
-    try:
-        runtime = create_runtime(base_dir)
-        config = runtime.config
-        _override_runtime_input_dir(runtime, resolved_input_dir)
-        config = runtime.config
-    except Exception:
-        runtime = None
-    config.paths = replace(config.paths, dir_input=resolved_input_dir)
+    if initialize_runtime:
+        try:
+            runtime = create_runtime(base_dir)
+            config = runtime.config
+            _override_runtime_input_dir(runtime, resolved_input_dir)
+            config = runtime.config
+        except Exception:
+            runtime = None
+    if runtime is None:
+        config.paths.dir_input = resolved_input_dir
+    else:
+        config.paths = replace(config.paths, dir_input=resolved_input_dir)
 
     resolved_profile = str(target_profile or config.review.active_profile or "").strip()
     if not resolved_profile:
@@ -3096,8 +3185,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--allow-gpu-hardware-risk",
         action="store_true",
         help=(
-            "Explicitly acknowledge and override NVIDIA WHEA hardware-risk blockers for a CUDA repeatability run. "
-            "The risk snapshot and override are recorded in the run contract."
+            "Project-stage-gated NVIDIA WHEA hardware-risk override for CUDA review/repeatability. "
+            "It is denied during the current measurement-qualification stage."
         ),
     )
     parser.add_argument(
@@ -3108,7 +3197,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-preflight-fail",
         action="store_true",
-        help="Allow QA shot_review to continue even when preflight_batch returns FAIL.",
+        help="Project-stage-gated override for QA shot_review preflight FAIL; denied in the current stage.",
     )
     parser.add_argument(
         "--winner-image",
@@ -3271,6 +3360,13 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
 
+    if effective_mode == "calibrate":
+        _require_cli_project_permission(
+            parser=parser,
+            permission="calibrate_quality_thresholds",
+            action="calibrate mode",
+        )
+
     benchmark_preset_info: Optional[Dict[str, Any]] = None
     if effective_mode in {"qa", "benchmark"} and (args.benchmark_preset or args.interactive):
         try:
@@ -3290,6 +3386,11 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             )
 
     if args.mode == "optuna":
+        _require_cli_project_permission(
+            parser=parser,
+            permission="optuna_parameter_fitting",
+            action="Optuna parameter fitting",
+        )
         if args.benchmark_labels is None:
             parser.error("optuna mode requires --benchmark-labels")
 
@@ -3384,6 +3485,31 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             default_freeze_tag,
         )
 
+    if effective_mode == "qa":
+        if args.allow_preflight_fail:
+            _require_cli_project_permission(
+                parser=parser,
+                permission="allow_preflight_fail_override",
+                action="shot_review preflight-failure override",
+            )
+        static_preflight_payload = _run_shot_review_preflight(
+            base_dir=base_dir,
+            target_profile=selected_profile,
+            input_manifest=_resolve_cli_path(args.input_manifest, base_dir) if args.input_manifest else None,
+            input_dir=_resolve_input_dir_arg(args.input_dir, base_dir),
+            artifacts_dir=args.artifacts_dir,
+            initialize_runtime=False,
+        )
+        from core.qa_preflight import static_preflight_blockers
+
+        static_blockers = static_preflight_blockers(static_preflight_payload)
+        if static_blockers:
+            _print_preflight_summary(static_preflight_payload)
+            print(f"[预检文件] {_default_review_paths(base_dir, args.artifacts_dir)['preflight_batch']}")
+            print(f"[交互引导] 静态预检阻断，未初始化视觉 runtime: {', '.join(static_blockers)}")
+            print("[交互引导] 请先补齐 input manifest/提示词意图元数据，或修复空批次。")
+            return 2
+
     _apply_cli_device_policy(
         parser=parser,
         args=args,
@@ -3399,13 +3525,14 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             input_manifest=_resolve_cli_path(args.input_manifest, base_dir) if args.input_manifest else None,
             input_dir=_resolve_input_dir_arg(args.input_dir, base_dir),
             artifacts_dir=args.artifacts_dir,
+            initialize_runtime=True,
         )
         _print_preflight_summary(preflight_payload)
         print(f"[预检文件] {_default_review_paths(base_dir, args.artifacts_dir)['preflight_batch']}")
         preflight_status = str((preflight_payload.get("batch_preflight") or {}).get("status") or "").upper()
         if preflight_status == "FAIL" and not args.allow_preflight_fail:
             print("[交互引导] 当前 batch preflight 失败，已阻断 shot_review。")
-            print("[交互引导] 先拆批或补齐 input manifest；如确需继续，可显式追加 --allow-preflight-fail。")
+            print("[交互引导] 先拆批或补齐 input manifest；当前项目阶段不允许绕过失败预检。")
             return 2
         if preflight_status == "FAIL" and args.allow_preflight_fail:
             print("[交互引导] 已显式允许 preflight FAIL，继续执行 shot_review。")

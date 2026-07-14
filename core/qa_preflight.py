@@ -248,6 +248,17 @@ def run_preflight_batch(
     }
 
 
+def static_preflight_blockers(payload: Dict[str, Any]) -> List[str]:
+    blockers: List[str] = []
+    if int(payload.get("input_count") or 0) <= 0:
+        blockers.append("INPUT_BATCH_EMPTY")
+    batch = payload.get("batch_preflight") if isinstance(payload.get("batch_preflight"), dict) else {}
+    intended_lane_coverage = _safe_float(batch.get("intended_lane_coverage")) or 0.0
+    if intended_lane_coverage < 0.50:
+        blockers.append("PROMPT_INTENT_METADATA_MISSING")
+    return blockers
+
+
 def create_lightweight_preflight_config(base_dir: Path) -> Any:
     release_gates: Dict[str, Any] = {}
     yaml_path = (base_dir / "configs" / "release_gates.yaml").resolve()

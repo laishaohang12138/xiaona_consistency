@@ -25,9 +25,11 @@ XiaoNa LoRA candidate screening and consistency-evidence repository.
 - `outputs/qa_report.json` now writes `report_meta` plus `items`, including provider policy, anchor snapshot, layer quota snapshot, and threshold hash
 - Benchmark replay can re-score a saved `qa_report.json` under threshold overrides without rerunning vision models
 - Optuna search can optimize replay metrics from `configs/optuna_search_space.template.json` without touching the main QA path
-- `configs/optuna_guard.json` keeps Optuna locked until project optimization, frozen benchmark labels, and anchor coverage are ready
+- `configs/project_stage.json` is the non-overridable project-stage authority; calibration, Optuna fitting, Winner Bank freezing, and risk bypasses are currently denied
+- `configs/optuna_guard.json` remains an additional Optuna readiness check and cannot relax the project-stage lock
 - `configs/optuna_mode_presets.json` provides user-facing review / front / 3q / side / full-release fit presets
 - Winner bank is currently mutable review memory, not frozen release truth or a fitting source
+- QA runs perform metadata-only preflight before visual runtime initialization, and CUDA review paths fail closed on NVIDIA WHEA risk
 - Body truth is pose/gait-aware: `Task-63987060-116-1.png` remains the only body truth while pose-sensitive deltas are interpreted separately
 - Side/back evidence now carries same-truth projection confidence and uncertainty; derived projections do not create new truth anchors
 - Final training-set admission and final image-set construction are outside this repository; outputs are screening, review-priority ranking, risk routing, and evidence packets only

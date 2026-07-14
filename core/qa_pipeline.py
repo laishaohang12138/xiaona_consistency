@@ -49,6 +49,7 @@ from .qa_outfit import (
 from .qa_review_only_score import apply_review_only_score_v2
 from .qa_review_refresh import refresh_review_topology_state
 from .qa_review_packet import build_review_packet
+from .qa_project_stage import require_project_permission
 from .qa_runtime import (
     AnchorSet,
     EngineState,
@@ -729,6 +730,10 @@ def calibrate_quality_thresholds(
     runtime: RuntimeContext,
     calib_dir: Optional[Path] = None,
 ) -> Dict[str, float]:
+    require_project_permission(
+        "calibrate_quality_thresholds",
+        action="quality-threshold calibration",
+    )
     target_dir = calib_dir or runtime.config.paths.dir_calib
     images = list_images_in_dir(target_dir)
     if len(images) == 0:
@@ -1987,6 +1992,11 @@ def main(
     benchmark_update_labels: bool = False,
 ) -> None:
     effective_run_mode = str(run_mode) if run_mode is not None else "qa"
+    if effective_run_mode == "calibrate":
+        require_project_permission(
+            "calibrate_quality_thresholds",
+            action="calibrate mode",
+        )
     needs_live_visual_runtime = effective_run_mode == "benchmark" and bool(benchmark_compare_heavy_providers)
     if effective_run_mode == "benchmark" and not needs_live_visual_runtime:
         config = create_runtime_config(base_dir)

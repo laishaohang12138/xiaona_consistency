@@ -261,10 +261,10 @@ occlusion providers.
 
 On Windows, a CUDA repeatability run also checks NVIDIA-linked WHEA event 17
 records since the current boot. Any observed NVIDIA PCIe corrected hardware
-error, or a failed risk probe, blocks model initialization. The only bypass is
-the explicit `--allow-gpu-hardware-risk` acknowledgement; both the risk snapshot
-and override state are frozen into the run contract. Selecting
-`--device-policy cpu` bypasses GPU execution rather than bypassing the evidence.
+error, or a failed risk probe, blocks model initialization. The
+`--allow-gpu-hardware-risk` flag is controlled by `configs/project_stage.json`
+and is denied during the current measurement-qualification stage. Selecting
+`--device-policy cpu` chooses CPU execution rather than bypassing the evidence.
 
 Each baseline and trial writes its image and result atomically under
 `outputs/identity_repeatability_runs/<run_id>/items/`. Repeating the same

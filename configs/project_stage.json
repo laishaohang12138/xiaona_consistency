@@ -1,0 +1,11 @@
+{
+  "schema_version": "project_stage_v1",
+  "stage": "MEASUREMENT_QUALIFICATION",
+  "permissions": {
+    "calibrate_quality_thresholds": false,
+    "optuna_parameter_fitting": false,
+    "winner_bank_freeze": false,
+    "allow_preflight_fail_override": false,
+    "allow_gpu_hardware_risk_override": false
+  }
+}

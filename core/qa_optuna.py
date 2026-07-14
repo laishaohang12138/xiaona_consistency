@@ -13,6 +13,7 @@ from .qa_benchmark import (
     load_benchmark_label_bundle,
 )
 from .qa_pipeline import print_runtime_config
+from .qa_project_stage import require_project_permission
 from .qa_runtime import EngineState, RuntimeContext, anchor_registry_snapshot, create_runtime_config
 from .qa_io import atomic_write_json
 
@@ -671,6 +672,11 @@ def run_optuna_search(
     guard_path: Optional[Path] = None,
     preset: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    resolved_base_dir = (base_dir or Path(__file__).resolve().parent.parent).resolve()
+    require_project_permission(
+        "optuna_parameter_fitting",
+        action="Optuna parameter fitting",
+    )
     try:
         import optuna
     except ImportError as exc:
@@ -681,7 +687,7 @@ def run_optuna_search(
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     search_space = load_optuna_search_space(search_space_path)
-    runtime = _build_runtime(base_dir)
+    runtime = _build_runtime(resolved_base_dir)
     print_runtime_config(runtime)
 
     report_path = report_path.resolve()

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .qa_io import atomic_write_json
+from .qa_project_stage import load_project_stage
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -578,14 +579,20 @@ def build_review_invariance_status(
         else:
             next_actions.append("prepare a controlled lighting replay pack before adjusting lighting gates")
 
+    project_stage = load_project_stage()
+    winner_bank_freeze_stage_allowed = bool(
+        project_stage["permissions"].get("winner_bank_freeze", False)
+    )
     payload = {
         "schema_version": "review_invariance_status_v1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "overall_status": "READY" if overall_ready else "NOT_READY",
         "winner_bank_bootstrap_allowed": bool(overall_ready),
-        "winner_bank_freeze_allowed": bool(overall_ready),
+        "winner_bank_freeze_prerequisites_satisfied": bool(overall_ready),
+        "winner_bank_freeze_allowed": bool(overall_ready and winner_bank_freeze_stage_allowed),
         "winner_bank_mutable_memory_allowed": True,
         "parameter_fitting_allowed": False,
+        "project_stage": project_stage["stage"],
         "gates": gates,
         "next_actions": next_actions,
     }
