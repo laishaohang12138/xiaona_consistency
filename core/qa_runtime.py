@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1121,6 +1122,10 @@ def _normalize_anchor_registry(data: Any) -> Dict[str, Any]:
             out_anchors[str(anchor_id)] = {
                 "role": str(node.get("role", "")),
                 "anchor_tier": str(node.get("anchor_tier", "")).strip().lower(),
+                "authority": str(node.get("authority", "")).strip().upper(),
+                "mutable": bool(node.get("mutable", False)),
+                "may_modify_truth": bool(node.get("may_modify_truth", False)),
+                "expected_sha256": str(node.get("expected_sha256", "")).strip().lower(),
                 "priority": _coerce_float(node.get("priority", 0), 0.0),
                 "required_default": bool(node.get("required_default", False)),
                 "path": str(node.get("path", "")),
@@ -1693,9 +1698,26 @@ def anchor_registry_snapshot(config: RuntimeConfig) -> Dict[str, Any]:
             continue
         raw_path = str(node.get("path", "")).strip()
         resolved_path = _resolve_registry_path(config, raw_path) if raw_path else None
+        actual_sha256 = None
+        if resolved_path is not None and resolved_path.exists() and resolved_path.is_file():
+            digest = hashlib.sha256()
+            with resolved_path.open("rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+            actual_sha256 = digest.hexdigest()
+        expected_sha256 = str(node.get("expected_sha256", "")).strip().lower() or None
+        integrity_status = "NOT_PINNED"
+        if expected_sha256:
+            integrity_status = "MATCH" if actual_sha256 == expected_sha256 else "MISMATCH"
         snapshot["entries"][str(anchor_id)] = {
             "role": str(node.get("role", "")),
             "anchor_tier": str(node.get("anchor_tier", "")).strip().lower(),
+            "authority": str(node.get("authority", "")).strip().upper(),
+            "mutable": bool(node.get("mutable", False)),
+            "may_modify_truth": bool(node.get("may_modify_truth", False)),
             "required_default": bool(node.get("required_default", False)),
             "view_bucket": str(node.get("view_bucket", "")),
             "view_side": str(node.get("view_side", "unknown")),
@@ -1705,6 +1727,9 @@ def anchor_registry_snapshot(config: RuntimeConfig) -> Dict[str, Any]:
             "path": raw_path,
             "resolved_path": str(resolved_path) if resolved_path is not None else "",
             "exists": bool(resolved_path and resolved_path.exists()),
+            "expected_sha256": expected_sha256,
+            "actual_sha256": actual_sha256,
+            "integrity_status": integrity_status,
         }
     if isinstance(snapshot.get("rules"), dict):
         truth_map = {
@@ -1721,6 +1746,12 @@ def anchor_registry_snapshot(config: RuntimeConfig) -> Dict[str, Any]:
                 "resolved_path": str(anchor_node.get("resolved_path", "")),
                 "exists": bool(anchor_node.get("exists", False)),
                 "role": str(anchor_node.get("role", "")),
+                "authority": str(anchor_node.get("authority", "")),
+                "mutable": bool(anchor_node.get("mutable", False)),
+                "may_modify_truth": bool(anchor_node.get("may_modify_truth", False)),
+                "expected_sha256": anchor_node.get("expected_sha256"),
+                "actual_sha256": anchor_node.get("actual_sha256"),
+                "integrity_status": str(anchor_node.get("integrity_status", "NOT_PINNED")),
             }
         snapshot["truth_anchors"] = truth_snapshot
     return snapshot

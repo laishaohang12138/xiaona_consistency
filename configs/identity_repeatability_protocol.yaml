@@ -1,0 +1,112 @@
+schema_version: identity_repeatability_probe_protocol_v0_1
+protocol_id: identity_repeatability_probe_protocol_v0_1
+protocol_state: PREREGISTERED_NOT_EXECUTED
+
+governance:
+  mode: SHADOW
+  decision_influence: NONE
+  parameter_fitting_allowed: false
+  threshold_fitting_allowed: false
+  may_affect_ranking: false
+  may_affect_review_route: false
+  may_affect_winner_bank: false
+
+execution:
+  enabled_by_default: false
+  requires_explicit_workflow: true
+  max_concurrent_gpu_jobs: 1
+  atomic_trial_writes: true
+  resume_per_trial: true
+  retain_completed_materialized_images: false
+  retain_failed_materialized_images: true
+
+transform_contract:
+  schema_version: identity_repeatability_transform_contract_v0_1
+  input_decode: opencv_imdecode_bgr8_unchanged_orientation
+  preserve_output_dimensions: true
+  identity_copy: exact_source_bytes
+  png:
+    encoder: opencv_imencode
+    compression: 3
+  jpeg:
+    encoder: opencv_imencode
+    quality: 95
+  resize_roundtrip:
+    first_down_interpolation: INTER_AREA
+    first_up_interpolation: INTER_CUBIC
+    return_interpolation: INTER_LINEAR
+  crop_translation:
+    operator: warpAffine
+    interpolation: INTER_LINEAR
+    border_mode: BORDER_REFLECT_101
+  gamma:
+    formula: output_255_times_input_over_255_power_1_plus_signed_strength
+    clipping: zero_to_255_uint8
+
+domains:
+  numerical_repeatability:
+    purpose: identical_input_identical_contract_reexecution
+    repeat_count: 3
+    transforms:
+      - id: identity_transform
+        family: none
+        signed_strength: 0.0
+        unit: none
+
+  preprocessing_repeatability:
+    purpose: codec_and_resampling_pipeline_sensitivity
+    transforms:
+      - id: png_lossless_roundtrip
+        family: codec_roundtrip
+        signed_strength: 0.0
+        unit: lossless
+      - id: jpeg_quality_95_roundtrip
+        family: jpeg_roundtrip
+        signed_strength: 95.0
+        unit: jpeg_quality
+      - id: resize_roundtrip_0_98
+        family: resize_roundtrip
+        signed_strength: -0.02
+        unit: relative_scale
+      - id: resize_roundtrip_1_02
+        family: resize_roundtrip
+        signed_strength: 0.02
+        unit: relative_scale
+
+  admissible_perturbation_stability:
+    purpose: local_measurement_sensitivity_without_identity_change_claim
+    transforms:
+      - id: crop_translate_x_negative
+        family: normalized_crop_translation_x
+        signed_strength: -0.0025
+        unit: image_width_fraction
+      - id: crop_translate_x_positive
+        family: normalized_crop_translation_x
+        signed_strength: 0.0025
+        unit: image_width_fraction
+      - id: crop_translate_y_negative
+        family: normalized_crop_translation_y
+        signed_strength: -0.0025
+        unit: image_height_fraction
+      - id: crop_translate_y_positive
+        family: normalized_crop_translation_y
+        signed_strength: 0.0025
+        unit: image_height_fraction
+      - id: gamma_negative
+        family: gamma
+        signed_strength: -0.02
+        unit: gamma_delta
+      - id: gamma_positive
+        family: gamma
+        signed_strength: 0.02
+        unit: gamma_delta
+
+reporting:
+  native_descriptors:
+    - min
+    - median
+    - max
+    - spread
+  record_detector_chain_transitions: true
+  combined_repeatability_score: null
+  stable_unstable_threshold: null

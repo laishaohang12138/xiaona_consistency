@@ -45,6 +45,16 @@ def _normalize_vector(value: Any) -> Optional[np.ndarray]:
     return vector
 
 
+def _unit_vector(value: Any) -> Optional[np.ndarray]:
+    vector = _normalize_vector(value)
+    if vector is None or not bool(np.all(np.isfinite(vector))):
+        return None
+    norm = float(np.linalg.norm(vector, ord=2))
+    if norm <= 1e-12:
+        return None
+    return vector / norm
+
+
 def _landmark_points(value: Any) -> Optional[np.ndarray]:
     vector = _normalize_vector(value)
     if vector is None or vector.size < 6 or vector.size % 2 != 0:
@@ -338,6 +348,23 @@ def _sidecar_candidates(image_path: Path) -> List[Path]:
 
 def _normalize_artifact(raw: Dict[str, Any], *, source_path: Path, source_role: str) -> Dict[str, Any]:
     canonical_landmarks = _normalize_vector(raw.get("canonical_landmarks") or raw.get("landmarks_2d") or raw.get("landmarks"))
+    landmark_visibility_weights = _normalize_vector(
+        raw.get("landmark_visibility_weights")
+        or raw.get("landmark_weights")
+        or raw.get("landmark_confidence")
+    )
+    runtime_identity_value = raw.get("runtime_face_embedding_raw")
+    if runtime_identity_value is None:
+        runtime_identity_value = raw.get("canonical_identity_vector")
+    if runtime_identity_value is None:
+        runtime_identity_value = raw.get("identity_vector")
+    if runtime_identity_value is None:
+        runtime_identity_value = raw.get("face_embedding")
+    runtime_identity_vector = _normalize_vector(runtime_identity_value)
+    runtime_identity_unit_value = raw.get("runtime_face_embedding_unit")
+    if runtime_identity_unit_value is None:
+        runtime_identity_unit_value = runtime_identity_vector
+    runtime_identity_unit = _unit_vector(runtime_identity_unit_value)
     topology_signature = _normalize_vector(
         raw.get("canonical_face_topology_signature") or raw.get("face_topology_signature")
     )
@@ -348,11 +375,41 @@ def _normalize_artifact(raw: Dict[str, Any], *, source_path: Path, source_role: 
         "provider_name": str(raw.get("provider_name") or _PROVIDER_NAME),
         "provider_family": str(raw.get("provider_family") or _PROVIDER_FAMILY),
         "provider_version": str(raw.get("provider_version") or _PROVIDER_VERSION),
+        "model_id": str(raw.get("model_id") or _MODEL_ID),
+        "model_sha256": str(raw.get("model_sha256") or "").strip() or None,
+        "provider_implementation_sha256": str(
+            raw.get("provider_implementation_sha256") or ""
+        ).strip()
+        or None,
+        "provider_execution_backend": str(raw.get("provider_execution_backend") or "").strip() or None,
         "source_path": str(raw.get("source_path") or source_path),
         "source_role": str(raw.get("source_role") or source_role),
         "canonical_landmarks": canonical_landmarks,
+        "landmark_visibility_weights": landmark_visibility_weights,
+        "landmark_schema_id": str(raw.get("landmark_schema_id") or "").strip() or None,
+        "landmark_source_field": str(raw.get("landmark_source_field") or "").strip() or None,
+        "landmark_coordinate_convention": str(
+            raw.get("landmark_coordinate_convention") or ""
+        ).strip()
+        or None,
+        "canonical_preprocessing_contract_id": str(
+            raw.get("canonical_preprocessing_contract_id") or ""
+        ).strip()
+        or None,
+        "canonical_landmark_contract": (
+            dict(raw.get("canonical_landmark_contract"))
+            if isinstance(raw.get("canonical_landmark_contract"), dict)
+            else {}
+        ),
         "canonical_face_topology_signature": topology_signature,
-        "canonical_identity_vector": _normalize_vector(raw.get("canonical_identity_vector") or raw.get("identity_vector") or raw.get("face_embedding")),
+        "runtime_face_embedding_raw": runtime_identity_vector,
+        "runtime_face_embedding_unit": runtime_identity_unit,
+        "runtime_face_embedding_contract": (
+            dict(raw.get("runtime_face_embedding_contract"))
+            if isinstance(raw.get("runtime_face_embedding_contract"), dict)
+            else {}
+        ),
+        "canonical_identity_vector": runtime_identity_vector,
         "pose_euler_deg": _normalize_pose_euler(raw.get("pose_euler_deg") or raw.get("pose_euler") or raw.get("pose")),
         "visible_face_coverage": _safe_float(raw.get("visible_face_coverage"), None),
         "frontalization_quality": _safe_float(raw.get("frontalization_quality"), None),
@@ -550,13 +607,19 @@ class FacePoseCanonicalProvider(FaceCanonicalProvider):
             pose_euler = dict(candidate_artifact.get("pose_euler_deg") or pose_euler)
 
         if master_artifact is not None and candidate_artifact is not None:
+            master_identity_vector = master_artifact.get("runtime_face_embedding_raw")
+            if master_identity_vector is None:
+                master_identity_vector = master_artifact.get("canonical_identity_vector")
+            candidate_identity_vector = candidate_artifact.get("runtime_face_embedding_raw")
+            if candidate_identity_vector is None:
+                candidate_identity_vector = candidate_artifact.get("canonical_identity_vector")
             canonical_face_landmark_similarity, _ = _landmark_similarity(
                 master_artifact.get("canonical_landmarks"),
                 candidate_artifact.get("canonical_landmarks"),
             )
             canonical_face_identity_similarity, _ = _vector_similarity(
-                master_artifact.get("canonical_identity_vector"),
-                candidate_artifact.get("canonical_identity_vector"),
+                master_identity_vector,
+                candidate_identity_vector,
             )
             canonical_face_topology_similarity, canonical_face_topology_delta = _topology_signature_similarity(
                 master_artifact.get("canonical_face_topology_signature"),

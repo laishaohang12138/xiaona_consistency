@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
@@ -58,6 +60,138 @@ def _to_vector(value: Any) -> Optional[np.ndarray]:
     if vector.size == 0:
         return None
     return vector.reshape(-1)
+
+
+@lru_cache(maxsize=32)
+def _sha256_file_cached(path_text: str) -> Optional[str]:
+    path = Path(path_text)
+    if not path.exists() or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@lru_cache(maxsize=8)
+def _model_bundle_contract(bundle_id: str, path_texts: tuple[str, ...]) -> Dict[str, Any]:
+    components = []
+    complete = True
+    for path_text in sorted(path_texts):
+        path = Path(path_text)
+        sha256 = _sha256_file_cached(str(path.resolve()))
+        if sha256 is None:
+            complete = False
+        components.append({"name": path.name, "path": str(path.resolve()), "sha256": sha256})
+    bundle_sha256 = None
+    if complete and components:
+        digest = hashlib.sha256()
+        for component in components:
+            digest.update(str(component["name"]).encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(str(component["sha256"]).encode("ascii"))
+            digest.update(b"\n")
+        bundle_sha256 = digest.hexdigest()
+    return {
+        "bundle_id": str(bundle_id),
+        "bundle_sha256": bundle_sha256,
+        "components": components,
+        "complete": bool(complete and components),
+    }
+
+
+def _insightface_model_contract() -> Dict[str, Any]:
+    insightface_home = Path(os.getenv("INSIGHTFACE_HOME", str(Path.home() / ".insightface"))).expanduser()
+    model_dir = insightface_home / "models" / "buffalo_l"
+    expected_names = ["1k3d68.onnx", "2d106det.onnx", "det_10g.onnx", "genderage.onnx", "w600k_r50.onnx"]
+    paths = tuple(str((model_dir / name).resolve()) for name in expected_names)
+    return _model_bundle_contract("insightface_buffalo_l_onnx_bundle", paths)
+
+
+def _shape_model_contract(repo_dir: Path, entrypoint: Path, execution_backend: str) -> Dict[str, Any]:
+    asset_names = [
+        "face_model.npy",
+        "large_base_net.pth",
+        "net_recon.pth",
+        "retinaface_resnet50_2020-07-20_old_torch.pth",
+        "similarity_Lm3D_all.mat",
+    ]
+    paths = tuple(str((repo_dir / "assets" / name).resolve()) for name in asset_names)
+    bundle = _model_bundle_contract("3ddfa_v3_xiaona_required_asset_bundle", paths)
+    return {
+        "provider_name": _PROVIDER_NAME,
+        "provider_version": _PROVIDER_VERSION,
+        "model_id": _MODEL_ID,
+        "model_sha256": bundle.get("bundle_sha256"),
+        "model_bundle": bundle,
+        "implementation_sha256": _sha256_file_cached(str(entrypoint.resolve())),
+        "execution_backend": str(execution_backend or "").strip() or None,
+    }
+
+
+def _runtime_embedding_contract(
+    identity_vector: Optional[np.ndarray],
+    execution_backend: Optional[str],
+) -> Dict[str, Any]:
+    try:
+        provider_version = importlib.metadata.version("insightface")
+    except importlib.metadata.PackageNotFoundError:
+        provider_version = None
+    vector = _to_vector(identity_vector)
+    model_contract = _insightface_model_contract()
+    return {
+        "provider_name": "insightface.FaceAnalysis",
+        "provider_version": provider_version,
+        "model_id": "buffalo_l",
+        "model_sha256": model_contract.get("bundle_sha256"),
+        "model_bundle": model_contract,
+        "execution_backend": str(execution_backend or "").strip() or None,
+        "detector_contract_id": "insightface_buffalo_l_largest_face_v1",
+        "alignment_contract_id": "insightface_faceanalysis_norm_crop_buffalo_l_v1",
+        "preprocessing_contract_id": "insightface_buffalo_l_det640_default_v1",
+        "dimension": int(vector.size) if vector is not None else None,
+        "source_field": "face_feat.embedding",
+        "source_normalization": "raw_embedding",
+    }
+
+
+def _runtime_face_execution_backend(runtime: Any) -> Optional[str]:
+    engines = getattr(runtime, "engines", None)
+    face_app = getattr(engines, "face_app", None)
+    models = getattr(face_app, "models", None)
+    providers = set()
+    if isinstance(models, dict):
+        for model in models.values():
+            session = getattr(model, "session", None)
+            get_providers = getattr(session, "get_providers", None)
+            if callable(get_providers):
+                try:
+                    providers.update(str(value) for value in get_providers() if value)
+                except Exception:
+                    continue
+    return "+".join(sorted(providers)) or None
+
+
+def describe_face_measurement_runtime_contract(runtime: Any) -> Dict[str, Any]:
+    """Describe model assets and backends before a repeatability run starts."""
+    settings = _resolve_settings()
+    execution_backend = _runtime_face_execution_backend(runtime)
+    return {
+        "schema_version": "face_measurement_runtime_contract_v0_1",
+        "shape": _shape_model_contract(
+            Path(settings["repo_dir"]),
+            Path(settings["entrypoint"]),
+            str(settings["resolved_device"]),
+        ),
+        "identity": _runtime_embedding_contract(None, execution_backend),
+        "direct_ready": bool(settings["direct_ready"]),
+        "requested_device": str(settings["device"]),
+        "resolved_device": str(settings["resolved_device"]),
+    }
 
 
 def _iter_children(node: Any) -> Iterable[Any]:
@@ -238,6 +372,8 @@ def _build_direct_artifact(
     export_path: Path,
     identity_vector: Optional[np.ndarray],
     face_confidence: Optional[float],
+    shape_provider_contract: Optional[Dict[str, Any]] = None,
+    identity_execution_backend: Optional[str] = None,
 ) -> Dict[str, Any]:
     from . import qa_face_pose_canonical as bridge_mod
 
@@ -248,6 +384,12 @@ def _build_direct_artifact(
         artifact["source_role"] = source_role
         if identity_vector is not None:
             artifact["canonical_identity_vector"] = _json_ready(identity_vector)
+            artifact["runtime_face_embedding_raw"] = _json_ready(identity_vector)
+            artifact["runtime_face_embedding_unit"] = _json_ready(bridge_mod._unit_vector(identity_vector))
+            artifact["runtime_face_embedding_contract"] = _runtime_embedding_contract(
+                identity_vector,
+                identity_execution_backend,
+            )
         if artifact.get("visible_face_coverage") is None and face_confidence is not None:
             artifact["visible_face_coverage"] = face_confidence
         if artifact.get("pose_fit_confidence") is None and face_confidence is not None:
@@ -256,6 +398,21 @@ def _build_direct_artifact(
         artifact.setdefault("provider_family", _PROVIDER_FAMILY)
         artifact.setdefault("provider_version", _PROVIDER_VERSION)
         artifact.setdefault("model_id", _MODEL_ID)
+        shape_contract = dict(shape_provider_contract or {})
+        if shape_contract:
+            artifact["model_sha256"] = shape_contract.get("model_sha256")
+            artifact["provider_implementation_sha256"] = shape_contract.get("implementation_sha256")
+            canonical_contract = dict(artifact.get("canonical_landmark_contract") or {})
+            canonical_contract.update(shape_contract)
+            canonical_contract.update(
+                {
+                    "landmark_schema_id": artifact.get("landmark_schema_id"),
+                    "coordinate_convention": artifact.get("landmark_coordinate_convention"),
+                    "preprocessing_contract_id": artifact.get("canonical_preprocessing_contract_id"),
+                    "source_field": artifact.get("landmark_source_field"),
+                }
+            )
+            artifact["canonical_landmark_contract"] = canonical_contract
         if artifact.get("canonical_face_topology_signature") is None:
             topology_signature = bridge_mod._landmark_topology_signature(artifact.get("canonical_landmarks"))
             if topology_signature is not None:
@@ -276,6 +433,20 @@ def _build_direct_artifact(
             "pts106",
             "pts68",
         ],
+    )
+    landmark_visibility_weights = _pick_field(
+        record,
+        aliases=[
+            "landmark_visibility_weights",
+            "landmark_weights",
+            "landmark_confidence",
+            "landmark_confidences",
+            "landmark_scores",
+        ],
+    )
+    landmark_schema_id = _pick_field(
+        record,
+        aliases=["landmark_schema_id", "landmark_topology_id", "landmark_layout_id"],
     )
     pose_value = _pick_field(
         record,
@@ -301,17 +472,37 @@ def _build_direct_artifact(
         face_confidence,
     )
     topology_signature = bridge_mod._landmark_topology_signature(landmarks)
+    normalized_shape_contract = dict(shape_provider_contract or {})
+    normalized_shape_contract.update(
+        {
+            "landmark_schema_id": str(landmark_schema_id).strip() if landmark_schema_id is not None else None,
+            "coordinate_convention": None,
+            "preprocessing_contract_id": None,
+            "source_field": None,
+        }
+    )
     return {
         "schema_version": _ARTIFACT_SCHEMA,
         "provider_name": _PROVIDER_NAME,
         "provider_family": _PROVIDER_FAMILY,
         "provider_version": _PROVIDER_VERSION,
         "model_id": _MODEL_ID,
+        "model_sha256": normalized_shape_contract.get("model_sha256"),
+        "provider_implementation_sha256": normalized_shape_contract.get("implementation_sha256"),
         "source_path": str(source_path),
         "source_role": source_role,
         "canonical_landmarks": _to_vector(landmarks),
+        "landmark_visibility_weights": _to_vector(landmark_visibility_weights),
+        "landmark_schema_id": str(landmark_schema_id).strip() if landmark_schema_id is not None else None,
+        "canonical_landmark_contract": normalized_shape_contract,
         "canonical_face_topology_signature": topology_signature,
         "canonical_identity_vector": identity_vector,
+        "runtime_face_embedding_raw": identity_vector,
+        "runtime_face_embedding_unit": bridge_mod._unit_vector(identity_vector),
+        "runtime_face_embedding_contract": _runtime_embedding_contract(
+            identity_vector,
+            identity_execution_backend,
+        ),
         "pose_euler_deg": _normalize_pose(pose_value),
         "visible_face_coverage": visible_face_coverage,
         "frontalization_quality": frontalization_quality,
@@ -455,6 +646,10 @@ class FacePoseCanonical3DDFAProvider(FaceCanonicalProvider):
         export_path = _find_export_file(output_dir, input_copy.stem)
         if export_path is None:
             raise FileNotFoundError(f"No 3DDFA-V3 export found under {output_dir}")
+        try:
+            input_copy.unlink()
+        except OSError:
+            pass
         return export_path
 
     def _ensure_master_artifact(self, runtime: Any) -> bool:
@@ -464,6 +659,11 @@ class FacePoseCanonical3DDFAProvider(FaceCanonicalProvider):
         if master_artifact is not None:
             return False
         settings = _resolve_settings()
+        shape_provider_contract = _shape_model_contract(
+            Path(settings["repo_dir"]),
+            Path(settings["entrypoint"]),
+            str(settings["resolved_device"]),
+        )
         master_face_path = _resolve_master_face_path(runtime)
         if not master_face_path.exists():
             raise FileNotFoundError(f"Face truth anchor not found: {master_face_path}")
@@ -481,6 +681,8 @@ class FacePoseCanonical3DDFAProvider(FaceCanonicalProvider):
             export_path=export_path,
             identity_vector=identity_vector,
             face_confidence=face_confidence,
+            shape_provider_contract=shape_provider_contract,
+            identity_execution_backend=_runtime_face_execution_backend(runtime),
         )
         master_path = bridge_mod._master_truth_dir(runtime) / bridge_mod._MASTER_ARTIFACT_NAME
         atomic_write_json(master_path, _json_ready(artifact))
@@ -520,6 +722,12 @@ class FacePoseCanonical3DDFAProvider(FaceCanonicalProvider):
         if candidate_face_feat is None and img_bgr is not None:
             candidate_face_feat = extract_face_feat(runtime, img_bgr, source_path=image_path)
         export_path = self._run_direct_export(image_path)
+        settings = _resolve_settings()
+        shape_provider_contract = _shape_model_contract(
+            Path(settings["repo_dir"]),
+            Path(settings["entrypoint"]),
+            str(settings["resolved_device"]),
+        )
         identity_vector = None
         face_confidence = None
         if candidate_face_feat is not None:
@@ -531,6 +739,8 @@ class FacePoseCanonical3DDFAProvider(FaceCanonicalProvider):
             export_path=export_path,
             identity_vector=identity_vector,
             face_confidence=face_confidence,
+            shape_provider_contract=shape_provider_contract,
+            identity_execution_backend=_runtime_face_execution_backend(runtime),
         )
         cache_written = bool(bridge_mod._write_cached_candidate(cache_file, cache_key, artifact))
         if cache_written:

@@ -50,6 +50,19 @@ def _sha1_file(path: Path) -> Optional[str]:
     return digest.hexdigest()
 
 
+def _sha256_file(path: Path) -> Optional[str]:
+    if not path.exists() or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _path_meta(path: Optional[Path]) -> Dict[str, Any]:
     resolved = Path(path).resolve() if path is not None else None
     if resolved is None or not resolved.exists():
@@ -59,6 +72,7 @@ def _path_meta(path: Optional[Path]) -> Dict[str, Any]:
             "exists": False,
             "size_bytes": None,
             "sha1": None,
+            "sha256": None,
             "mtime_utc": None,
         }
     stat = resolved.stat()
@@ -68,6 +82,7 @@ def _path_meta(path: Optional[Path]) -> Dict[str, Any]:
         "exists": True,
         "size_bytes": int(stat.st_size),
         "sha1": _sha1_file(resolved),
+        "sha256": _sha256_file(resolved),
         "mtime_utc": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
     }
 

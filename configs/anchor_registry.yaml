@@ -2,6 +2,10 @@ anchors:
   ref_1_face_master:
     role: FACE_MASTER
     anchor_tier: absolute
+    authority: ABSOLUTE_FROZEN
+    mutable: false
+    may_modify_truth: false
+    expected_sha256: 76cdf2fbdeb29b01f7c139c06debcbbbbc8515f5de31dde31a58e72e30878d8e
     priority: 1
     required_default: true
     path: ${PROJECT_ROOT}/anchors/face/front/A-Core_01_0deg_MASTER.png
@@ -18,6 +22,10 @@ anchors:
   ref_2_full_body_master:
     role: FULL_BODY_MASTER
     anchor_tier: absolute
+    authority: ABSOLUTE_FROZEN
+    mutable: false
+    may_modify_truth: false
+    expected_sha256: c7bb26dd4640e407a7ef490e7b71ca25a28349eb498816ad50aa8ba8c628ef34
     priority: 2
     required_default: true
     path: ${PROJECT_ROOT}/anchors/full/Task-63987060-116-1.png
@@ -36,6 +44,9 @@ anchors:
   ref_3_upper_support_97:
     role: UPPER_SUPPORT
     anchor_tier: support
+    authority: SUPPORT_ONLY
+    mutable: true
+    may_modify_truth: false
     priority: 3
     required_default: false
     path: ${PROJECT_ROOT}/anchors/upper/Task-63987060-97-1.png
@@ -53,6 +64,9 @@ anchors:
   ref_4_face_profile_side90_left:
     role: FACE_SUPPORT
     anchor_tier: support
+    authority: SUPPORT_ONLY
+    mutable: true
+    may_modify_truth: false
     priority: 4
     required_default: false
     path: ${PROJECT_ROOT}/anchors/face/profile_like/strict_side_90_left_support_v2.png
@@ -68,6 +82,9 @@ anchors:
   ref_5_face_profile_side90_right:
     role: FACE_SUPPORT
     anchor_tier: support
+    authority: SUPPORT_ONLY
+    mutable: true
+    may_modify_truth: false
     priority: 4
     required_default: false
     path: ${PROJECT_ROOT}/anchors/face/profile_like/strict_side_90_right_support_v2.png

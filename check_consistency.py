@@ -131,6 +131,10 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
         "label": "批次前置预检",
         "summary": "在重型 QA 前先看 lane 纯度、混批风险和 prompt intent 元数据是否齐全。",
     },
+    "run_identity_repeatability_shadow": {
+        "label": "身份测量重复性 Shadow 探针",
+        "summary": "显式串行复跑预注册的数值、预处理和微扰试验；不改变评分、排序、复核路由或 Winner Bank。",
+    },
     "prepare_input_manifest": {
         "label": "准备输入清单",
         "summary": "为当前 input 目录生成或更新 input_manifest.json，给 prompt_id / seed / intended_view 留标准入口。",
@@ -1550,6 +1554,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         "seal_training_admission",
         "winner_bank_status",
         "training_admission_status",
+        "run_identity_repeatability_shadow",
     }:
         return
 
@@ -1677,6 +1682,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         "prepare_winner_bank_review",
         "promote_winner",
         "winner_bank_status",
+        "run_identity_repeatability_shadow",
     }
     if workflow in locked_workflows:
         lock = acquire_workflow_lock(
@@ -1696,6 +1702,129 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         print(json.dumps(result, indent=2, ensure_ascii=False))
         print("[交互引导] 下一步：补齐 prompt_id / seed / anchor_source / intended_view，然后再跑 preflight_batch。")
         return 0
+
+    if workflow == "run_identity_repeatability_shadow":
+        if not bool(args.repeatability_confirm):
+            raise ValueError(
+                "run_identity_repeatability_shadow requires --repeatability-confirm; "
+                "this workflow re-executes InsightFace and 3DDFA once for the baseline and 13 times per image"
+            )
+        raw_images = list(args.repeatability_image or [])
+        if not raw_images:
+            raise ValueError(
+                "run_identity_repeatability_shadow requires at least one explicit --repeatability-image"
+            )
+        image_paths = [_resolve_cli_path(Path(path), base_dir) for path in raw_images]
+        output_root = (
+            _resolve_cli_path(args.repeatability_output_dir, base_dir)
+            if args.repeatability_output_dir is not None
+            else (base_dir / "outputs" / "identity_repeatability_runs").resolve()
+        )
+        device = str(args.device_policy or "cuda")
+        require_gpu = bool(args.require_gpu or device == "cuda")
+        hardware_risk: Dict[str, Any]
+        try:
+            from core.qa_gpu_device_policy import (
+                apply_truth_fusion_gpu_env,
+                detect_windows_nvidia_whea_risk,
+            )
+
+            hardware_risk = (
+                detect_windows_nvidia_whea_risk()
+                if device == "cuda"
+                else {
+                    "schema_version": "windows_nvidia_whea_risk_v0_1",
+                    "probe_state": "BYPASSED_CPU_EXECUTION",
+                    "risk_state": "CPU_EXECUTION_SELECTED",
+                    "blockers": [],
+                }
+            )
+            print(
+                "[GPU硬件风险] "
+                f"probe={hardware_risk.get('probe_state')} "
+                f"| state={hardware_risk.get('risk_state')} "
+                f"| nvidia_whea17_since_boot={hardware_risk.get('nvidia_whea17_count_since_boot')}"
+            )
+            hardware_blockers = list(hardware_risk.get("blockers") or [])
+            if hardware_blockers and not bool(args.allow_gpu_hardware_risk):
+                raise ValueError(
+                    "repeatability CUDA run blocked by hardware-risk preflight: "
+                    + ", ".join(str(blocker) for blocker in hardware_blockers)
+                    + "; use --device-policy cpu, or explicitly acknowledge risk with --allow-gpu-hardware-risk"
+                )
+
+            gpu_policy = apply_truth_fusion_gpu_env(
+                device=device,
+                require_gpu=require_gpu,
+                surface_auto_export="off",
+                force=True,
+            )
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(f"failed to apply repeatability device policy: {exc}") from exc
+        _print_gpu_policy_summary(gpu_policy)
+        blockers = list(gpu_policy.get("requirement_blockers") or [])
+        if blockers:
+            raise ValueError(
+                "repeatability GPU stack is unavailable: "
+                + ", ".join(str(blocker) for blocker in blockers)
+                + "; use --device-policy cpu only for an explicitly CPU-bound run"
+            )
+
+        from core.qa_face_repeatability_adapter import FaceCanonicalRepeatabilityAdapter
+        from core.qa_identity_repeatability_runner import run_identity_repeatability_shadow
+
+        runtime = create_runtime(base_dir)
+        provider_status = runtime.providers.describe_face_canonical()
+        if str(provider_status.get("provider_name") or "") != "face_pose_canonical_3ddfa":
+            raise ValueError(
+                "identity repeatability requires face_pose_canonical_3ddfa; "
+                f"active provider is {provider_status.get('provider_name')}"
+            )
+        axis_arg = str(args.repeatability_axis or "both")
+        axes = (
+            ["face_identity", "face_shape"]
+            if axis_arg == "both"
+            else [axis_arg]
+        )
+        result = run_identity_repeatability_shadow(
+            image_paths=image_paths,
+            output_root=output_root,
+            adapter=FaceCanonicalRepeatabilityAdapter(
+                runtime,
+                execution_context={
+                    "gpu_policy": gpu_policy,
+                    "gpu_hardware_risk": hardware_risk,
+                    "gpu_hardware_risk_override": bool(args.allow_gpu_hardware_risk),
+                    "cpu_thread_environment": {
+                        key: os.getenv(key)
+                        for key in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"]
+                    },
+                },
+            ),
+            axes=axes,
+            run_id=args.repeatability_run_id,
+            retry_failed=bool(args.repeatability_retry_failed),
+        )
+        print(
+            json.dumps(
+                {
+                    "status": result.get("status"),
+                    "run_id": result.get("run_id"),
+                    "run_dir": result.get("run_dir"),
+                    "source_count": result.get("source_count"),
+                    "planned_trial_count": result.get("planned_trial_count"),
+                    "executed_or_resumed_trial_count": result.get("executed_or_resumed_trial_count"),
+                    "baseline_state_counts": result.get("baseline_state_counts"),
+                    "trial_state_counts": result.get("trial_state_counts"),
+                    "decision_influence": result.get("decision_influence"),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return 0 if result.get("status") != "PARTIAL" else 2
 
     if workflow == "fill_input_manifest_defaults":
         from core.qa_input_manifest import fill_input_manifest_defaults
@@ -2745,6 +2874,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "training_admission_status",
             "setup_external_models",
             "advanced_cli",
+            "run_identity_repeatability_shadow",
         ],
         help="User-facing workflow entry. Prefer this over --mode when you want task-oriented review actions.",
     )
@@ -2860,6 +2990,48 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--input-dir",
         type=Path,
         help="Override the input directory for preflight_batch, prepare_input_manifest, and qa shot_review.",
+    )
+    parser.add_argument(
+        "--repeatability-image",
+        type=Path,
+        action="append",
+        help=(
+            "Explicit image for run_identity_repeatability_shadow. Repeat the flag for multiple images; "
+            "the workflow never auto-scans input."
+        ),
+    )
+    parser.add_argument(
+        "--repeatability-output-dir",
+        type=Path,
+        help="Output root for resumable identity repeatability runs.",
+    )
+    parser.add_argument(
+        "--repeatability-run-id",
+        help="Optional stable run id. Reusing it resumes only when the complete run contract still matches.",
+    )
+    parser.add_argument(
+        "--repeatability-axis",
+        choices=["both", "face_identity", "face_shape"],
+        default="both",
+        help="Native face axis or axes to measure; axes are never fused into one repeatability score.",
+    )
+    parser.add_argument(
+        "--repeatability-confirm",
+        action="store_true",
+        help="Explicitly confirm the baseline plus 13 serialized heavy re-executions per image.",
+    )
+    parser.add_argument(
+        "--repeatability-retry-failed",
+        action="store_true",
+        help="Retry only failed baseline/trial work units; completed and unavailable units remain idempotent.",
+    )
+    parser.add_argument(
+        "--allow-gpu-hardware-risk",
+        action="store_true",
+        help=(
+            "Explicitly acknowledge and override NVIDIA WHEA hardware-risk blockers for a CUDA repeatability run. "
+            "The risk snapshot and override are recorded in the run contract."
+        ),
     )
     parser.add_argument(
         "--artifacts-dir",

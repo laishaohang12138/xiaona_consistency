@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,7 +9,9 @@ from PIL import Image
 
 from face_box import face_box
 from model.recon import face_model
-from util.preprocess import get_data_path
+
+
+_SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 
 
 def _safe_float(value, default=None):
@@ -33,11 +36,22 @@ def _to_image_name(path_text):
     return Path(normalized).stem
 
 
+def _get_image_paths(root):
+    root_path = Path(root)
+    if root_path.is_file():
+        return [str(root_path)] if root_path.suffix.lower() in _SUPPORTED_IMAGE_SUFFIXES else []
+    return [
+        str(path)
+        for path in sorted(root_path.iterdir(), key=lambda value: value.name.lower())
+        if path.is_file() and path.suffix.lower() in _SUPPORTED_IMAGE_SUFFIXES
+    ]
+
+
 def main(args):
     args.skip_renderer = True
     recon_model = face_model(args)
     facebox_detector = face_box(args).detector
-    image_paths = get_data_path(args.inputpath)
+    image_paths = _get_image_paths(args.inputpath)
 
     for index, image_path in enumerate(image_paths):
         print(index, image_path)
@@ -55,6 +69,8 @@ def main(args):
         ldm68 = results.get("ldm68")
         pose_deg = results.get("pose_euler_deg")
         pose_deg = pose_deg[0].tolist() if isinstance(pose_deg, np.ndarray) and len(pose_deg) > 0 else None
+        landmark_schema_id = None
+        landmark_source_field = None
 
         payload = {
             "schema_version": "face_pose_canonical_artifact_v1",
@@ -65,6 +81,12 @@ def main(args):
             "source_path": str(Path(image_path).resolve()),
             "source_role": "candidate",
             "canonical_landmarks": None,
+            "landmark_schema_id": None,
+            "landmark_source_field": None,
+            "landmark_coordinate_convention": "3ddfa_v3_model_crop_224_x_right_y_up",
+            "canonical_preprocessing_contract_id": "3ddfa_v3_facebox_model_crop_v1",
+            "provider_implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "provider_execution_backend": str(args.device),
             "pose_euler_deg": {
                 "yaw": _safe_float(pose_deg[0], None) if pose_deg else None,
                 "pitch": _safe_float(pose_deg[1], None) if pose_deg else None,
@@ -83,10 +105,18 @@ def main(args):
 
         if isinstance(ldm106_2d, np.ndarray) and len(ldm106_2d) > 0:
             payload["canonical_landmarks"] = ldm106_2d[0].reshape(-1).tolist()
+            landmark_schema_id = "3ddfa_v3_ldm106_2d_index_order_v1"
+            landmark_source_field = "ldm106_2d"
         elif isinstance(ldm106, np.ndarray) and len(ldm106) > 0:
             payload["canonical_landmarks"] = ldm106[0].reshape(-1).tolist()
+            landmark_schema_id = "3ddfa_v3_ldm106_index_order_v1"
+            landmark_source_field = "ldm106"
         elif isinstance(ldm68, np.ndarray) and len(ldm68) > 0:
             payload["canonical_landmarks"] = ldm68[0].reshape(-1).tolist()
+            landmark_schema_id = "3ddfa_v3_ldm68_index_order_v1"
+            landmark_source_field = "ldm68"
+        payload["landmark_schema_id"] = landmark_schema_id
+        payload["landmark_source_field"] = landmark_source_field
 
         with open(save_dir / f"{image_name}.json", "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, ensure_ascii=False)

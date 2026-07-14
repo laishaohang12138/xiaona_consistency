@@ -30,6 +30,7 @@ from .qa_industrial_summary import (
     build_evidence_completeness_summary,
 )
 from .qa_input_manifest import load_input_manifest_index, resolve_input_manifest_entry
+from .qa_identity_evidence_shadow import write_identity_evidence_shadow
 from .qa_io import atomic_write_json
 from .qa_master_consistency import (
     build_absolute_master_reference,
@@ -66,6 +67,7 @@ from .qa_training_admission import (
     load_training_admission_manifest_summary,
     training_admission_manifest_path,
 )
+from .qa_truth_integrity import assert_truth_integrity, validate_truth_integrity
 from .qa_scoring import (
     build_tone_reference_stats,
     build_quality_reference_stats,
@@ -103,6 +105,7 @@ from .qa_utils import (
 
 def create_runtime(base_dir: Optional[Path] = None) -> RuntimeContext:
     config = create_runtime_config(base_dir)
+    assert_truth_integrity(config)
     providers = build_provider_bundle(config.provider_policy)
     engines = init_engines(config.review)
     return RuntimeContext(config=config, providers=providers, engines=engines)
@@ -361,6 +364,7 @@ def _build_report_meta(
         "face_canonical_status": _json_ready(face_canonical_status),
         "anchor_registry_summary": anchor_registry_summary(runtime.config),
         "anchor_registry_snapshot": anchor_snapshot,
+        "truth_integrity": validate_truth_integrity(runtime.config),
         "anchor_governance": {
             "face_identity_policy": "absolute_only",
             "body_master_policy": "absolute_only",
@@ -1930,11 +1934,18 @@ def _run_pipeline_impl(
     }
     ranked_candidates_file = _write_report_outputs(runtime, report_payload)
     review_packet_file = config.paths.dir_output / "review_packet.json"
+    identity_evidence_shadow = None
+    try:
+        identity_evidence_shadow = write_identity_evidence_shadow(runtime, report_items)
+    except Exception as exc:
+        print(f"[Shadow证据] 写出失败但不影响现有审核结果: {type(exc).__name__}: {exc}")
 
     print("\n[完工] 质检完成 [OK]")
     print(f"[报告] {config.paths.report_file}")
     print(f"[排序] {ranked_candidates_file}")
     print(f"[复核包] {review_packet_file}")
+    if identity_evidence_shadow is not None:
+        print(f"[Shadow证据] {identity_evidence_shadow['path']}")
     collection_summary = collection_aggregates.get("summary", {})
     print(
         "[集合聚合] "
