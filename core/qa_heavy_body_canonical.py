@@ -20,10 +20,10 @@ from .qa_utils import dedupe_keep_order
 
 _PROVIDER_NAME = "body_canonical_hmr2"
 _PROVIDER_FAMILY = "body_canonical"
-_PROVIDER_VERSION = "body_canonical_hmr2_direct_bridge_v3"
+_PROVIDER_VERSION = "body_canonical_hmr2_direct_bridge_v4"
 _MODEL_ID = "hmr2_direct_bridge_v2"
-_ARTIFACT_SCHEMA = "body_canonical_artifact_v2"
-_CACHE_SCHEMA = "body_canonical_cache_v2"
+_ARTIFACT_SCHEMA = "body_canonical_artifact_v3"
+_CACHE_SCHEMA = "body_canonical_cache_v3"
 _MASTER_ARTIFACT_NAME = "body_master_shape_only.json"
 _DEFAULT_MEASUREMENT_SCALE = 0.08
 _MIN_CANONICAL_MEASUREMENTS = 6
@@ -104,6 +104,11 @@ _BODY_TOPOLOGY_PARTITION_WEIGHTS = {
     "pose_explained_delta_score": 0.06,
 }
 _MIN_BODY_CORE_MEASUREMENTS = 3
+_TOPOLOGY_SCHEMA_ID = "smpl_neutral_zero_pose_vertices_v1"
+_TOPOLOGY_COORDINATE_CONVENTION = "smpl_neutral_zero_pose_model_space"
+_TOPOLOGY_CANONICALIZATION_ID = "smpl_identity_global_and_body_rotations_v1"
+_TOPOLOGY_ALIGNMENT_CONTRACT_ID = "centroid_translation_removal_only_v1"
+_TOPOLOGY_REPRESENTATION = "dense_smpl_vertices_exact_index_correspondence"
 _MIN_BODY_POSE_SENSITIVE_MEASUREMENTS = 2
 _DEFAULT_SMPL_MODEL = "basicModel_neutral_lbs_10_207_0_v1.0.0.pkl"
 _ALT_SMPL_MODELS = [
@@ -135,6 +140,20 @@ def _normalize_vector(value: Any) -> Optional[np.ndarray]:
     if vector.size == 0:
         return None
     return vector
+
+
+def _normalize_vertex_matrix(value: Any) -> Optional[List[List[float]]]:
+    if value is None:
+        return None
+    try:
+        vertices = np.asarray(value, dtype=np.float32)
+    except Exception:
+        return None
+    if vertices.ndim != 2 or vertices.shape[0] <= 0 or vertices.shape[1] != 3:
+        return None
+    if not np.isfinite(vertices).all():
+        return None
+    return vertices.tolist()
 
 
 def _vector_signature_ref(name: str, value: Any) -> Dict[str, Any]:
@@ -235,6 +254,64 @@ def _body_topology_signature(
     if len(parts) == 0:
         return None
     return np.concatenate(parts, axis=0)
+
+
+def _body_canonical_contract(
+    artifact: Dict[str, Any],
+    raw_contract: Any,
+) -> Dict[str, Any]:
+    contract = dict(raw_contract) if isinstance(raw_contract, dict) else {}
+    conversion_meta = (
+        dict(artifact.get("conversion_meta"))
+        if isinstance(artifact.get("conversion_meta"), dict)
+        else {}
+    )
+    shape_beta = _normalize_vector(artifact.get("shape_beta"))
+    topology = _normalize_vector(artifact.get("body_topology_signature"))
+    canonical_vertices = _normalize_vertex_matrix(artifact.get("canonical_smpl_vertices"))
+
+    def _fill_unresolved(name: str, value: Any) -> None:
+        current = contract.get(name)
+        unresolved = (
+            current is None
+            or (isinstance(current, str) and not current.strip())
+            or (isinstance(current, (list, tuple, dict)) and not current)
+        )
+        if unresolved:
+            contract[name] = value
+
+    _fill_unresolved("provider_name", str(artifact.get("provider_name") or _PROVIDER_NAME))
+    _fill_unresolved("provider_version", str(artifact.get("provider_version") or _PROVIDER_VERSION))
+    _fill_unresolved("model_id", str(artifact.get("model_id") or _MODEL_ID))
+    _fill_unresolved("execution_backend", conversion_meta.get("device"))
+    _fill_unresolved(
+        "body_model_id",
+        Path(str(conversion_meta.get("smpl_source") or "")).name or None,
+    )
+    _fill_unresolved("measurement_schema_id", conversion_meta.get("measurement_basis"))
+    _fill_unresolved("measurement_order", list(_BODY_TOPOLOGY_MEASUREMENT_ORDER))
+    _fill_unresolved("shape_dimension", int(shape_beta.size) if shape_beta is not None else None)
+    _fill_unresolved("coordinate_convention", "hmr2_camera_relative_body25_3d")
+    _fill_unresolved("source_field", "canonical_measurements")
+    if canonical_vertices is not None:
+        vertex_count = len(canonical_vertices)
+        contract.update(
+            {
+                "topology_schema_id": _TOPOLOGY_SCHEMA_ID,
+                "topology_dimension": vertex_count * 3,
+                "topology_vertex_count": vertex_count,
+                "topology_representation": _TOPOLOGY_REPRESENTATION,
+                "topology_coordinate_convention": _TOPOLOGY_COORDINATE_CONVENTION,
+                "canonicalization_contract_id": _TOPOLOGY_CANONICALIZATION_ID,
+                "topology_alignment_contract_id": _TOPOLOGY_ALIGNMENT_CONTRACT_ID,
+                "topology_source_field": "canonical_smpl_vertices",
+            }
+        )
+    else:
+        _fill_unresolved("topology_schema_id", "hmr2_shape_beta_body25_signature_v1")
+        _fill_unresolved("topology_dimension", int(topology.size) if topology is not None else None)
+        _fill_unresolved("topology_source_field", "body_topology_signature")
+    return contract
 
 
 def _json_ready(value: Any) -> Any:
@@ -482,14 +559,7 @@ def _build_direct_artifact(
 ) -> Dict[str, Any]:
     payload = _load_payload(export_path)
     if isinstance(payload, dict) and str(payload.get("schema_version") or "") == _ARTIFACT_SCHEMA:
-        artifact = dict(payload)
-        artifact["source_path"] = str(source_path)
-        artifact["source_role"] = source_role
-        artifact.setdefault("provider_name", _PROVIDER_NAME)
-        artifact.setdefault("provider_family", _PROVIDER_FAMILY)
-        artifact.setdefault("provider_version", _PROVIDER_VERSION)
-        artifact.setdefault("model_id", _MODEL_ID)
-        return artifact
+        return _normalize_artifact(payload, source_path=source_path, source_role=source_role)
 
     record = _select_record(payload)
     measurements = _measurement_mapping(
@@ -514,7 +584,7 @@ def _build_direct_artifact(
         preferred_order=_BODY_CORE_MEASUREMENT_ORDER,
         min_measurements=_MIN_BODY_CORE_MEASUREMENTS,
     )
-    return {
+    artifact = {
         "schema_version": _ARTIFACT_SCHEMA,
         "provider_name": _PROVIDER_NAME,
         "provider_family": _PROVIDER_FAMILY,
@@ -524,6 +594,9 @@ def _build_direct_artifact(
         "source_role": source_role,
         "shape_beta": _normalize_vector(
             _pick_field(record, aliases=["betas", "shape_beta", "pred_betas", "smpl_betas", "shape"])
+        ),
+        "canonical_smpl_vertices": _normalize_vertex_matrix(
+            _pick_field(record, aliases=["canonical_smpl_vertices", "zero_pose_smpl_vertices"])
         ),
         "body_topology_signature": topology_signature,
         "body_core_topology_signature": core_topology_signature,
@@ -535,8 +608,18 @@ def _build_direct_artifact(
         "notes": "direct HMR2 export bridged into body canonical evidence",
         "conversion_meta": {
             "export_path": str(export_path),
+            **(
+                dict(payload.get("conversion_meta"))
+                if isinstance(payload, dict) and isinstance(payload.get("conversion_meta"), dict)
+                else {}
+            ),
         },
     }
+    artifact["body_canonical_contract"] = _body_canonical_contract(
+        artifact,
+        payload.get("body_canonical_contract") if isinstance(payload, dict) else None,
+    )
+    return artifact
 
 
 def _cache_dir(runtime: Any) -> Path:
@@ -588,22 +671,40 @@ def _normalize_artifact(raw: Dict[str, Any], *, source_path: Path, source_role: 
         or {}
     )
     measurement_scales = _measurement_mapping(raw.get("measurement_scales") or {})
+
+    def _first_present(*values: Any) -> Any:
+        return next((value for value in values if value is not None), None)
+
     artifact = {
         "schema_version": _ARTIFACT_SCHEMA,
         "provider_name": str(raw.get("provider_name") or _PROVIDER_NAME),
         "provider_family": str(raw.get("provider_family") or _PROVIDER_FAMILY),
         "provider_version": str(raw.get("provider_version") or _PROVIDER_VERSION),
+        "model_id": str(raw.get("model_id") or _MODEL_ID),
         "source_path": str(raw.get("source_path") or source_path),
         "source_role": str(raw.get("source_role") or source_role),
-        "shape_beta": _normalize_vector(raw.get("shape_beta") or raw.get("betas") or raw.get("shape")),
+        "shape_beta": _normalize_vector(
+            _first_present(raw.get("shape_beta"), raw.get("betas"), raw.get("shape"))
+        ),
+        "canonical_smpl_vertices": _normalize_vertex_matrix(
+            _first_present(
+                raw.get("canonical_smpl_vertices"),
+                raw.get("zero_pose_smpl_vertices"),
+            )
+        ),
         "body_topology_signature": _normalize_vector(raw.get("body_topology_signature")),
         "body_core_topology_signature": _normalize_vector(raw.get("body_core_topology_signature")),
-        "pose_vector": _normalize_vector(raw.get("pose_vector") or raw.get("pose_theta") or raw.get("theta")),
+        "pose_vector": _normalize_vector(
+            _first_present(raw.get("pose_vector"), raw.get("pose_theta"), raw.get("theta"))
+        ),
         "canonical_measurements": measurements,
         "measurement_scales": measurement_scales,
         "fit_confidence": _safe_float(raw.get("fit_confidence"), None),
         "coverage": _safe_float(raw.get("coverage"), None),
         "notes": str(raw.get("notes") or "").strip(),
+        "conversion_meta": dict(raw.get("conversion_meta") or {})
+        if isinstance(raw.get("conversion_meta"), dict)
+        else {},
     }
     if artifact["body_topology_signature"] is None:
         artifact["body_topology_signature"] = _body_topology_signature(artifact.get("shape_beta"), measurements)
@@ -614,6 +715,10 @@ def _normalize_artifact(raw: Dict[str, Any], *, source_path: Path, source_role: 
             preferred_order=_BODY_CORE_MEASUREMENT_ORDER,
             min_measurements=_MIN_BODY_CORE_MEASUREMENTS,
         )
+    artifact["body_canonical_contract"] = _body_canonical_contract(
+        artifact,
+        raw.get("body_canonical_contract"),
+    )
     return artifact
 
 

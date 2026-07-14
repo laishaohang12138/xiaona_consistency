@@ -1,5 +1,9 @@
 # Identity Evidence Contract vNext - Shadow Specification v0.1
 
+The normative mathematical architecture, identifiability boundaries, and
+future promotion conditions are defined in
+[`39_underlying_mathematical_model.md`](./39_underlying_mathematical_model.md).
+
 ## Purpose
 
 This contract adds traceable native identity measurements without changing the

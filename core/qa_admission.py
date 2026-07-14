@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence
 
+from .qa_governance import (
+    LEGACY_ADMISSION_FIELDS_STATE,
+    fail_closed_release_gate,
+)
+
 
 _STATUS_RANK = {
     "FAIL": 0,
@@ -42,19 +47,22 @@ def _release_gate_summary(batch_summary: Dict[str, Any], target_bucket: str) -> 
     raw_gate = batch_summary.get("release_gate") or {}
     if not isinstance(raw_gate, dict):
         raw_gate = {}
-    return {
-        "target_bucket": target_bucket,
-        "schema_version": str(raw_gate.get("schema_version") or "").strip(),
-        "release_state": str(raw_gate.get("release_state") or "review").strip() or "review",
-        "machine_status_ceiling": str(raw_gate.get("machine_status_ceiling") or "WARN").strip().upper() or "WARN",
-        "training_admission_allowed": bool(raw_gate.get("training_admission_allowed")),
-        "manual_training_admission_required": bool(raw_gate.get("manual_training_admission_required", True)),
-        "optuna_fit_allowed": bool(raw_gate.get("optuna_fit_allowed")),
-        "requires_frozen_benchmark": bool(raw_gate.get("requires_frozen_benchmark")),
-        "requires_curated_winner_bank": bool(raw_gate.get("requires_curated_winner_bank")),
-        "required_lane_families": list(raw_gate.get("required_lane_families") or []),
-        "notes": str(raw_gate.get("notes") or "").strip(),
-    }
+    return fail_closed_release_gate(
+        raw_gate,
+        target_bucket=target_bucket,
+        source_schema_version=str(raw_gate.get("schema_version") or "").strip(),
+    )
+
+
+def _evidence_review_route(base_route: Any, blockers: Sequence[str]) -> str:
+    route = str(base_route or "HOLD_FOR_MORE_EVIDENCE").strip().upper()
+    if route == "SHADOW_EVIDENCE_ONLY":
+        return route
+    if blockers:
+        return "HOLD_FOR_MORE_EVIDENCE"
+    if route in {"PRIORITY_REVIEW", "STANDARD_REVIEW", "NOT_APPLICABLE"}:
+        return route
+    return "HOLD_FOR_MORE_EVIDENCE"
 
 
 def _status_within_ceiling(status: Any, ceiling: Any) -> bool:
@@ -80,7 +88,7 @@ def build_batch_admission_advice(
     engine_status = batch_summary.get("engine_status") or {}
     release_gate = _release_gate_summary(batch_summary, target_bucket)
     training_governance = batch_summary.get("training_admission_governance") or {}
-    participates_in_final_admission = bool(training_governance.get("participates_in_final_admission", True))
+    participates_in_final_admission = False
     batch_preflight = batch_summary.get("batch_preflight") or {}
     evidence_completeness = batch_summary.get("evidence_completeness") or {}
 
@@ -97,10 +105,6 @@ def build_batch_admission_advice(
         blockers.append("BATCH_PREFLIGHT_WARN")
     if lane_family in {"side", "back"} and target_bucket == "BODY_GOLD.front_core":
         blockers.append("NON_FRONT_BATCH_FOR_FRONT_CORE")
-    if participates_in_final_admission and release_gate.get("release_state") in {"shadow", "review", "filter_only"}:
-        blockers.append(f"RELEASE_GATE_{str(release_gate.get('release_state') or '').upper()}_ONLY")
-    if participates_in_final_admission and not bool(release_gate.get("training_admission_allowed")):
-        blockers.append("RELEASE_GATE_TRAINING_ADMISSION_DENIED")
     required_lane_families = list(release_gate.get("required_lane_families") or [])
     if lane_family and required_lane_families and lane_family not in required_lane_families:
         blockers.append("LANE_FAMILY_OUTSIDE_RELEASE_GATE")
@@ -117,10 +121,8 @@ def build_batch_admission_advice(
     evidence_status = str(evidence_completeness.get("status") or "").strip().upper()
     if evidence_status == "FAIL":
         blockers.append("EVIDENCE_COMPLETENESS_FAILED")
-    if (
-        participates_in_final_admission
-        and bool(release_gate.get("requires_frozen_benchmark"))
-        and not bool(evidence_completeness.get("replay_ready"))
+    if bool(release_gate.get("requires_frozen_benchmark")) and not bool(
+        evidence_completeness.get("replay_ready")
     ):
         blockers.append("EVIDENCE_NOT_REPLAY_READY_FOR_FROZEN_BENCHMARK")
     if bool(evidence_completeness.get("replay_ready")):
@@ -130,7 +132,7 @@ def build_batch_admission_advice(
 
     winner_report = (winner_bank_status or {}).get("report") or {}
     curated_bank_available = bool(winner_report.get("curated_bank_available"))
-    if participates_in_final_admission and release_gate.get("requires_curated_winner_bank") and not curated_bank_available:
+    if release_gate.get("requires_curated_winner_bank") and not curated_bank_available:
         blockers.append("CURATED_WINNER_BANK_REQUIRED")
     if curated_bank_available and int(winner_report.get("drift_row_count") or 0) > 0:
         drift_rows = list(winner_report.get("drift_rows") or [])
@@ -140,35 +142,38 @@ def build_batch_admission_advice(
     if training_governance.get("manifest_summary"):
         manifest_summary = training_governance.get("manifest_summary") or {}
         if int(manifest_summary.get("entry_count") or 0) > 0:
-            supports.append("TRAINING_ADMISSION_MANIFEST_AVAILABLE")
+            supports.append("EXTERNAL_ADMISSION_AUDIT_LEDGER_AVAILABLE")
 
-    eligible_for_training_seal = (
-        participates_in_final_admission
-        and len(blockers) == 0
-        and bool(release_gate.get("training_admission_allowed"))
+    external_review_route = _evidence_review_route(
+        release_gate.get("external_review_route"), blockers
     )
-    if not participates_in_final_admission:
-        suggested_action = "route_evidence_to_external_dataset_curation"
-    elif "ENGINE_FATAL_UNAVAILABLE" in blockers:
+    if "ENGINE_FATAL_UNAVAILABLE" in blockers:
         suggested_action = "hold_batch_until_engine_recovered"
     elif "NON_FRONT_BATCH_FOR_FRONT_CORE" in blockers:
         suggested_action = "reroute_to_matching_lane_profile"
     elif "BATCH_PREFLIGHT_FAILED" in blockers:
-        suggested_action = "split_batch_before_any_promotion"
-    elif any(code.startswith("RELEASE_GATE_") for code in blockers):
-        suggested_action = "do_not_seal_training_admission"
+        suggested_action = "split_batch_before_external_review"
     elif "CURATED_WINNER_BANK_REQUIRED" in blockers:
-        suggested_action = "prepare_curated_winner_bank_first"
-    elif len(blockers) == 0:
-        suggested_action = "manual_review_for_training_candidate"
+        suggested_action = "prepare_review_memory_evidence_first"
+    elif external_review_route == "PRIORITY_REVIEW":
+        suggested_action = "route_priority_evidence_to_external_review"
+    elif external_review_route == "STANDARD_REVIEW":
+        suggested_action = "route_evidence_to_external_review"
+    elif external_review_route == "SHADOW_EVIDENCE_ONLY":
+        suggested_action = "retain_as_shadow_evidence"
+    elif external_review_route == "NOT_APPLICABLE":
+        suggested_action = "retain_for_diagnostics_only"
     else:
-        suggested_action = "manual_hold_until_review"
+        suggested_action = "hold_for_more_evidence"
 
     return {
         "system_role": "routing_advice_only",
         "project_scope": "screening_and_evidence_only",
+        "local_decision_authority": "NONE",
         "training_admission_participation": participates_in_final_admission,
         "image_set_decision_participation": False,
+        "may_emit_final_admission": False,
+        "may_emit_final_image_set_membership": False,
         "final_training_decision_owner": "external_training_decision_flow",
         "final_image_set_decision_owner": "external_dataset_curation_flow",
         "target_bucket": target_bucket,
@@ -177,7 +182,9 @@ def build_batch_admission_advice(
         "batch_preflight": batch_preflight,
         "evidence_completeness": evidence_completeness,
         "machine_ceiling": release_gate.get("machine_status_ceiling"),
-        "eligible_for_training_seal": eligible_for_training_seal,
+        "external_review_route": external_review_route,
+        "eligible_for_training_seal": False,
+        "legacy_eligibility_field_state": LEGACY_ADMISSION_FIELDS_STATE,
         "suggested_action": suggested_action,
         "decision_boundary": {
             "local_output_is": "screening_routing_and_review_priority_evidence",
@@ -198,8 +205,7 @@ def build_candidate_admission_advice(
     master_card = item_summary.get("master_consistency_card") or {}
     status = str(item_summary.get("status") or "").strip().upper()
     release_gate = dict(batch_admission.get("release_gate") or {})
-    training_admission_allowed = bool(release_gate.get("training_admission_allowed"))
-    participates_in_final_admission = bool(batch_admission.get("training_admission_participation", True))
+    participates_in_final_admission = False
     batch_preflight = batch_admission.get("batch_preflight") or {}
     evidence_completeness = batch_admission.get("evidence_completeness") or {}
     blockers: List[str] = []
@@ -232,38 +238,29 @@ def build_candidate_admission_advice(
     if bool(evidence_completeness.get("replay_ready")):
         supports.append("EVIDENCE_REPLAY_READY")
 
-    eligible_for_training_seal = (
-        participates_in_final_admission
-        and bool(batch_admission.get("eligible_for_training_seal"))
-        and training_admission_allowed
-        and len(blockers) == 0
+    external_review_route = _evidence_review_route(
+        batch_admission.get("external_review_route")
+        or release_gate.get("external_review_route"),
+        blockers,
     )
-    if not participates_in_final_admission:
-        if "ITEM_STATUS_FAIL" in blockers:
-            suggestion = "low_priority_review_evidence"
-        elif len(blockers) == 0:
-            suggestion = "priority_review_evidence"
-        else:
-            suggestion = "risk_review_evidence"
-    elif "ITEM_STATUS_FAIL" in blockers:
-        suggestion = "reject_tail"
-    elif not training_admission_allowed:
-        suggestion = "not_eligible_for_training_seal"
-    elif "BATCH_PREFLIGHT_FAILED" in blockers:
-        suggestion = "split_batch_before_candidate_promotion"
-    elif "MASTER_CARD_REVIEW_ONLY" in blockers or "ITEM_LANE_OUTSIDE_FRONT_CORE" in blockers or "ITEM_LANE_OUTSIDE_RELEASE_GATE" in blockers:
-        suggestion = "shadow_candidate_only"
-    elif "ITEM_STATUS_EXCEEDS_RELEASE_GATE_CEILING" in blockers:
-        suggestion = "manual_hold_candidate"
-    elif len(blockers) == 0:
-        suggestion = "manual_shortlist_candidate"
+    if external_review_route == "PRIORITY_REVIEW":
+        suggestion = "priority_review_evidence"
+    elif external_review_route == "STANDARD_REVIEW":
+        suggestion = "standard_review_evidence"
+    elif external_review_route == "SHADOW_EVIDENCE_ONLY":
+        suggestion = "shadow_review_evidence"
+    elif external_review_route == "NOT_APPLICABLE":
+        suggestion = "diagnostic_evidence_only"
     else:
-        suggestion = "manual_hold_candidate"
+        suggestion = "hold_for_more_evidence"
 
     return {
         "project_scope": "screening_and_evidence_only",
+        "local_decision_authority": "NONE",
         "training_admission_participation": participates_in_final_admission,
         "image_set_decision_participation": False,
+        "may_emit_final_admission": False,
+        "may_emit_final_image_set_membership": False,
         "final_training_decision_owner": "external_training_decision_flow",
         "final_image_set_decision_owner": "external_dataset_curation_flow",
         "target_bucket": batch_admission.get("target_bucket"),
@@ -271,8 +268,10 @@ def build_candidate_admission_advice(
         "batch_preflight": batch_preflight,
         "evidence_completeness": evidence_completeness,
         "suggestion": suggestion,
+        "external_review_route": external_review_route,
         "machine_ceiling": release_gate.get("machine_status_ceiling") or "human_confirmation_required",
-        "eligible_for_training_seal": eligible_for_training_seal,
+        "eligible_for_training_seal": False,
+        "legacy_eligibility_field_state": LEGACY_ADMISSION_FIELDS_STATE,
         "decision_boundary": {
             "local_output_is": "candidate_review_priority_and_risk_evidence",
             "local_output_is_not": "final_training_set_or_image_set_decision",

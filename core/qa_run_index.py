@@ -56,6 +56,12 @@ def _artifact_run_brief(artifact_root: Path, *, kind: str) -> Optional[Dict[str,
     review_only_counts = batch.get("review_only_status_counts") if isinstance(batch.get("review_only_status_counts"), dict) else {}
     main_counts = batch.get("main_status_counts") if isinstance(batch.get("main_status_counts"), dict) else {}
     blockers = [str(item).strip() for item in (admission_advice.get("blockers") or []) if str(item).strip()]
+    release_state = str(release_gate.get("release_state") or "").strip()
+    external_review_route = str(
+        admission_advice.get("external_review_route")
+        or release_gate.get("external_review_route")
+        or ("PRIORITY_REVIEW" if release_state == "primary" else "STANDARD_REVIEW")
+    ).strip().upper()
     brief = {
         "artifact_root": str(artifact_root.resolve()),
         "kind": kind,
@@ -73,8 +79,11 @@ def _artifact_run_brief(artifact_root: Path, *, kind: str) -> Optional[Dict[str,
         "evidence_status": str(evidence.get("status") or "").strip(),
         "completeness_score": _round_or_none(evidence.get("completeness_score")),
         "active_heavy_provider": _safe_text(evidence.get("active_heavy_provider")),
-        "release_state": str(release_gate.get("release_state") or "").strip(),
-        "training_admission_allowed": bool(release_gate.get("training_admission_allowed")),
+        "release_state": release_state,
+        "local_decision_authority": "NONE",
+        "external_review_route": external_review_route,
+        "training_admission_allowed": False,
+        "legacy_admission_fields_state": "DEPRECATED_FORCED_FALSE",
         "admission_suggested_action": str(admission_advice.get("suggested_action") or "").strip(),
         "admission_blockers": blockers,
         "winner_review_ready": bool(winner_review.get("promotion_ready")),
@@ -95,11 +104,12 @@ def _artifact_run_brief(artifact_root: Path, *, kind: str) -> Optional[Dict[str,
         and len(lane_counts) == 1
         and brief["dominant_lane_family"]
     )
-    brief["is_front_primary_candidate"] = bool(
+    brief["is_front_priority_review"] = bool(
         brief["dominant_lane_family"] == "front"
-        and brief["training_admission_allowed"]
+        and brief["external_review_route"] == "PRIORITY_REVIEW"
         and brief["preflight_status"].upper() == "PASS"
     )
+    brief["is_front_primary_candidate"] = False
     return brief
 
 
@@ -146,7 +156,7 @@ def build_review_run_index(
                 snapshot_runs.append(brief)
 
     clean_lane_runs = [row for row in snapshot_runs if bool(row.get("is_clean_lane_run"))]
-    front_candidates = [row for row in snapshot_runs if bool(row.get("is_front_primary_candidate"))]
+    front_candidates = [row for row in snapshot_runs if bool(row.get("is_front_priority_review"))]
     three_quarter_candidates = [
         row for row in clean_lane_runs if str(row.get("dominant_lane_family") or "").strip() == "three_quarter"
     ]
@@ -158,7 +168,7 @@ def build_review_run_index(
     )
 
     payload = {
-        "schema_version": "review_run_index_v1",
+        "schema_version": "review_run_index_v2",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "current_outputs": current_run,
         "snapshot_run_count": len(snapshot_runs),

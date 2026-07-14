@@ -1,68 +1,92 @@
-schema_version: qa_release_gates_v1
+schema_version: qa_release_gates_v2
 
 release_gates:
   BODY_GOLD.front_core:
     release_state: primary
     machine_status_ceiling: PASS
-    training_admission_allowed: true
-    manual_training_admission_required: true
+    local_decision_authority: NONE
+    external_review_route: PRIORITY_REVIEW
+    may_emit_final_admission: false
+    may_emit_final_image_set_membership: false
+    training_admission_allowed: false
+    manual_training_admission_required: false
+    parameter_fitting_allowed: false
     optuna_fit_allowed: false
     requires_frozen_benchmark: false
     requires_curated_winner_bank: false
     required_lane_families:
       - front
     notes: >
-      Primary front-core lane. A candidate may be sealed into the training bank
-      only after explicit GPT-plus-human review. Parameter fitting remains
-      disabled until project optimization and frozen benchmark governance are complete.
+      Front-core evidence receives priority external review when screening
+      evidence is complete. This project does not decide admission or membership.
 
   BODY_GOLD.three_quarter_review:
     release_state: review
     machine_status_ceiling: WARN
+    local_decision_authority: NONE
+    external_review_route: HOLD_FOR_MORE_EVIDENCE
+    may_emit_final_admission: false
+    may_emit_final_image_set_membership: false
     training_admission_allowed: false
-    manual_training_admission_required: true
+    manual_training_admission_required: false
+    parameter_fitting_allowed: false
     optuna_fit_allowed: false
     requires_frozen_benchmark: true
     requires_curated_winner_bank: false
     required_lane_families:
       - three_quarter
     notes: >
-      Three-quarter remains a review lane until canonical truth evidence and
+      Three-quarter evidence remains on hold until canonical truth evidence and
       frozen benchmark coverage are stronger.
 
   BODY_GOLD.side90_shadow:
     release_state: shadow
     machine_status_ceiling: WARN
+    local_decision_authority: NONE
+    external_review_route: SHADOW_EVIDENCE_ONLY
+    may_emit_final_admission: false
+    may_emit_final_image_set_membership: false
     training_admission_allowed: false
-    manual_training_admission_required: true
+    manual_training_admission_required: false
+    parameter_fitting_allowed: false
     optuna_fit_allowed: false
     requires_frozen_benchmark: true
     requires_curated_winner_bank: false
     required_lane_families:
       - side
     notes: >
-      Side-90 is a shadow lane and must not be promoted into the sealed
-      training bank.
+      Side-90 output is shadow evidence and cannot express final image-set
+      membership or training admission.
 
   BODY_GOLD.back180_shadow:
     release_state: shadow
     machine_status_ceiling: WARN
+    local_decision_authority: NONE
+    external_review_route: SHADOW_EVIDENCE_ONLY
+    may_emit_final_admission: false
+    may_emit_final_image_set_membership: false
     training_admission_allowed: false
-    manual_training_admission_required: true
+    manual_training_admission_required: false
+    parameter_fitting_allowed: false
     optuna_fit_allowed: false
     requires_frozen_benchmark: true
     requires_curated_winner_bank: false
     required_lane_families:
       - back
     notes: >
-      Back-180 is a shadow lane and must not be promoted into the sealed
-      training bank.
+      Back-180 output is shadow evidence and cannot express final image-set
+      membership or training admission.
 
   BRIDGE.simple_outfit:
     release_state: primary
     machine_status_ceiling: PASS
-    training_admission_allowed: true
-    manual_training_admission_required: true
+    local_decision_authority: NONE
+    external_review_route: PRIORITY_REVIEW
+    may_emit_final_admission: false
+    may_emit_final_image_set_membership: false
+    training_admission_allowed: false
+    manual_training_admission_required: false
+    parameter_fitting_allowed: false
     optuna_fit_allowed: false
     requires_frozen_benchmark: false
     requires_curated_winner_bank: false
@@ -70,14 +94,18 @@ release_gates:
       - front
       - three_quarter
     notes: >
-      Bridge simple-outfit may enter the training bank only after manual seal
-      confirms that identity continuity stays stable under clothing transition.
+      Stable simple-outfit continuity receives priority external review.
 
   BRIDGE.review:
     release_state: review
     machine_status_ceiling: WARN
+    local_decision_authority: NONE
+    external_review_route: STANDARD_REVIEW
+    may_emit_final_admission: false
+    may_emit_final_image_set_membership: false
     training_admission_allowed: false
-    manual_training_admission_required: true
+    manual_training_admission_required: false
+    parameter_fitting_allowed: false
     optuna_fit_allowed: false
     requires_frozen_benchmark: false
     requires_curated_winner_bank: false
@@ -86,29 +114,36 @@ release_gates:
       - three_quarter
       - side
       - back
-    notes: >
-      Generic full-body outfit review remains advisory only and cannot be
-      sealed as a release lane.
+    notes: Generic full-body outfit evidence is routed for standard external review.
 
   UPPER_BODY_PRODUCT:
     release_state: review
     machine_status_ceiling: WARN
+    local_decision_authority: NONE
+    external_review_route: STANDARD_REVIEW
+    may_emit_final_admission: false
+    may_emit_final_image_set_membership: false
     training_admission_allowed: false
-    manual_training_admission_required: true
+    manual_training_admission_required: false
+    parameter_fitting_allowed: false
     optuna_fit_allowed: false
     requires_frozen_benchmark: false
     requires_curated_winner_bank: false
     required_lane_families:
       - front
       - three_quarter
-    notes: >
-      Upper-body product is not a final XiaoNa training-admission lane.
+    notes: Upper-body product evidence is routed for standard external review.
 
   IDENTITY_LOCK:
     release_state: review
     machine_status_ceiling: WARN
+    local_decision_authority: NONE
+    external_review_route: STANDARD_REVIEW
+    may_emit_final_admission: false
+    may_emit_final_image_set_membership: false
     training_admission_allowed: false
-    manual_training_admission_required: true
+    manual_training_admission_required: false
+    parameter_fitting_allowed: false
     optuna_fit_allowed: false
     requires_frozen_benchmark: false
     requires_curated_winner_bank: false
@@ -116,14 +151,18 @@ release_gates:
       - front
       - three_quarter
       - side
-    notes: >
-      Identity-lock is for review and filtering, not direct training admission.
+    notes: Identity-lock output is screening evidence for external review.
 
   IDENTITY_FILTER_ONLY:
     release_state: filter_only
     machine_status_ceiling: WARN
+    local_decision_authority: NONE
+    external_review_route: SHADOW_EVIDENCE_ONLY
+    may_emit_final_admission: false
+    may_emit_final_image_set_membership: false
     training_admission_allowed: false
-    manual_training_admission_required: true
+    manual_training_admission_required: false
+    parameter_fitting_allowed: false
     optuna_fit_allowed: false
     requires_frozen_benchmark: false
     requires_curated_winner_bank: false
@@ -131,5 +170,4 @@ release_gates:
       - front
       - three_quarter
       - side
-    notes: >
-      Identity-filter-only is not a sealed release lane.
+    notes: Identity-filter output is diagnostic shadow evidence only.

@@ -265,7 +265,14 @@ def _compact_release_gate(payload: Any) -> Dict[str, Any]:
             "target_bucket": str(data.get("target_bucket") or "").strip(),
             "release_state": str(data.get("release_state") or "").strip(),
             "machine_status_ceiling": str(data.get("machine_status_ceiling") or "").strip(),
-            "training_admission_allowed": bool(data.get("training_admission_allowed")),
+            "local_decision_authority": "NONE",
+            "external_review_route": str(data.get("external_review_route") or "").strip(),
+            "may_emit_final_admission": False,
+            "may_emit_final_image_set_membership": False,
+            "training_admission_allowed": False,
+            "legacy_admission_fields_state": str(
+                data.get("legacy_admission_fields_state") or "DEPRECATED_FORCED_FALSE"
+            ).strip(),
             "required_lane_families": list(data.get("required_lane_families") or []),
             "notes": str(data.get("notes") or "").strip(),
         }
@@ -281,8 +288,13 @@ def _compact_admission_advice(payload: Any) -> Dict[str, Any]:
         {
             "target_bucket": str(data.get("target_bucket") or "").strip(),
             "suggested_action": suggested_action,
+            "external_review_route": str(data.get("external_review_route") or "").strip(),
+            "local_decision_authority": "NONE",
             "machine_ceiling": str(data.get("machine_ceiling") or "").strip(),
-            "eligible_for_training_seal": data.get("eligible_for_training_seal"),
+            "eligible_for_training_seal": False,
+            "legacy_eligibility_field_state": str(
+                data.get("legacy_eligibility_field_state") or "DEPRECATED_FORCED_FALSE"
+            ).strip(),
             "blockers": list(data.get("blockers") or [])[:6],
             "supports": list(data.get("supports") or [])[:4],
         }

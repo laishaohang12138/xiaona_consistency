@@ -134,11 +134,23 @@ def _training_admission_summary(manifest_file: Path) -> Dict[str, Any]:
             "available": False,
             "manifest_file": str(manifest_file.resolve()),
             "entry_count": 0,
+            "last_recorded_at_utc": None,
             "last_sealed_at_utc": None,
+            "legacy_seal_fields_state": "DEPRECATED_FORCED_EMPTY",
             "status": "not_required_by_screening_project",
         }
     entries = payload.get("entries") if isinstance(payload.get("entries"), list) else []
     recent_entry = entries[-1] if entries else {}
+    external_audit = (
+        recent_entry.get("external_audit")
+        if isinstance(recent_entry, dict) and isinstance(recent_entry.get("external_audit"), dict)
+        else {}
+    )
+    legacy_seal = (
+        recent_entry.get("human_seal")
+        if isinstance(recent_entry, dict) and isinstance(recent_entry.get("human_seal"), dict)
+        else {}
+    )
     return {
         "scope": "external_final_decision_out_of_scope",
         "participates_in_final_admission": bool(scope.get("training_admission_participation")),
@@ -146,7 +158,10 @@ def _training_admission_summary(manifest_file: Path) -> Dict[str, Any]:
         "available": True,
         "manifest_file": str(manifest_file.resolve()),
         "entry_count": len(entries),
-        "last_sealed_at_utc": recent_entry.get("sealed_at_utc") if isinstance(recent_entry, dict) else None,
+        "last_recorded_at_utc": external_audit.get("recorded_at_utc")
+        or legacy_seal.get("sealed_at_utc"),
+        "last_sealed_at_utc": None,
+        "legacy_seal_fields_state": "DEPRECATED_FORCED_EMPTY",
         "status": "legacy_or_external_manifest_present_for_audit_only",
     }
 

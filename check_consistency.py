@@ -135,6 +135,10 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
         "label": "身份测量重复性 Shadow 探针",
         "summary": "显式串行复跑预注册的数值、预处理和微扰试验；不改变评分、排序、复核路由或 Winner Bank。",
     },
+    "run_body_repeatability_shadow": {
+        "label": "身材测量重复性 Shadow 探针",
+        "summary": "显式串行复跑 HMR2 三域试验，逐分量描述 body core 测量稳定性；不生成总分或准入结论。",
+    },
     "prepare_input_manifest": {
         "label": "准备输入清单",
         "summary": "为当前 input 目录生成或更新 input_manifest.json，给 prompt_id / seed / intended_view 留标准入口。",
@@ -439,6 +443,8 @@ def _select_workflow_interactively(default: str = "shot_review") -> str:
             ("seal_training_admission", "登记外部流程已裁决的 training admission 审计记录"),
             ("winner_bank_status", "查看 winner bank 状态与最新跨批次漂移报告"),
             ("training_admission_status", "查看 training admission manifest 的外部审计状态"),
+            ("run_identity_repeatability_shadow", "显式运行脸部原生测量三域重复性探针"),
+            ("run_body_repeatability_shadow", "显式运行 HMR2 body core 三域重复性探针"),
             ("setup_external_models", "自动准备 external/3DDFA-V3 与 external/4D-Humans 及补丁"),
             ("advanced_cli", "进入高级工程模式（qa / benchmark / optuna / calibrate）"),
         ],
@@ -929,13 +935,14 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
             f"bucket={release_gate.get('target_bucket')} "
             f"| state={release_gate.get('release_state')} "
             f"| ceiling={release_gate.get('machine_status_ceiling')} "
-            f"| external_seal_allowed={release_gate.get('training_admission_allowed')}"
+            f"| external_review_route={release_gate.get('external_review_route')} "
+            f"| local_authority={release_gate.get('local_decision_authority')}"
         )
     if training_admission:
         print(
             "  外部准入审计: "
             f"entries={training_manifest_summary.get('entry_count')} "
-            f"| last={training_manifest_summary.get('last_sealed_at_utc')} "
+            f"| last={training_manifest_summary.get('last_recorded_at_utc')} "
             f"| file={training_admission.get('manifest_file')}"
         )
     if heavy_evidence:
@@ -1080,7 +1087,7 @@ def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
     print(
         f"  证据路由: target={admission.get('target_bucket')} "
         f"| action={admission.get('suggested_action')} "
-        f"| external_audit_seal={admission.get('eligible_for_training_seal')} "
+        f"| route={admission.get('external_review_route')} "
         f"| blockers={admission.get('blockers') or []}"
     )
     print(f"  人工提示: {batch.get('review_guidance') or []}")
@@ -1114,7 +1121,7 @@ def _print_training_admission_summary(summary: Dict[str, Any]) -> None:
     print(f"  可用    : {summary.get('available')} | entries={summary.get('entry_count')}")
     print(f"  原因    : {summary.get('reason')}")
     print(f"  文件    : {summary.get('manifest_file')}")
-    print(f"  最近外部记录: {summary.get('last_sealed_at_utc')}")
+    print(f"  最近外部记录: {summary.get('last_recorded_at_utc')}")
     bucket_counts = summary.get("bucket_counts") or {}
     if bucket_counts:
         print(f"  Bucket 分布: {bucket_counts}")
@@ -1122,7 +1129,7 @@ def _print_training_admission_summary(summary: Dict[str, Any]) -> None:
     for row in recent_entries[:3]:
         print(
             f"  外部记录样本: {row.get('image')} | bucket={row.get('target_bucket')} "
-            f"| owner={row.get('owner')} | at={row.get('sealed_at_utc')}"
+            f"| owner={row.get('owner')} | at={row.get('recorded_at_utc')}"
         )
 
 
@@ -1555,6 +1562,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         "winner_bank_status",
         "training_admission_status",
         "run_identity_repeatability_shadow",
+        "run_body_repeatability_shadow",
     }:
         return
 
@@ -1660,6 +1668,62 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
         )
 
 
+def _prepare_repeatability_device_policy(
+    args: argparse.Namespace,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    device = str(args.device_policy or "cuda")
+    require_gpu = bool(args.require_gpu or device == "cuda")
+    try:
+        from core.qa_gpu_device_policy import (
+            apply_truth_fusion_gpu_env,
+            detect_windows_nvidia_whea_risk,
+        )
+
+        hardware_risk = (
+            detect_windows_nvidia_whea_risk()
+            if device == "cuda"
+            else {
+                "schema_version": "windows_nvidia_whea_risk_v0_1",
+                "probe_state": "BYPASSED_CPU_EXECUTION",
+                "risk_state": "CPU_EXECUTION_SELECTED",
+                "blockers": [],
+            }
+        )
+        print(
+            "[GPU硬件风险] "
+            f"probe={hardware_risk.get('probe_state')} "
+            f"| state={hardware_risk.get('risk_state')} "
+            f"| nvidia_whea17_since_boot={hardware_risk.get('nvidia_whea17_count_since_boot')}"
+        )
+        hardware_blockers = list(hardware_risk.get("blockers") or [])
+        if hardware_blockers and not bool(args.allow_gpu_hardware_risk):
+            raise ValueError(
+                "repeatability CUDA run blocked by hardware-risk preflight: "
+                + ", ".join(str(blocker) for blocker in hardware_blockers)
+                + "; use --device-policy cpu, or explicitly acknowledge risk with --allow-gpu-hardware-risk"
+            )
+
+        gpu_policy = apply_truth_fusion_gpu_env(
+            device=device,
+            require_gpu=require_gpu,
+            surface_auto_export="off",
+            force=True,
+        )
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"failed to apply repeatability device policy: {exc}") from exc
+    _print_gpu_policy_summary(gpu_policy)
+    blockers = list(gpu_policy.get("requirement_blockers") or [])
+    if blockers:
+        raise ValueError(
+            "repeatability GPU stack is unavailable: "
+            + ", ".join(str(blocker) for blocker in blockers)
+            + "; use --device-policy cpu only for an explicitly CPU-bound run"
+        )
+    return gpu_policy, hardware_risk
+
+
 def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optional[int]:
     workflow = str(args.workflow or "").strip()
     if workflow in {"", "shot_review", "advanced_cli"}:
@@ -1683,6 +1747,7 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         "promote_winner",
         "winner_bank_status",
         "run_identity_repeatability_shadow",
+        "run_body_repeatability_shadow",
     }
     if workflow in locked_workflows:
         lock = acquire_workflow_lock(
@@ -1703,110 +1768,110 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         print("[交互引导] 下一步：补齐 prompt_id / seed / anchor_source / intended_view，然后再跑 preflight_batch。")
         return 0
 
-    if workflow == "run_identity_repeatability_shadow":
+    if workflow in {"run_identity_repeatability_shadow", "run_body_repeatability_shadow"}:
+        is_body_repeatability = workflow == "run_body_repeatability_shadow"
+        provider_label = "HMR2" if is_body_repeatability else "InsightFace and 3DDFA"
         if not bool(args.repeatability_confirm):
             raise ValueError(
-                "run_identity_repeatability_shadow requires --repeatability-confirm; "
-                "this workflow re-executes InsightFace and 3DDFA once for the baseline and 13 times per image"
+                f"{workflow} requires --repeatability-confirm; "
+                f"this workflow re-executes {provider_label} once for the baseline and 13 times per image"
             )
         raw_images = list(args.repeatability_image or [])
         if not raw_images:
             raise ValueError(
-                "run_identity_repeatability_shadow requires at least one explicit --repeatability-image"
+                f"{workflow} requires at least one explicit --repeatability-image"
             )
         image_paths = [_resolve_cli_path(Path(path), base_dir) for path in raw_images]
         output_root = (
             _resolve_cli_path(args.repeatability_output_dir, base_dir)
             if args.repeatability_output_dir is not None
-            else (base_dir / "outputs" / "identity_repeatability_runs").resolve()
-        )
-        device = str(args.device_policy or "cuda")
-        require_gpu = bool(args.require_gpu or device == "cuda")
-        hardware_risk: Dict[str, Any]
-        try:
-            from core.qa_gpu_device_policy import (
-                apply_truth_fusion_gpu_env,
-                detect_windows_nvidia_whea_risk,
-            )
-
-            hardware_risk = (
-                detect_windows_nvidia_whea_risk()
-                if device == "cuda"
-                else {
-                    "schema_version": "windows_nvidia_whea_risk_v0_1",
-                    "probe_state": "BYPASSED_CPU_EXECUTION",
-                    "risk_state": "CPU_EXECUTION_SELECTED",
-                    "blockers": [],
-                }
-            )
-            print(
-                "[GPU硬件风险] "
-                f"probe={hardware_risk.get('probe_state')} "
-                f"| state={hardware_risk.get('risk_state')} "
-                f"| nvidia_whea17_since_boot={hardware_risk.get('nvidia_whea17_count_since_boot')}"
-            )
-            hardware_blockers = list(hardware_risk.get("blockers") or [])
-            if hardware_blockers and not bool(args.allow_gpu_hardware_risk):
-                raise ValueError(
-                    "repeatability CUDA run blocked by hardware-risk preflight: "
-                    + ", ".join(str(blocker) for blocker in hardware_blockers)
-                    + "; use --device-policy cpu, or explicitly acknowledge risk with --allow-gpu-hardware-risk"
+            else (
+                base_dir
+                / "outputs"
+                / (
+                    "body_repeatability_runs"
+                    if is_body_repeatability
+                    else "identity_repeatability_runs"
                 )
-
-            gpu_policy = apply_truth_fusion_gpu_env(
-                device=device,
-                require_gpu=require_gpu,
-                surface_auto_export="off",
-                force=True,
-            )
-        except ValueError:
-            raise
-        except Exception as exc:
-            raise ValueError(f"failed to apply repeatability device policy: {exc}") from exc
-        _print_gpu_policy_summary(gpu_policy)
-        blockers = list(gpu_policy.get("requirement_blockers") or [])
-        if blockers:
-            raise ValueError(
-                "repeatability GPU stack is unavailable: "
-                + ", ".join(str(blocker) for blocker in blockers)
-                + "; use --device-policy cpu only for an explicitly CPU-bound run"
-            )
-
-        from core.qa_face_repeatability_adapter import FaceCanonicalRepeatabilityAdapter
-        from core.qa_identity_repeatability_runner import run_identity_repeatability_shadow
+            ).resolve()
+        )
+        gpu_policy, hardware_risk = _prepare_repeatability_device_policy(args)
 
         runtime = create_runtime(base_dir)
-        provider_status = runtime.providers.describe_face_canonical()
-        if str(provider_status.get("provider_name") or "") != "face_pose_canonical_3ddfa":
-            raise ValueError(
-                "identity repeatability requires face_pose_canonical_3ddfa; "
-                f"active provider is {provider_status.get('provider_name')}"
+        execution_context = {
+            "gpu_policy": gpu_policy,
+            "gpu_hardware_risk": hardware_risk,
+            "gpu_hardware_risk_override": bool(args.allow_gpu_hardware_risk),
+            "cpu_thread_environment": {
+                key: os.getenv(key)
+                for key in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"]
+            },
+        }
+        if is_body_repeatability:
+            from core.providers import build_provider_bundle
+            from core.qa_body_repeatability_adapter import BodyCanonicalRepeatabilityAdapter
+            from core.qa_body_repeatability_runner import run_body_repeatability_shadow
+            from core.qa_repeatability_shadow import load_body_repeatability_protocol
+
+            runtime.config.provider_policy["heavy_evidence"] = "body_canonical_hmr2"
+            runtime.providers = build_provider_bundle(runtime.config.provider_policy)
+            provider_status = runtime.providers.describe_heavy_evidence()
+            if str(provider_status.get("provider_name") or "") != "body_canonical_hmr2":
+                raise ValueError(
+                    "body repeatability requires body_canonical_hmr2; "
+                    f"active provider is {provider_status.get('provider_name')}"
+                )
+            if not bool(provider_status.get("integration_ready")):
+                raise ValueError(
+                    "body repeatability requires a direct-ready HMR2 integration; "
+                    f"integration_state={provider_status.get('integration_state')} "
+                    f"reason={provider_status.get('reason')}"
+                )
+            body_protocol = load_body_repeatability_protocol()
+            body_execution = (
+                body_protocol.get("execution")
+                if isinstance(body_protocol.get("execution"), dict)
+                else {}
             )
-        axis_arg = str(args.repeatability_axis or "both")
-        axes = (
-            ["face_identity", "face_shape"]
-            if axis_arg == "both"
-            else [axis_arg]
-        )
-        result = run_identity_repeatability_shadow(
-            image_paths=image_paths,
-            output_root=output_root,
-            adapter=FaceCanonicalRepeatabilityAdapter(
-                runtime,
-                execution_context={
-                    "gpu_policy": gpu_policy,
-                    "gpu_hardware_risk": hardware_risk,
-                    "gpu_hardware_risk_override": bool(args.allow_gpu_hardware_risk),
-                    "cpu_thread_environment": {
-                        key: os.getenv(key)
-                        for key in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"]
+            result = run_body_repeatability_shadow(
+                image_paths=image_paths,
+                output_root=output_root,
+                adapter=BodyCanonicalRepeatabilityAdapter(
+                    runtime,
+                    execution_context={
+                        **execution_context,
+                        "inter_execution_cooldown_seconds": body_execution.get(
+                            "inter_execution_cooldown_seconds"
+                        ),
+                        "stop_on_failed_trial": body_execution.get("stop_on_failed_trial"),
                     },
-                },
-            ),
-            axes=axes,
-            run_id=args.repeatability_run_id,
-            retry_failed=bool(args.repeatability_retry_failed),
-        )
+                ),
+                run_id=args.repeatability_run_id,
+                retry_failed=bool(args.repeatability_retry_failed),
+            )
+        else:
+            from core.qa_face_repeatability_adapter import FaceCanonicalRepeatabilityAdapter
+            from core.qa_identity_repeatability_runner import run_identity_repeatability_shadow
+
+            provider_status = runtime.providers.describe_face_canonical()
+            if str(provider_status.get("provider_name") or "") != "face_pose_canonical_3ddfa":
+                raise ValueError(
+                    "identity repeatability requires face_pose_canonical_3ddfa; "
+                    f"active provider is {provider_status.get('provider_name')}"
+                )
+            axis_arg = str(args.repeatability_axis or "both")
+            axes = ["face_identity", "face_shape"] if axis_arg == "both" else [axis_arg]
+            result = run_identity_repeatability_shadow(
+                image_paths=image_paths,
+                output_root=output_root,
+                adapter=FaceCanonicalRepeatabilityAdapter(
+                    runtime,
+                    execution_context=execution_context,
+                ),
+                axes=axes,
+                run_id=args.repeatability_run_id,
+                retry_failed=bool(args.repeatability_retry_failed),
+            )
         print(
             json.dumps(
                 {
@@ -2622,10 +2687,11 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             source_files=(review_packet.get("source_files") or {}) if review_packet else {},
             manual_owner=manual_owner,
             manual_note=manual_note,
+            external_decision_confirmed=allow_external_audit,
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         if result.get("status") != "ok":
-            print("[交互引导] 当前批次不满足外部 admission 审计登记条件。请先看 review packet 的 release gate、batch_preflight、evidence_completeness 和 blockers。")
+            print("[交互引导] 未记录外部 admission 审计；仅能在外部决定已完成并显式确认后写入审计账本。")
             return 1
         summary = load_training_admission_manifest_summary(paths["training_admission_manifest"])
         _print_training_admission_summary(summary)
@@ -2875,6 +2941,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "setup_external_models",
             "advanced_cli",
             "run_identity_repeatability_shadow",
+            "run_body_repeatability_shadow",
         ],
         help="User-facing workflow entry. Prefer this over --mode when you want task-oriented review actions.",
     )
@@ -2996,14 +3063,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         action="append",
         help=(
-            "Explicit image for run_identity_repeatability_shadow. Repeat the flag for multiple images; "
+            "Explicit image for identity/body repeatability Shadow workflows. Repeat the flag for multiple images; "
             "the workflow never auto-scans input."
         ),
     )
     parser.add_argument(
         "--repeatability-output-dir",
         type=Path,
-        help="Output root for resumable identity repeatability runs.",
+        help="Optional output root for resumable identity or body repeatability runs.",
     )
     parser.add_argument(
         "--repeatability-run-id",
@@ -3058,11 +3125,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--admission-owner",
-        help="Manual owner recorded when sealing a candidate into outputs/training_admission_manifest.json.",
+        help="External decision owner recorded in outputs/training_admission_manifest.json as audit metadata.",
     )
     parser.add_argument(
         "--admission-note",
-        help="Optional manual note attached when sealing a candidate into outputs/training_admission_manifest.json.",
+        help="Optional note attached to the external decision audit record.",
     )
     parser.add_argument(
         "--benchmark-report",

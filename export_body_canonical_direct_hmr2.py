@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import json
 import os
@@ -77,6 +78,27 @@ _MEASUREMENT_SCALES = {
     "foot_length_to_leg": 0.04,
     "left_right_foot_balance": 0.04,
 }
+_ARTIFACT_SCHEMA = "body_canonical_artifact_v3"
+_PROVIDER_VERSION = "body_canonical_hmr2_direct_bridge_v4"
+_TOPOLOGY_SCHEMA_ID = "smpl_neutral_zero_pose_vertices_v1"
+_TOPOLOGY_COORDINATE_CONVENTION = "smpl_neutral_zero_pose_model_space"
+_TOPOLOGY_CANONICALIZATION_ID = "smpl_identity_global_and_body_rotations_v1"
+_TOPOLOGY_ALIGNMENT_CONTRACT_ID = "centroid_translation_removal_only_v1"
+_TOPOLOGY_REPRESENTATION = "dense_smpl_vertices_exact_index_correspondence"
+_EXPECTED_SMPL_VERTEX_COUNT = 6890
+
+
+def _sha256_file(path: Path) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _resolve_repo_dir() -> Path:
@@ -185,6 +207,37 @@ def _single_bbox(image: np.ndarray, margin: float) -> np.ndarray:
 
 def _as_list(value: torch.Tensor) -> list[float]:
     return value.detach().cpu().reshape(-1).to(torch.float32).tolist()
+
+
+def _as_vertex_rows(value: torch.Tensor) -> list[list[float]]:
+    vertices = value.detach().cpu().to(torch.float32)
+    if vertices.ndim != 2 or vertices.shape[1] != 3:
+        raise ValueError(f"canonical SMPL vertices must have shape [V, 3], got {tuple(vertices.shape)}")
+    return vertices.tolist()
+
+
+def _zero_pose_canonical_vertices(
+    model: Any,
+    pred_smpl_params: Dict[str, torch.Tensor],
+) -> torch.Tensor:
+    betas = pred_smpl_params["betas"].reshape(pred_smpl_params["betas"].shape[0], -1).float()
+    body_pose = pred_smpl_params["body_pose"].reshape(betas.shape[0], -1, 3, 3)
+    identity = torch.eye(3, device=betas.device, dtype=torch.float32).reshape(1, 1, 3, 3)
+    global_orient = identity.expand(betas.shape[0], 1, 3, 3).contiguous()
+    zero_body_pose = identity.expand(betas.shape[0], body_pose.shape[1], 3, 3).contiguous()
+    smpl_output = model.smpl(
+        betas=betas,
+        global_orient=global_orient,
+        body_pose=zero_body_pose,
+        pose2rot=False,
+    )
+    vertices = smpl_output.vertices.reshape(betas.shape[0], -1, 3)
+    if vertices.shape[1] != _EXPECTED_SMPL_VERTEX_COUNT:
+        raise RuntimeError(
+            "zero-pose SMPL vertex count mismatch: "
+            f"expected {_EXPECTED_SMPL_VERTEX_COUNT}, got {vertices.shape[1]}"
+        )
+    return vertices
 
 
 def _as_numpy(value: torch.Tensor) -> np.ndarray:
@@ -355,6 +408,10 @@ def main() -> None:
 
     with torch.inference_mode():
         output = model(batch)
+        canonical_smpl_vertices = _zero_pose_canonical_vertices(
+            model,
+            output["pred_smpl_params"],
+        )[0]
 
     pred_smpl_params: Dict[str, torch.Tensor] = output["pred_smpl_params"]
     betas = pred_smpl_params["betas"][0]
@@ -371,23 +428,60 @@ def main() -> None:
     )
     all_finite = all(
         torch.isfinite(tensor).all().item()
-        for tensor in [betas, global_orient, body_pose, pred_cam, pred_keypoints_2d, pred_keypoints_3d]
+        for tensor in [
+            betas,
+            global_orient,
+            body_pose,
+            pred_cam,
+            pred_keypoints_2d,
+            pred_keypoints_3d,
+            canonical_smpl_vertices,
+        ]
     )
     artifact = {
-        "schema_version": "body_canonical_artifact_v1",
+        "schema_version": _ARTIFACT_SCHEMA,
         "provider_name": "body_canonical_hmr2",
         "provider_family": "body_canonical",
-        "provider_version": "hmr2_xiaona_export_v2",
-        "model_id": str(Path(args.checkpoint).name),
+        "provider_version": _PROVIDER_VERSION,
+        "model_id": "hmr2_direct_bridge_v2",
         "source_path": str(image_path),
         "source_role": "candidate",
         "shape_beta": _as_list(betas),
         "pose_vector": _as_list(torch.cat([global_orient.reshape(-1), body_pose.reshape(-1)], dim=0)),
+        "canonical_smpl_vertices": _as_vertex_rows(canonical_smpl_vertices),
         "canonical_measurements": measurements,
         "measurement_scales": measurement_scales,
         "fit_confidence": 1.0 if all_finite else 0.0,
         "coverage": coverage,
         "notes": "direct 4D-Humans export for XiaoNa body canonical bridge",
+        "body_canonical_contract": {
+            "provider_name": "body_canonical_hmr2",
+            "provider_version": _PROVIDER_VERSION,
+            "model_id": str(Path(args.checkpoint).name),
+            "model_sha256": _sha256_file(Path(args.checkpoint).resolve()),
+            "implementation_sha256": _sha256_file(Path(__file__).resolve()),
+            "execution_backend": str(device),
+            "body_model_id": smpl_source.name,
+            "body_model_sha256": _sha256_file(smpl_source),
+            "preprocessing_contract_id": (
+                f"hmr2_vitdet_single_bbox_margin_{float(args.bbox_margin):.6f}_v1"
+            ),
+            "measurement_schema_id": str(
+                measurement_meta.get("measurement_basis") or "hmr2_body25_3d_v2"
+            ),
+            "measurement_order": list(_MEASUREMENT_SCALES),
+            "shape_dimension": int(betas.numel()),
+            "topology_schema_id": _TOPOLOGY_SCHEMA_ID,
+            "topology_dimension": int(canonical_smpl_vertices.numel()),
+            "topology_vertex_count": int(canonical_smpl_vertices.shape[0]),
+            "topology_representation": _TOPOLOGY_REPRESENTATION,
+            "topology_coordinate_convention": _TOPOLOGY_COORDINATE_CONVENTION,
+            "canonicalization_contract_id": _TOPOLOGY_CANONICALIZATION_ID,
+            "topology_alignment_contract_id": _TOPOLOGY_ALIGNMENT_CONTRACT_ID,
+            "coordinate_convention": "hmr2_camera_relative_body25_3d",
+            "source_field": "canonical_measurements",
+            "topology_source_field": "canonical_smpl_vertices",
+        },
         "conversion_meta": {
             "repo_dir": str(HMR2_REPO),
             "smpl_source": str(smpl_source),
@@ -410,7 +504,7 @@ def main() -> None:
         provider_family=str(artifact.get("provider_family") or "body_canonical"),
         provider_version=str(artifact.get("provider_version") or "hmr2_xiaona_export_v1"),
         model_id=str(artifact.get("model_id") or Path(args.checkpoint).name),
-        schema_version=str(artifact.get("schema_version") or "body_canonical_artifact_v1"),
+        schema_version=str(artifact.get("schema_version") or _ARTIFACT_SCHEMA),
         source_path=image_path,
         device=str(device),
         repo_dir=HMR2_REPO,

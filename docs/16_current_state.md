@@ -147,11 +147,34 @@ For body-topology triage, use `canonical_truth_summary.body_topology_*` to ident
 
 ## Current Governance State
 
+The normative vNext mathematical architecture is now frozen in
+`docs/39_underlying_mathematical_model.md`:
+
+- face identity uses a native unit-hypersphere angular residual in Shadow mode
+- face projection shape uses weighted IRLS Procrustes in Shadow mode
+- body core shape now emits a signed five-component log-ratio residual vector in Shadow mode; no scalar body residual is authorized
+- body pose/gait and clothing/occlusion remain condition and observation-reliability descriptors, not identity votes
+- HMR2 checkpoint, SMPL asset, preprocessing, backend, schema, dimensions, and source fields now participate in body provider comparability
+- native 3D body topology now emits the signed coordinate delta between matching 6890-vertex neutral zero-pose SMPL meshes after centroid translation removal only; rotation, scale, Procrustes, pose fitting, scalar aggregation, and thresholding remain prohibited
+- observation eligibility, provider comparability, repeatability, and evidence lineage stay separate from residuals
+- current body fixed-scale similarities remain legacy review heuristics until a condition-aware body observation model is independently calibrated
+- `outputs/body_evidence_shadow.json` is a standalone diagnostic artifact written after legacy report/ranking outputs and has `decision_influence=NONE`
+- `run_body_repeatability_shadow` now executes one preregistered baseline-plus-13-trial HMR2 protocol shared by body core and native topology, with atomic per-trial resume and GPU/WHEA preflight; adding topology does not add GPU executions
+- body-core repeatability is reported independently for each of the five signed log-ratio components; no vector norm, component mean, stability label, or combined score is emitted
+- body topology exposes a machine-readable native-measurement readiness contract; provider v4 artifacts export zero-pose canonical SMPL vertices, while old signature-only artifacts remain blocked and cannot unlock native geometry
+- native topology repeatability is `PREREGISTERED_NOT_EXECUTED`: each trial retains the 20670-coordinate signed residual and reports fixed signed/absolute quantiles separately for x, y, and z; coordinate-axis aggregation, vertex norms, topology scores, stability labels, and fitted thresholds are prohibited
+- body repeatability summaries expose per-axis baseline/trial coverage; a completed execution with either axis unavailable is explicitly `COMPLETE_WITH_UNAVAILABLE_MEASUREMENTS`
+- no combined vNext score, stability label, fitted threshold, covariance model, or statistical confidence interval is authorized
+
 - machine output remains evidence only
 - no auto-promotion into winner bank
 - no final training-set admission inside this project
 - no final image-set membership decision inside this project
 - `project_scope` is now `screening_and_evidence_only`; final training decisions belong to the external training decision flow and final image-set construction belongs to the external dataset-curation flow
+- release-gate schema is now `qa_release_gates_v2`; it emits external review routes but has `local_decision_authority=NONE`
+- missing, legacy, unknown, or explicitly permissive admission fields are normalized fail-closed
+- compatibility fields `training_admission_allowed` and `eligible_for_training_seal` are retained only as `DEPRECATED_FORCED_FALSE`
+- parameter fitting and Optuna remain forced off at the same normalization boundary
 - `seal_training_admission` is disabled by default and can only record an already-external decision as an audit ledger with an explicit environment override
 - winner bank is mutable review memory and is not frozen release truth
 - mutable winner-bank entries must not feed parameter fitting, final admission, or final image-set membership

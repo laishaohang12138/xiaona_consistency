@@ -7,15 +7,16 @@ Read in this order:
 1. [15_project_memory.md](./15_project_memory.md)
 2. [16_current_state.md](./16_current_state.md)
 3. [17_next_actions.md](./17_next_actions.md)
-4. [29_pose_gait_body_truth_policy.md](./29_pose_gait_body_truth_policy.md) when reviewing pose/gait-aware body truth.
-5. [30_replay_collection_plan.md](./30_replay_collection_plan.md) when preparing the next lighting / OUTER / side-back topology collection wave.
-6. [31_topology_replay_pack.md](./31_topology_replay_pack.md) when preparing controlled side/back topology replay.
-7. [32_same_truth_projection_uncertainty.md](./32_same_truth_projection_uncertainty.md) when reviewing side/back same-truth projection confidence.
-8. [33_head_topology_partition.md](./33_head_topology_partition.md) when reviewing local face/head topology drift under high global topology scores.
-9. [34_body_topology_partition.md](./34_body_topology_partition.md) when reviewing pose/gait-aware body topology partition drift.
-10. [25_clothing_invariant_surface_bridge.md](./25_clothing_invariant_surface_bridge.md) when reviewing clothing-invariant surface evidence.
-11. [26_densepose_wsl_deployment.md](./26_densepose_wsl_deployment.md) when preparing official DensePose deployment.
-12. [37_truth_fusion_gpu_stack.md](./37_truth_fusion_gpu_stack.md) when running maximum-evidence GPU truth-fusion review.
+4. [39_underlying_mathematical_model.md](./39_underlying_mathematical_model.md) for the normative bottom-layer mathematical model, identifiability limits, and Shadow promotion rules.
+5. [29_pose_gait_body_truth_policy.md](./29_pose_gait_body_truth_policy.md) when reviewing pose/gait-aware body truth.
+6. [30_replay_collection_plan.md](./30_replay_collection_plan.md) when preparing the next lighting / OUTER / side-back topology collection wave.
+7. [31_topology_replay_pack.md](./31_topology_replay_pack.md) when preparing controlled side/back topology replay.
+8. [32_same_truth_projection_uncertainty.md](./32_same_truth_projection_uncertainty.md) when reviewing side/back same-truth projection confidence.
+9. [33_head_topology_partition.md](./33_head_topology_partition.md) when reviewing local face/head topology drift under high global topology scores.
+10. [34_body_topology_partition.md](./34_body_topology_partition.md) when reviewing pose/gait-aware body topology partition drift.
+11. [25_clothing_invariant_surface_bridge.md](./25_clothing_invariant_surface_bridge.md) when reviewing clothing-invariant surface evidence.
+12. [26_densepose_wsl_deployment.md](./26_densepose_wsl_deployment.md) when preparing official DensePose deployment.
+13. [37_truth_fusion_gpu_stack.md](./37_truth_fusion_gpu_stack.md) when running maximum-evidence GPU truth-fusion review.
 
 Use this pack when:
 
@@ -34,7 +35,7 @@ Fast rules:
 
 Recommended new-window prompt:
 
-`Read docs/14_handoff_index.md, docs/15_project_memory.md, docs/16_current_state.md, and docs/17_next_actions.md first, then continue from the current state.`
+`Read docs/14_handoff_index.md, docs/15_project_memory.md, docs/16_current_state.md, docs/17_next_actions.md, and docs/39_underlying_mathematical_model.md first, then continue from the current state.`
 
 Operational shortcut:
 

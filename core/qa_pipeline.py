@@ -15,6 +15,7 @@ import numpy as np
 from .providers import build_provider_bundle
 from .qa_admission import resolve_target_bucket
 from .qa_artifact_manifest import artifact_manifest_path, load_artifact_manifest_summary
+from .qa_body_evidence_shadow import write_body_evidence_shadow
 from .qa_collection_metadata import infer_layer_tag_from_profile, parse_collection_metadata
 from .qa_consistency import (
     apply_consistency_soft_gate,
@@ -67,6 +68,7 @@ from .qa_training_admission import (
     load_training_admission_manifest_summary,
     training_admission_manifest_path,
 )
+from .qa_governance import fail_closed_release_gate
 from .qa_truth_integrity import assert_truth_integrity, validate_truth_integrity
 from .qa_scoring import (
     build_tone_reference_stats,
@@ -289,19 +291,11 @@ def _build_report_meta(
     truth_anchors = anchor_snapshot.get("truth_anchors", {}) if isinstance(anchor_snapshot, dict) else {}
     release_gates = runtime.config.release_gates if isinstance(runtime.config.release_gates, dict) else {}
     active_release_gate = dict((release_gates.get("release_gates") or {}).get(target_bucket) or {})
-    release_gate_summary = {
-        "schema_version": str(release_gates.get("schema_version") or "").strip(),
-        "target_bucket": target_bucket,
-        "release_state": str(active_release_gate.get("release_state") or "review").strip() or "review",
-        "machine_status_ceiling": str(active_release_gate.get("machine_status_ceiling") or "WARN").strip().upper() or "WARN",
-        "training_admission_allowed": bool(active_release_gate.get("training_admission_allowed")),
-        "manual_training_admission_required": bool(active_release_gate.get("manual_training_admission_required", True)),
-        "optuna_fit_allowed": bool(active_release_gate.get("optuna_fit_allowed")),
-        "requires_frozen_benchmark": bool(active_release_gate.get("requires_frozen_benchmark")),
-        "requires_curated_winner_bank": bool(active_release_gate.get("requires_curated_winner_bank")),
-        "required_lane_families": list(active_release_gate.get("required_lane_families") or []),
-        "notes": str(active_release_gate.get("notes") or "").strip(),
-    }
+    release_gate_summary = fail_closed_release_gate(
+        active_release_gate,
+        target_bucket=target_bucket,
+        source_schema_version=str(release_gates.get("schema_version") or "").strip(),
+    )
     training_manifest_file = training_admission_manifest_path(runtime.config.paths.dir_output)
     training_manifest_summary = load_training_admission_manifest_summary(training_manifest_file)
     heavy_provider_status = (
@@ -333,11 +327,14 @@ def _build_report_meta(
         "run_status": "engine_fatal" if runtime.engines.fatal else "ok",
         "active_profile": target_profile,
         "project_scope": {
-            "schema_version": "project_scope_v1",
+            "schema_version": "project_scope_v2",
             "role": "screening_and_evidence_only",
             "machine_role": "rank_candidates_explain_risks_route_review_priority_and_package_evidence",
+            "local_decision_authority": "NONE",
             "training_admission_participation": False,
             "image_set_decision_participation": False,
+            "may_emit_final_admission": False,
+            "may_emit_final_image_set_membership": False,
             "final_training_decision_owner": "external_training_decision_flow",
             "final_image_set_decision_owner": "external_dataset_curation_flow",
             "does_not": [
@@ -567,6 +564,9 @@ def _build_report_meta(
             "manifest_summary": training_manifest_summary,
             "participates_in_final_admission": False,
             "participates_in_final_image_set_decision": False,
+            "local_decision_authority": "NONE",
+            "may_emit_final_admission": False,
+            "may_emit_final_image_set_membership": False,
             "winner_bank_equals_training_admission": False,
             "final_decision_owner": "external_training_decision_flow",
             "final_image_set_decision_owner": "external_dataset_curation_flow",
@@ -1935,10 +1935,15 @@ def _run_pipeline_impl(
     ranked_candidates_file = _write_report_outputs(runtime, report_payload)
     review_packet_file = config.paths.dir_output / "review_packet.json"
     identity_evidence_shadow = None
+    body_evidence_shadow = None
     try:
         identity_evidence_shadow = write_identity_evidence_shadow(runtime, report_items)
     except Exception as exc:
         print(f"[Shadow证据] 写出失败但不影响现有审核结果: {type(exc).__name__}: {exc}")
+    try:
+        body_evidence_shadow = write_body_evidence_shadow(runtime, report_items)
+    except Exception as exc:
+        print(f"[身材Shadow证据] 写出失败但不影响现有审核结果: {type(exc).__name__}: {exc}")
 
     print("\n[完工] 质检完成 [OK]")
     print(f"[报告] {config.paths.report_file}")
@@ -1946,6 +1951,8 @@ def _run_pipeline_impl(
     print(f"[复核包] {review_packet_file}")
     if identity_evidence_shadow is not None:
         print(f"[Shadow证据] {identity_evidence_shadow['path']}")
+    if body_evidence_shadow is not None:
+        print(f"[身材Shadow证据] {body_evidence_shadow['path']}")
     collection_summary = collection_aggregates.get("summary", {})
     print(
         "[集合聚合] "

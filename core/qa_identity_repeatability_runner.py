@@ -5,7 +5,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Sequence
 
 import numpy as np
 
@@ -323,6 +323,9 @@ def _compact_observation_provenance(
             "available": bool(node.get("available")),
             "provider_contract": _json_ready(node.get("provider_contract")),
             "landmark_schema_id": node.get("landmark_schema_id"),
+            "measurement_order": _json_ready(node.get("measurement_order")),
+            "used_components": _json_ready(node.get("used_components")),
+            "prior_dependence": node.get("prior_dependence"),
             "errors": list(node.get("errors") or []),
         }
     return {
@@ -466,6 +469,8 @@ def _load_or_measure_baseline(
     item_dir: Path,
     retry_failed: bool,
     retain_completed_image: bool,
+    axes: Sequence[str],
+    trial_schema: str = REPEATABILITY_TRIAL_SCHEMA,
 ) -> Dict[str, Any]:
     baseline_dir = item_dir / "baseline"
     result_path = baseline_dir / "result.json"
@@ -475,7 +480,7 @@ def _load_or_measure_baseline(
         return existing
     attempt = int(load_json_dict(result_path).get("attempt") or 0) + 1
     result: Dict[str, Any] = {
-        "schema_version": REPEATABILITY_TRIAL_SCHEMA,
+        "schema_version": str(trial_schema),
         "kind": "baseline",
         "trial_spec_sha256": spec_sha,
         "source_path": str(source_path.resolve()),
@@ -495,9 +500,13 @@ def _load_or_measure_baseline(
             {},
         )
         observation = _measure_adapter(adapter, baseline_image)
+        available_count = sum(
+            bool(_axis_node(observation, axis).get("available"))
+            for axis in axes
+        )
         result.update(
             {
-                "state": "COMPLETE",
+                "state": "COMPLETE" if available_count else "MEASUREMENT_UNAVAILABLE",
                 "observation": observation,
             }
         )
@@ -523,6 +532,9 @@ def _run_trial(
     transform_contract: Dict[str, Any],
     retry_failed: bool,
     retain_completed_image: bool,
+    native_residual_builder: Callable[[Dict[str, Any], Dict[str, Any], str], Dict[str, Any]],
+    chain_diagnostics_builder: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
+    trial_schema: str = REPEATABILITY_TRIAL_SCHEMA,
 ) -> Dict[str, Any]:
     trial_dir = item_dir / "trials" / str(spec["domain"]) / str(spec["trial_id"])
     result_path = trial_dir / "result.json"
@@ -532,7 +544,7 @@ def _run_trial(
         return existing
     attempt = int(load_json_dict(result_path).get("attempt") or 0) + 1
     result: Dict[str, Any] = {
-        "schema_version": REPEATABILITY_TRIAL_SCHEMA,
+        "schema_version": str(trial_schema),
         **dict(spec),
         "source_path": str(source_path.resolve()),
         "source_sha256": source_sha256,
@@ -553,10 +565,10 @@ def _run_trial(
         observation = _measure_adapter(adapter, trial_image)
         baseline_observation = baseline.get("observation") if isinstance(baseline.get("observation"), dict) else {}
         residuals = {
-            axis: _native_residual(baseline_observation, observation, axis)
+            axis: native_residual_builder(baseline_observation, observation, axis)
             for axis in axes
         }
-        chain_diagnostics = build_detector_chain_diagnostics(baseline_observation, observation)
+        chain_diagnostics = chain_diagnostics_builder(baseline_observation, observation)
         available_count = sum(bool(node.get("available")) for node in residuals.values())
         result.update(
             {
@@ -632,23 +644,36 @@ def _item_summary(
     }
 
 
-def run_identity_repeatability_shadow(
+def run_repeatability_shadow_engine(
     *,
     image_paths: Sequence[Path],
     output_root: Path,
     adapter: RepeatabilityMeasurementAdapter,
-    axes: Sequence[str] = SUPPORTED_AXES,
+    axes: Sequence[str],
+    protocol: Dict[str, Any],
+    run_schema: str,
+    trial_schema: str,
+    runner_implementation_path: Path,
+    native_residual_builder: Callable[[Dict[str, Any], Dict[str, Any], str], Dict[str, Any]],
+    chain_diagnostics_builder: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]],
+    item_summary_builder: Callable[
+        [Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Sequence[str]],
+        Dict[str, Any],
+    ],
+    cohort_summary_builder: Callable[[List[Dict[str, Any]], Sequence[str]], Dict[str, Any]],
     run_id: Optional[str] = None,
     retry_failed: bool = False,
 ) -> Dict[str, Any]:
     if cv2 is None:
-        raise RuntimeError("OpenCV is required to execute identity repeatability trials")
-    normalized_axes = _normalized_axes(axes)
-    protocol = load_repeatability_protocol()
+        raise RuntimeError("OpenCV is required to execute repeatability trials")
+    normalized_axes = tuple(dict.fromkeys(str(axis).strip().lower() for axis in axes))
+    if not normalized_axes or any(not axis for axis in normalized_axes):
+        raise ValueError("at least one valid repeatability axis is required")
     protocol_sha = _canonical_sha256(protocol)
     plan = build_repeatability_trial_plan(protocol)
     execution_policy = protocol.get("execution") if isinstance(protocol.get("execution"), dict) else {}
     retain_completed_images = bool(execution_policy.get("retain_completed_materialized_images", False))
+    stop_on_failed_trial = bool(execution_policy.get("stop_on_failed_trial", False))
     resolved_images = [Path(path).resolve() for path in image_paths]
     if not resolved_images:
         raise ValueError("at least one repeatability image is required")
@@ -677,14 +702,15 @@ def run_identity_repeatability_shadow(
         )
     adapter_contract = _json_ready(adapter.describe())
     run_contract = {
-        "schema_version": REPEATABILITY_RUN_SCHEMA,
+        "schema_version": str(run_schema),
         "protocol_id": protocol.get("protocol_id"),
         "protocol_sha256": protocol_sha,
         "axes": list(normalized_axes),
         "sources": sources,
         "adapter_contract": adapter_contract,
         "execution_implementation": {
-            "runner_sha256": _file_sha256(Path(__file__).resolve()),
+            "execution_engine_sha256": _file_sha256(Path(__file__).resolve()),
+            "workflow_runner_sha256": _file_sha256(Path(runner_implementation_path).resolve()),
             "opencv_version": str(getattr(cv2, "__version__", "unavailable")),
             "numpy_version": str(np.__version__),
         },
@@ -705,7 +731,7 @@ def run_identity_repeatability_shadow(
         atomic_write_json(
             manifest_path,
             {
-                "schema_version": REPEATABILITY_RUN_SCHEMA,
+                "schema_version": str(run_schema),
                 "run_id": resolved_run_id,
                 "run_contract_sha256": run_contract_sha,
                 "run_contract": run_contract,
@@ -735,12 +761,14 @@ def run_identity_repeatability_shadow(
             item_dir=item_dir,
             retry_failed=retry_failed,
             retain_completed_image=retain_completed_images,
+            axes=normalized_axes,
+            trial_schema=trial_schema,
         )
         baseline_state = str(baseline.get("state") or "UNKNOWN")
         baseline_state_counts[baseline_state] = baseline_state_counts.get(baseline_state, 0) + 1
         results: List[Dict[str, Any]] = []
-        if baseline_state == "FAILED":
-            item_summaries.append(_item_summary(source, baseline, results, normalized_axes))
+        if baseline_state != "COMPLETE":
+            item_summaries.append(item_summary_builder(source, baseline, results, normalized_axes))
             continue
         for spec in plan:
             result = _run_trial(
@@ -754,20 +782,28 @@ def run_identity_repeatability_shadow(
                 transform_contract=dict(protocol.get("transform_contract") or {}),
                 retry_failed=retry_failed,
                 retain_completed_image=retain_completed_images,
+                native_residual_builder=native_residual_builder,
+                chain_diagnostics_builder=chain_diagnostics_builder,
+                trial_schema=trial_schema,
             )
             results.append(result)
             all_results.append(result)
-        item_summaries.append(_item_summary(source, baseline, results, normalized_axes))
+            if str(result.get("state") or "") == "FAILED" and stop_on_failed_trial:
+                break
+        item_summaries.append(item_summary_builder(source, baseline, results, normalized_axes))
 
     state_counts: Dict[str, int] = {}
     for result in all_results:
         state = str(result.get("state") or "UNKNOWN")
         state_counts[state] = state_counts.get(state, 0) + 1
     status = "PARTIAL" if state_counts.get("FAILED") or baseline_state_counts.get("FAILED") else "COMPLETE"
-    if status == "COMPLETE" and state_counts.get("MEASUREMENT_UNAVAILABLE"):
+    if status == "COMPLETE" and (
+        state_counts.get("MEASUREMENT_UNAVAILABLE")
+        or baseline_state_counts.get("MEASUREMENT_UNAVAILABLE")
+    ):
         status = "COMPLETE_WITH_UNAVAILABLE_MEASUREMENTS"
     summary = {
-        "schema_version": REPEATABILITY_RUN_SCHEMA,
+        "schema_version": str(run_schema),
         "run_id": resolved_run_id,
         "run_contract_sha256": run_contract_sha,
         "status": status,
@@ -784,10 +820,7 @@ def run_identity_repeatability_shadow(
             "failed_retained": True,
         },
         "items": item_summaries,
-        "cross_source_descriptors": summarize_repeatability_cohort(
-            item_summaries,
-            axes=normalized_axes,
-        ),
+        "cross_source_descriptors": cohort_summary_builder(item_summaries, normalized_axes),
         "combined_repeatability_score": None,
         "stable_unstable_classification": None,
         "parameter_fitting_allowed": False,
@@ -795,3 +828,34 @@ def run_identity_repeatability_shadow(
     }
     atomic_write_json(run_dir / "run_summary.json", summary)
     return summary
+
+
+def run_identity_repeatability_shadow(
+    *,
+    image_paths: Sequence[Path],
+    output_root: Path,
+    adapter: RepeatabilityMeasurementAdapter,
+    axes: Sequence[str] = SUPPORTED_AXES,
+    run_id: Optional[str] = None,
+    retry_failed: bool = False,
+) -> Dict[str, Any]:
+    normalized_axes = _normalized_axes(axes)
+    return run_repeatability_shadow_engine(
+        image_paths=image_paths,
+        output_root=output_root,
+        adapter=adapter,
+        axes=normalized_axes,
+        protocol=load_repeatability_protocol(),
+        run_schema=REPEATABILITY_RUN_SCHEMA,
+        trial_schema=REPEATABILITY_TRIAL_SCHEMA,
+        runner_implementation_path=Path(__file__).resolve(),
+        native_residual_builder=_native_residual,
+        chain_diagnostics_builder=build_detector_chain_diagnostics,
+        item_summary_builder=_item_summary,
+        cohort_summary_builder=lambda items, selected_axes: summarize_repeatability_cohort(
+            items,
+            axes=selected_axes,
+        ),
+        run_id=run_id,
+        retry_failed=retry_failed,
+    )

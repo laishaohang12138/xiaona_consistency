@@ -105,7 +105,10 @@ def _run_pointer(
         "completeness_score": _round_or_none(run.get("completeness_score")),
         "active_heavy_provider": str(run.get("active_heavy_provider") or "").strip(),
         "release_state": str(run.get("release_state") or "").strip(),
-        "training_admission_allowed": bool(run.get("training_admission_allowed")),
+        "local_decision_authority": "NONE",
+        "external_review_route": str(run.get("external_review_route") or "").strip(),
+        "training_admission_allowed": False,
+        "legacy_admission_fields_state": "DEPRECATED_FORCED_FALSE",
         "screening_risks": screening_risks,
         "legacy_admission_blockers": [
             str(item).strip()

@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 REPEATABILITY_CONTRACT_SCHEMA = "measurement_repeatability_contract_v0_1"
 REPEATABILITY_PROTOCOL_ID = "identity_repeatability_probe_protocol_v0_1"
+BODY_REPEATABILITY_PROTOCOL_ID = "body_repeatability_probe_protocol_v0_2"
 REPEATABILITY_DOMAINS = (
     "numerical_repeatability",
     "preprocessing_repeatability",
@@ -19,14 +20,15 @@ REPEATABILITY_DOMAINS = (
 )
 
 
-def _protocol_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "configs" / "identity_repeatability_protocol.yaml"
+def _protocol_path(filename: str = "identity_repeatability_protocol.yaml") -> Path:
+    return Path(__file__).resolve().parents[1] / "configs" / str(filename)
 
 
-def _read_protocol_payload() -> Any:
+def _read_protocol_payload(path: Optional[Path] = None) -> Any:
     import yaml
 
-    return yaml.safe_load(_protocol_path().read_text(encoding="utf-8"))
+    protocol_path = Path(path) if path is not None else _protocol_path()
+    return yaml.safe_load(protocol_path.read_text(encoding="utf-8"))
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -51,7 +53,12 @@ def _descriptor(values: Iterable[float]) -> Dict[str, Optional[float]]:
     }
 
 
-def validate_repeatability_protocol(payload: Any) -> list[str]:
+def validate_repeatability_protocol(
+    payload: Any,
+    *,
+    expected_protocol_id: str = REPEATABILITY_PROTOCOL_ID,
+    expected_transform_contract_schema: str = "identity_repeatability_transform_contract_v0_1",
+) -> list[str]:
     node = payload if isinstance(payload, dict) else {}
     governance = node.get("governance") if isinstance(node.get("governance"), dict) else {}
     execution = node.get("execution") if isinstance(node.get("execution"), dict) else {}
@@ -61,9 +68,9 @@ def validate_repeatability_protocol(payload: Any) -> list[str]:
         node.get("transform_contract") if isinstance(node.get("transform_contract"), dict) else {}
     )
     issues: list[str] = []
-    if node.get("schema_version") != REPEATABILITY_PROTOCOL_ID:
+    if node.get("schema_version") != expected_protocol_id:
         issues.append("REPEATABILITY_PROTOCOL_SCHEMA_INVALID")
-    if node.get("protocol_id") != REPEATABILITY_PROTOCOL_ID:
+    if node.get("protocol_id") != expected_protocol_id:
         issues.append("REPEATABILITY_PROTOCOL_ID_INVALID")
     if node.get("protocol_state") != "PREREGISTERED_NOT_EXECUTED":
         issues.append("REPEATABILITY_PROTOCOL_STATE_INVALID")
@@ -109,7 +116,7 @@ def validate_repeatability_protocol(payload: Any) -> list[str]:
         issues.append("REPEATABILITY_PROTOCOL_COMBINED_SCORE_NOT_ALLOWED")
     if reporting.get("stable_unstable_threshold") is not None:
         issues.append("REPEATABILITY_PROTOCOL_STABILITY_THRESHOLD_NOT_ALLOWED")
-    if transform_contract.get("schema_version") != "identity_repeatability_transform_contract_v0_1":
+    if transform_contract.get("schema_version") != expected_transform_contract_schema:
         issues.append("REPEATABILITY_PROTOCOL_TRANSFORM_CONTRACT_INVALID")
     if transform_contract.get("preserve_output_dimensions") is not True:
         issues.append("REPEATABILITY_PROTOCOL_OUTPUT_DIMENSIONS_MUST_BE_PRESERVED")
@@ -153,6 +160,125 @@ def load_repeatability_protocol() -> Dict[str, Any]:
     return copy.deepcopy(payload)
 
 
+def _body_protocol_path() -> Path:
+    return _protocol_path("body_repeatability_protocol.yaml")
+
+
+def _validate_body_repeatability_protocol(payload: Any) -> list[str]:
+    issues = validate_repeatability_protocol(
+        payload,
+        expected_protocol_id=BODY_REPEATABILITY_PROTOCOL_ID,
+        expected_transform_contract_schema="body_repeatability_transform_contract_v0_1",
+    )
+    reporting = payload.get("reporting") if isinstance(payload, dict) else {}
+    execution = payload.get("execution") if isinstance(payload, dict) else {}
+    measurement_axes = payload.get("measurement_axes") if isinstance(payload, dict) else {}
+    if not isinstance(reporting, dict) or reporting.get("componentwise_only") is not True:
+        issues.append("BODY_REPEATABILITY_COMPONENTWISE_REPORTING_REQUIRED")
+    if not isinstance(execution, dict) or execution.get("stop_on_failed_trial") is not True:
+        issues.append("BODY_REPEATABILITY_STOP_ON_FAILED_TRIAL_REQUIRED")
+    cooldown = _safe_float(execution.get("inter_execution_cooldown_seconds"))
+    if cooldown is None or cooldown < 0.0:
+        issues.append("BODY_REPEATABILITY_COOLDOWN_INVALID")
+    expected_axes = {"body_core_shape", "body_topology"}
+    if not isinstance(measurement_axes, dict) or set(measurement_axes) != expected_axes:
+        issues.append("BODY_REPEATABILITY_MEASUREMENT_AXES_INVALID")
+    body_core_axis = (
+        measurement_axes.get("body_core_shape")
+        if isinstance(measurement_axes, dict)
+        and isinstance(measurement_axes.get("body_core_shape"), dict)
+        else {}
+    )
+    if body_core_axis != {
+        "residual": "signed_componentwise_natural_log_ratio",
+        "component_order": [
+            "shoulder_width_to_torso",
+            "hip_width_to_torso",
+            "shoulder_to_hip_ratio",
+            "upper_to_lower_leg_ratio",
+            "foot_length_to_leg",
+        ],
+    }:
+        issues.append("BODY_CORE_REPEATABILITY_AXIS_CONTRACT_INVALID")
+    topology_axis = (
+        measurement_axes.get("body_topology")
+        if isinstance(measurement_axes, dict)
+        and isinstance(measurement_axes.get("body_topology"), dict)
+        else {}
+    )
+    expected_topology_axis = {
+        "residual": "signed_translation_centered_zero_pose_smpl_vertex_coordinate_delta",
+        "source_field": "canonical_smpl_vertices",
+        "topology_schema_id": "smpl_neutral_zero_pose_vertices_v1",
+        "required_vertex_count": 6890,
+        "required_coordinate_count": 20670,
+        "coordinate_axis_order": ["x", "y", "z"],
+        "rotation_fit_applied": False,
+        "scale_fit_applied": False,
+        "procrustes_fit_applied": False,
+        "pose_fit_applied": False,
+    }
+    if any(topology_axis.get(key) != value for key, value in expected_topology_axis.items()):
+        issues.append("BODY_TOPOLOGY_REPEATABILITY_AXIS_CONTRACT_INVALID")
+    topology_reporting = (
+        reporting.get("topology")
+        if isinstance(reporting, dict) and isinstance(reporting.get("topology"), dict)
+        else {}
+    )
+    expected_topology_reporting = {
+        "raw_residual_vector_retained_per_trial": True,
+        "coordinate_axis_order": ["x", "y", "z"],
+        "signed_coordinate_quantiles": [0.05, 0.25, 0.5, 0.75, 0.95],
+        "absolute_coordinate_quantiles": [0.5, 0.9, 0.95, 0.99, 1.0],
+        "coordinate_axis_aggregation_allowed": False,
+        "vertex_norm_aggregation_allowed": False,
+        "combined_topology_score": None,
+        "stable_unstable_threshold": None,
+    }
+    if any(
+        topology_reporting.get(key) != value
+        for key, value in expected_topology_reporting.items()
+    ):
+        issues.append("BODY_TOPOLOGY_REPEATABILITY_REPORTING_CONTRACT_INVALID")
+    return list(dict.fromkeys(issues))
+
+
+@lru_cache(maxsize=1)
+def body_repeatability_protocol_snapshot() -> Dict[str, Any]:
+    protocol_path = _body_protocol_path()
+    payload: Any = None
+    load_error = None
+    try:
+        payload = _read_protocol_payload(protocol_path)
+    except Exception as exc:
+        load_error = f"{type(exc).__name__}:{exc}"
+    issues = _validate_body_repeatability_protocol(payload)
+    if load_error:
+        issues.insert(0, "REPEATABILITY_PROTOCOL_LOAD_FAILED")
+    protocol_sha256 = None
+    if isinstance(payload, dict):
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        protocol_sha256 = hashlib.sha256(canonical.encode("ascii")).hexdigest()
+    return {
+        "protocol_id": BODY_REPEATABILITY_PROTOCOL_ID,
+        "protocol_path": str(protocol_path.resolve()),
+        "protocol_sha256": protocol_sha256,
+        "validation_status": "VALID" if not issues else "INVALID",
+        "validation_issues": issues,
+        "load_error": load_error,
+    }
+
+
+def load_body_repeatability_protocol() -> Dict[str, Any]:
+    payload = _read_protocol_payload(_body_protocol_path())
+    issues = _validate_body_repeatability_protocol(payload)
+    if issues:
+        raise ValueError("invalid body repeatability protocol: " + ", ".join(issues))
+    if not isinstance(payload, dict):
+        raise ValueError("invalid body repeatability protocol payload")
+    return copy.deepcopy(payload)
+
+
 def empty_repeatability_contract() -> Dict[str, Any]:
     protocol = repeatability_protocol_snapshot()
     return {
@@ -175,6 +301,35 @@ def empty_repeatability_contract() -> Dict[str, Any]:
             }
             for domain in REPEATABILITY_DOMAINS
         },
+        "combined_repeatability_score": None,
+        "parameter_fitting_allowed": False,
+        "decision_influence": "NONE",
+    }
+
+
+def empty_body_repeatability_contract() -> Dict[str, Any]:
+    protocol = body_repeatability_protocol_snapshot()
+    return {
+        "schema_version": REPEATABILITY_CONTRACT_SCHEMA,
+        "protocol_id": BODY_REPEATABILITY_PROTOCOL_ID,
+        "protocol_execution_state": "NOT_EXECUTED",
+        "protocol_sha256": protocol.get("protocol_sha256"),
+        "protocol_validation_status": protocol.get("validation_status"),
+        "protocol_validation_issues": list(protocol.get("validation_issues") or []),
+        "domains": {
+            domain: {
+                "measurement_state": "NOT_MEASURED",
+                "trial_count": 0,
+                "available_residual_count": 0,
+                "native_residual_descriptor": _descriptor([]),
+                "detector_chain_transition_count": None,
+                "perturbation_families": {},
+                "calibration_state": "SHADOW_UNCALIBRATED",
+                "decision_influence": "NONE",
+            }
+            for domain in REPEATABILITY_DOMAINS
+        },
+        "component_aggregation_allowed": False,
         "combined_repeatability_score": None,
         "parameter_fitting_allowed": False,
         "decision_influence": "NONE",

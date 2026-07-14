@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .qa_governance import (
+    RELEASE_GATE_SCHEMA_VERSION,
+    fail_closed_release_gate,
+    normalize_release_gate_config,
+)
 from .qa_io import atomic_write_json
 
 try:
@@ -775,108 +780,83 @@ def _default_layer_quotas() -> Dict[str, Any]:
 
 
 def _default_release_gates() -> Dict[str, Any]:
+    raw_gates = {
+        "BODY_GOLD.front_core": {
+            "release_state": "primary",
+            "machine_status_ceiling": "PASS",
+            "external_review_route": "PRIORITY_REVIEW",
+            "required_lane_families": ["front"],
+            "notes": "Front-core evidence receives priority external review when screening evidence is complete.",
+        },
+        "BODY_GOLD.three_quarter_review": {
+            "release_state": "review",
+            "machine_status_ceiling": "WARN",
+            "external_review_route": "HOLD_FOR_MORE_EVIDENCE",
+            "requires_frozen_benchmark": True,
+            "required_lane_families": ["three_quarter"],
+            "notes": "Three-quarter evidence remains on hold until canonical truth and frozen benchmark coverage are stronger.",
+        },
+        "BODY_GOLD.side90_shadow": {
+            "release_state": "shadow",
+            "machine_status_ceiling": "WARN",
+            "external_review_route": "SHADOW_EVIDENCE_ONLY",
+            "requires_frozen_benchmark": True,
+            "required_lane_families": ["side"],
+            "notes": "Side-90 is shadow evidence and cannot express final image-set membership or training admission.",
+        },
+        "BODY_GOLD.back180_shadow": {
+            "release_state": "shadow",
+            "machine_status_ceiling": "WARN",
+            "external_review_route": "SHADOW_EVIDENCE_ONLY",
+            "requires_frozen_benchmark": True,
+            "required_lane_families": ["back"],
+            "notes": "Back-180 is shadow evidence and cannot express final image-set membership or training admission.",
+        },
+        "BRIDGE.simple_outfit": {
+            "release_state": "primary",
+            "machine_status_ceiling": "PASS",
+            "external_review_route": "PRIORITY_REVIEW",
+            "required_lane_families": ["front", "three_quarter"],
+            "notes": "Stable simple-outfit continuity receives priority external review.",
+        },
+        "BRIDGE.review": {
+            "release_state": "review",
+            "machine_status_ceiling": "WARN",
+            "external_review_route": "STANDARD_REVIEW",
+            "required_lane_families": ["front", "three_quarter", "side", "back"],
+            "notes": "Generic full-body outfit evidence is routed for standard external review.",
+        },
+        "UPPER_BODY_PRODUCT": {
+            "release_state": "review",
+            "machine_status_ceiling": "WARN",
+            "external_review_route": "STANDARD_REVIEW",
+            "required_lane_families": ["front", "three_quarter"],
+            "notes": "Upper-body product evidence is routed for standard external review.",
+        },
+        "IDENTITY_LOCK": {
+            "release_state": "review",
+            "machine_status_ceiling": "WARN",
+            "external_review_route": "STANDARD_REVIEW",
+            "required_lane_families": ["front", "three_quarter", "side"],
+            "notes": "Identity-lock output is screening evidence for external review.",
+        },
+        "IDENTITY_FILTER_ONLY": {
+            "release_state": "filter_only",
+            "machine_status_ceiling": "WARN",
+            "external_review_route": "SHADOW_EVIDENCE_ONLY",
+            "required_lane_families": ["front", "three_quarter", "side"],
+            "notes": "Identity-filter output is diagnostic shadow evidence only.",
+        },
+    }
     return {
-        "schema_version": "qa_release_gates_v1",
+        "schema_version": RELEASE_GATE_SCHEMA_VERSION,
         "release_gates": {
-            "BODY_GOLD.front_core": {
-                "release_state": "primary",
-                "machine_status_ceiling": "PASS",
-                "training_admission_allowed": True,
-                "manual_training_admission_required": True,
-                "optuna_fit_allowed": True,
-                "requires_frozen_benchmark": False,
-                "requires_curated_winner_bank": False,
-                "required_lane_families": ["front"],
-                "notes": "Primary front-core lane. Training admission still requires explicit human seal.",
-            },
-            "BODY_GOLD.three_quarter_review": {
-                "release_state": "review",
-                "machine_status_ceiling": "WARN",
-                "training_admission_allowed": False,
-                "manual_training_admission_required": True,
-                "optuna_fit_allowed": False,
-                "requires_frozen_benchmark": True,
-                "requires_curated_winner_bank": False,
-                "required_lane_families": ["three_quarter"],
-                "notes": "Three-quarter lane remains review-only until canonical truth and frozen benchmark coverage are stronger.",
-            },
-            "BODY_GOLD.side90_shadow": {
-                "release_state": "shadow",
-                "machine_status_ceiling": "WARN",
-                "training_admission_allowed": False,
-                "manual_training_admission_required": True,
-                "optuna_fit_allowed": False,
-                "requires_frozen_benchmark": True,
-                "requires_curated_winner_bank": False,
-                "required_lane_families": ["side"],
-                "notes": "Side-90 lane is shadow-only and should not be treated as final image-set membership or training admission.",
-            },
-            "BODY_GOLD.back180_shadow": {
-                "release_state": "shadow",
-                "machine_status_ceiling": "WARN",
-                "training_admission_allowed": False,
-                "manual_training_admission_required": True,
-                "optuna_fit_allowed": False,
-                "requires_frozen_benchmark": True,
-                "requires_curated_winner_bank": False,
-                "required_lane_families": ["back"],
-                "notes": "Back-180 lane is shadow-only and should not be treated as final image-set membership or training admission.",
-            },
-            "BRIDGE.simple_outfit": {
-                "release_state": "primary",
-                "machine_status_ceiling": "PASS",
-                "training_admission_allowed": True,
-                "manual_training_admission_required": True,
-                "optuna_fit_allowed": False,
-                "requires_frozen_benchmark": False,
-                "requires_curated_winner_bank": False,
-                "required_lane_families": ["front", "three_quarter"],
-                "notes": "Bridge simple-outfit can be sealed manually when identity continuity stays stable.",
-            },
-            "BRIDGE.review": {
-                "release_state": "review",
-                "machine_status_ceiling": "WARN",
-                "training_admission_allowed": False,
-                "manual_training_admission_required": True,
-                "optuna_fit_allowed": False,
-                "requires_frozen_benchmark": False,
-                "requires_curated_winner_bank": False,
-                "required_lane_families": ["front", "three_quarter", "side", "back"],
-                "notes": "Generic full-body outfit review is advisory and not a sealed training lane.",
-            },
-            "UPPER_BODY_PRODUCT": {
-                "release_state": "review",
-                "machine_status_ceiling": "WARN",
-                "training_admission_allowed": False,
-                "manual_training_admission_required": True,
-                "optuna_fit_allowed": False,
-                "requires_frozen_benchmark": False,
-                "requires_curated_winner_bank": False,
-                "required_lane_families": ["front", "three_quarter"],
-                "notes": "Upper-body product profile is not a final XiaoNa training admission lane.",
-            },
-            "IDENTITY_LOCK": {
-                "release_state": "review",
-                "machine_status_ceiling": "WARN",
-                "training_admission_allowed": False,
-                "manual_training_admission_required": True,
-                "optuna_fit_allowed": False,
-                "requires_frozen_benchmark": False,
-                "requires_curated_winner_bank": False,
-                "required_lane_families": ["front", "three_quarter", "side"],
-                "notes": "Identity-lock profile is for review and filtering, not direct training admission.",
-            },
-            "IDENTITY_FILTER_ONLY": {
-                "release_state": "filter_only",
-                "machine_status_ceiling": "WARN",
-                "training_admission_allowed": False,
-                "manual_training_admission_required": True,
-                "optuna_fit_allowed": False,
-                "requires_frozen_benchmark": False,
-                "requires_curated_winner_bank": False,
-                "required_lane_families": ["front", "three_quarter", "side"],
-                "notes": "Dataset filter profile is not a sealed release lane.",
-            },
+            bucket: fail_closed_release_gate(
+                gate,
+                target_bucket=bucket,
+                source_schema_version=RELEASE_GATE_SCHEMA_VERSION,
+            )
+            for bucket, gate in raw_gates.items()
         },
     }
 
@@ -1177,59 +1157,7 @@ def _normalize_layer_quotas(data: Any) -> Dict[str, Any]:
 
 
 def _normalize_release_gates(data: Any) -> Dict[str, Any]:
-    base = _default_release_gates()
-    if not isinstance(data, dict):
-        return base
-
-    gates_node = data.get("release_gates", data)
-    if not isinstance(gates_node, dict):
-        return base
-
-    out = copy.deepcopy(base)
-    raw_schema_version = str(data.get("schema_version", "")).strip()
-    if raw_schema_version:
-        out["schema_version"] = raw_schema_version
-
-    normalized_gates: Dict[str, Dict[str, Any]] = copy.deepcopy(out.get("release_gates", {}))
-    valid_ceiling = {"FAIL", "WARN", "PASS"}
-    for bucket_name, raw_node in gates_node.items():
-        if not isinstance(raw_node, dict):
-            continue
-        bucket_key = str(bucket_name).strip()
-        if not bucket_key:
-            continue
-        node = copy.deepcopy(normalized_gates.get(bucket_key, {}))
-        node["release_state"] = str(raw_node.get("release_state", node.get("release_state", "review"))).strip() or "review"
-        ceiling = str(raw_node.get("machine_status_ceiling", node.get("machine_status_ceiling", "WARN"))).strip().upper()
-        node["machine_status_ceiling"] = ceiling if ceiling in valid_ceiling else str(node.get("machine_status_ceiling", "WARN"))
-        node["training_admission_allowed"] = bool(
-            raw_node.get("training_admission_allowed", node.get("training_admission_allowed", False))
-        )
-        node["manual_training_admission_required"] = bool(
-            raw_node.get(
-                "manual_training_admission_required",
-                node.get("manual_training_admission_required", True),
-            )
-        )
-        node["optuna_fit_allowed"] = bool(raw_node.get("optuna_fit_allowed", node.get("optuna_fit_allowed", False)))
-        node["requires_frozen_benchmark"] = bool(
-            raw_node.get("requires_frozen_benchmark", node.get("requires_frozen_benchmark", False))
-        )
-        node["requires_curated_winner_bank"] = bool(
-            raw_node.get("requires_curated_winner_bank", node.get("requires_curated_winner_bank", False))
-        )
-        required_lane_families = raw_node.get("required_lane_families", node.get("required_lane_families", []))
-        if isinstance(required_lane_families, list):
-            node["required_lane_families"] = [str(item).strip() for item in required_lane_families if str(item).strip()]
-        elif required_lane_families is None:
-            node["required_lane_families"] = []
-        else:
-            text = str(required_lane_families).strip()
-            node["required_lane_families"] = [text] if text else []
-        node["notes"] = str(raw_node.get("notes", node.get("notes", ""))).strip()
-        normalized_gates[bucket_key] = node
-    out["release_gates"] = normalized_gates
-    return out
+    return normalize_release_gate_config(data, _default_release_gates())
 
 
 def _resolve_registry_path(config: RuntimeConfig, raw_path: str) -> Path:

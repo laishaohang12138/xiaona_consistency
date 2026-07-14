@@ -21,7 +21,7 @@
 ## Daily Workflows
 1. `shot_review`
    - Run one batch review.
-   - Generate `qa_report.json`, `ranked_candidates.json`, and `review_packet.json`.
+   - Generate `qa_report.json`, `ranked_candidates.json`, `review_packet.json`, and standalone Shadow evidence files.
    - Use this when a new Nano Banana 2 batch is ready.
 2. `inspect_review_packet`
    - Read the latest review summary without opening raw JSON.
@@ -38,6 +38,13 @@
 6. `prepare_topology_replay_pack`
    - Create controlled side/back topology replay directories and manifest templates.
    - Use this before collecting side/back validation images.
+7. `run_identity_repeatability_shadow`
+   - Re-execute the face measurement chain under the preregistered three-domain protocol.
+   - Requires explicit image paths and confirmation; it never scans all of `input` automatically.
+8. `run_body_repeatability_shadow`
+   - Re-execute HMR2 under the separate body three-domain protocol.
+   - Reuses every baseline/trial reconstruction for body core and native topology, without extra HMR2 executions.
+   - Reports core components and topology coordinate-axis quantiles separately and never changes review results.
 
 ## Recommended Daily Sequence
 1. Run `shot_review`.
@@ -58,6 +65,26 @@ Run the interactive entry:
 
 Then choose one workflow from the menu.
 
+Heavy repeatability workflows require explicit confirmation because each selected image runs one
+baseline plus 13 serialized model executions. CUDA is the default. NVIDIA/WHEA risk blocks execution
+unless the operator selects CPU or explicitly acknowledges the recorded hardware risk. The body
+workflow stops when the baseline is unavailable or a trial fails, preserves the resumable checkpoint,
+and applies the preregistered cooldown after each real HMR2 execution.
+
+Example body command:
+
+```powershell
+.\.venv\Scripts\python.exe .\check_consistency.py --workflow run_body_repeatability_shadow --repeatability-image .\input\selected.png --repeatability-confirm --device-policy cuda --require-gpu
+```
+
+Body outputs are written under `outputs/body_repeatability_runs/<run_id>/`. Reusing the same run ID
+resumes only when the full source, protocol, adapter, provider and implementation contract matches.
+Protocol v0.2 preserves each available topology trial's full 20670-coordinate residual in that trial's
+`result.json`. `run_summary.json` reports fixed signed and absolute quantiles separately for x, y, and z;
+it does not emit a vertex norm, coordinate-axis aggregate, topology score, stability label, or threshold.
+Read `axis_availability` before interpreting the run: a missing core or topology axis changes the status to
+`COMPLETE_WITH_UNAVAILABLE_MEASUREMENTS` even when all 13 trial executions themselves completed.
+
 ## Workflow Details
 
 ### 1. shot_review
@@ -74,11 +101,17 @@ Expected outputs:
 - `outputs/review_packet.json`
 - `outputs/winner_bank_candidate.json`
 - `outputs/winner_bank_report.json`
+- `outputs/identity_evidence_shadow.json`
+- `outputs/body_evidence_shadow.json`
 
 How to use the result:
 - Read `review_packet.json` first.
 - Use `ranked_candidates.json` as a shortlist reference.
 - Use `qa_report.json` only when you need detailed evidence per image.
+- Use the two `*_evidence_shadow.json` files only for mathematical-chain diagnosis. They do not alter ranking, review routing, the winner bank, or external dataset decisions.
+- In `body_evidence_shadow.json`, `body_topology.measurement` is usable only when readiness is `READY` and provider comparison is `MATCH`. It contains a 20670-coordinate signed zero-pose SMPL vertex delta, not a score.
+- Signature-only body artifacts remain `BLOCKED`. Provider v4 regenerates body artifacts with all 6890 canonical vertices; do not manually relabel legacy signatures as native topology.
+- Topology repeatability is preregistered in body protocol v0.2 but remains unexecuted until this explicit workflow is run. It shares the same 14 HMR2 reconstructions as body core.
 
 ### 2. inspect_review_packet
 Choose this when you do not want to read raw JSON.
@@ -127,6 +160,9 @@ Important:
 - this does not make a local admission decision
 - this does not decide final image-set membership
 - the manifest is an external audit ledger, not a local training-set builder
+- the environment override is an explicit assertion that the external decision is already complete
+- local release gates, preflight results, and evidence completeness are recorded as advisory audit context; they neither authorize nor veto the external decision
+- every locally emitted compatibility field such as `training_admission_allowed` or `eligible_for_training_seal` remains `false`
 
 ### 5. prepare_replay_collection_plan
 Choose this when you are preparing a controlled replay round instead of reviewing a fresh mixed batch.

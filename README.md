@@ -6,6 +6,7 @@ XiaoNa LoRA candidate screening and consistency-evidence repository.
 - Entrypoint CLI in [check_consistency.py](./check_consistency.py)
 - Main QA implementation in `core/`
 - Frozen project rules in `docs/`
+- Normative bottom-layer mathematics in [docs/39_underlying_mathematical_model.md](./docs/39_underlying_mathematical_model.md)
 - Machine-readable project config in `configs/`
 - Versioned prompt assets in `prompts/`
   `body_gold/` is active; `bridge/`, `neckline/`, `outer/`, and `face_lock/` are landed as scoped prompt asset packs with separate governance
@@ -34,6 +35,9 @@ XiaoNa LoRA candidate screening and consistency-evidence repository.
 - `prepare_topology_replay_pack` scaffolds controlled side/back topology replay directories under `input_replay/topology/`
 - `refresh_consistency_confidence_matrix` writes `outputs/consistency_confidence_matrix.json` as a per-image confidence/evidence-gap view for review routing only
 - `prepare_pose_gait_margin_review` writes `outputs/pose_gait_margin_review_sheet.json` so pose/gait margin rows are reviewed before any body-drift call
+- vNext native measurements use heterogeneous geometry-aware residuals and remain Shadow-only; legacy 0-to-1 scores are review-routing heuristics, not calibrated probabilities
+- body core vNext emits signed componentwise log-ratio residuals in `outputs/body_evidence_shadow.json`; native body topology now emits a translation-centered 20670-coordinate zero-pose SMPL vertex delta in Shadow, while pose/gait and clothing/occlusion remain conditions
+- `run_body_repeatability_shadow` provides one explicit, resumable baseline-plus-13-trial HMR2 execution shared by body core and native topology; topology retains each 20670-coordinate residual and reports fixed per-axis quantiles without a score
 
 ## Confirmed Route
 1. Engineering decoupling first
@@ -49,5 +53,5 @@ XiaoNa LoRA candidate screening and consistency-evidence repository.
 ## Handoff Pack
 - Use [docs/14_handoff_index.md](./docs/14_handoff_index.md) when opening a new chat window.
 - The recommended read order is:
-  `14_handoff_index.md -> 15_project_memory.md -> 16_current_state.md -> 17_next_actions.md`
+  `14_handoff_index.md -> 15_project_memory.md -> 16_current_state.md -> 17_next_actions.md -> 39_underlying_mathematical_model.md`
 - This pack exists so workflow context does not depend on a single long chat window.

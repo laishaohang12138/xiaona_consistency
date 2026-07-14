@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from .qa_admission import resolve_target_bucket
 from .qa_collection_metadata import infer_layer_tag_from_profile, parse_collection_metadata
+from .qa_governance import fail_closed_release_gate
 from .qa_industrial_summary import build_batch_preflight_summary
 from .qa_input_manifest import load_input_manifest_index, resolve_input_manifest_entry
 
@@ -86,15 +87,11 @@ def _preflight_report_meta(config: Any, target_profile: str) -> Dict[str, Any]:
     target_bucket = resolve_target_bucket(target_profile)
     active_release_gate = dict((release_gates.get("release_gates") or {}).get(target_bucket) or {})
     return {
-        "release_gate": {
-            "schema_version": str(release_gates.get("schema_version") or "").strip(),
-            "target_bucket": target_bucket,
-            "release_state": str(active_release_gate.get("release_state") or "review").strip() or "review",
-            "machine_status_ceiling": str(active_release_gate.get("machine_status_ceiling") or "WARN").strip().upper() or "WARN",
-            "training_admission_allowed": bool(active_release_gate.get("training_admission_allowed")),
-            "required_lane_families": list(active_release_gate.get("required_lane_families") or []),
-            "notes": str(active_release_gate.get("notes") or "").strip(),
-        }
+        "release_gate": fail_closed_release_gate(
+            active_release_gate,
+            target_bucket=target_bucket,
+            source_schema_version=str(release_gates.get("schema_version") or "").strip(),
+        )
     }
 
 
