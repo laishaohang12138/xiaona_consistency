@@ -2788,14 +2788,27 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
 def _print_preflight_summary(payload: Dict[str, Any]) -> None:
     batch = payload.get("batch_preflight") or {}
     manifest = payload.get("manifest_summary") or {}
+    metadata_gate = payload.get("metadata_gate") or {}
     print("\n[批次预检]")
     print(f"  训练层: {payload.get('target_profile')}")
     print(f"  图片数: {payload.get('input_count')}")
+    print(
+        "  阶段  : "
+        f"{payload.get('preflight_phase')} "
+        f"| runtime_attempted={payload.get('runtime_initialization_attempted')} "
+        f"| runtime_ready={payload.get('runtime_ready')}"
+    )
     print(
         "  Manifest: "
         f"available={manifest.get('available')} "
         f"| coverage={manifest.get('matched_image_share')} "
         f"| path={manifest.get('path')}"
+    )
+    print(
+        "  静态门禁: "
+        f"status={metadata_gate.get('status')} "
+        f"| runtime_allowed={metadata_gate.get('runtime_initialization_allowed')} "
+        f"| blockers={metadata_gate.get('blockers')}"
     )
     print(
         "  预检治理: "
@@ -2891,6 +2904,7 @@ def _run_shot_review_preflight(
         input_dir=resolved_input_dir,
         target_profile=resolved_profile,
         manifest_path=input_manifest,
+        preflight_phase="visual" if initialize_runtime else "metadata_only",
     )
     paths = _default_review_paths(base_dir, artifacts_dir)
     atomic_write_json(paths["preflight_batch"], result)

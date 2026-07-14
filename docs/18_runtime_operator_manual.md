@@ -200,6 +200,12 @@ Important:
 
 ## How To Read The Main Signals
 
+### Preflight Stages
+- `metadata_only` checks whether the batch has usable prompt intent and provenance before visual runtime initialization.
+- A metadata-only result never claims observed lane purity, lane mismatch, or geometry failure; those fields remain deferred.
+- `visual` runs the face/pose router only after the metadata gate passes.
+- `VISUAL_PREFLIGHT_RUNTIME_UNAVAILABLE` means the visual environment failed and remains a hard stop.
+
 ### Run Status
 - `ok`
   - The pipeline completed normally.

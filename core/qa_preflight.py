@@ -26,6 +26,9 @@ except ModuleNotFoundError as exc:
     route_view_lane = None
 
 
+_PREFLIGHT_PHASES = {"metadata_only", "visual"}
+
+
 def _list_images_in_dir(directory: Path) -> List[Path]:
     if not directory.exists() or not directory.is_dir():
         return []
@@ -95,6 +98,37 @@ def _preflight_report_meta(config: Any, target_profile: str) -> Dict[str, Any]:
     }
 
 
+def _metadata_gate_blockers(input_count: int, batch_preflight: Dict[str, Any]) -> List[str]:
+    if input_count <= 0:
+        return ["INPUT_BATCH_EMPTY"]
+    intended_lane_coverage = _safe_float(batch_preflight.get("intended_lane_coverage")) or 0.0
+    if intended_lane_coverage < 0.50:
+        return ["PROMPT_INTENT_METADATA_MISSING"]
+    if not bool(batch_preflight.get("manifest_required_field_ready")):
+        return ["PROMPT_INTENT_FIELDS_INCOMPLETE"]
+    return []
+
+
+def _clear_unobserved_lane_evidence(batch_preflight: Dict[str, Any], *, state: str) -> None:
+    batch_preflight.update(
+        {
+            "governance_lane_source": "visual_runtime_deferred",
+            "lane_counts": {},
+            "dominant_lane_family": "deferred",
+            "dominant_lane_share": None,
+            "intended_observed_lane_match_share": None,
+            "observed_lane_center_distance_mean_deg": None,
+            "inside_release_gate_share": None,
+            "outside_release_gate_share": None,
+            "lane_entropy_score": None,
+            "lane_purity_score": None,
+            "unknown_lane_count": 0,
+            "split_batch_recommended": False,
+            "visual_lane_assessment_state": state,
+        }
+    )
+
+
 def run_preflight_batch(
     runtime: Optional[Any],
     *,
@@ -102,12 +136,17 @@ def run_preflight_batch(
     input_dir: Path,
     target_profile: str,
     manifest_path: Optional[Path] = None,
+    preflight_phase: str = "visual",
 ) -> Dict[str, Any]:
+    normalized_phase = str(preflight_phase or "visual").strip().lower()
+    if normalized_phase not in _PREFLIGHT_PHASES:
+        raise ValueError(f"preflight_phase must be one of: {', '.join(sorted(_PREFLIGHT_PHASES))}")
     images = _list_images_in_dir(input_dir)
     manifest_index = load_input_manifest_index(input_dir, manifest_path)
     report_meta = _preflight_report_meta(config, target_profile)
     runtime_ready = (
-        runtime is not None
+        normalized_phase == "visual"
+        and runtime is not None
         and _PREFLIGHT_IMPORT_ERROR is None
         and image_read_bgr is not None
         and extract_face_feat is not None
@@ -163,7 +202,7 @@ def run_preflight_batch(
                     issues.extend(list(pose_feat.reasons or []))
             except Exception as exc:
                 issues.append(str(exc))
-        else:
+        elif normalized_phase == "visual":
             issues.append(
                 f"PREFLIGHT_RUNTIME_UNAVAILABLE:{getattr(_PREFLIGHT_IMPORT_ERROR, 'name', 'runtime')}"
             )
@@ -178,7 +217,7 @@ def run_preflight_batch(
             "review_only_breakdown_v2": {
                 "observed_lane_family": _lane_family(observed_lane_detail),
                 "observed_lane_center_distance_deg": _round_or_none(observed_center_distance),
-                "observed_lane_source": "preflight_face_pose_router",
+                "observed_lane_source": "preflight_face_pose_router" if runtime_ready else "deferred",
                 "body_yaw_deg": _round_or_none(body_yaw_deg),
                 "lane_membership_confidence": _round_or_none(route_confidence),
             },
@@ -204,22 +243,37 @@ def run_preflight_batch(
         )
 
     batch_preflight = build_batch_preflight_summary(items, report_meta=report_meta)
-    reasons = list(batch_preflight.get("reasons") or [])
-    if not runtime_ready:
-        if "OBSERVED_LANE_RUNTIME_UNAVAILABLE" not in reasons:
-            reasons.append("OBSERVED_LANE_RUNTIME_UNAVAILABLE")
-        intended_coverage = _safe_float(batch_preflight.get("intended_lane_coverage")) or 0.0
-        if intended_coverage < 0.50:
+    metadata_blockers = _metadata_gate_blockers(len(images), batch_preflight)
+    metadata_gate = {
+        "schema_version": "preflight_metadata_gate_v1",
+        "status": "FAIL" if metadata_blockers else "PASS",
+        "blockers": metadata_blockers,
+        "runtime_initialization_allowed": not metadata_blockers,
+    }
+    if normalized_phase == "metadata_only":
+        _clear_unobserved_lane_evidence(batch_preflight, state="DEFERRED")
+        batch_preflight["status"] = metadata_gate["status"]
+        batch_preflight["reasons"] = list(metadata_blockers)
+        batch_preflight["recommended_action"] = (
+            "complete_prompt_intent_metadata_before_visual_preflight"
+            if metadata_blockers
+            else "continue_to_visual_preflight"
+        )
+    elif not runtime_ready:
+        _clear_unobserved_lane_evidence(batch_preflight, state="RUNTIME_UNAVAILABLE")
+        batch_preflight["status"] = "FAIL"
+        batch_preflight["reasons"] = list(
+            dict.fromkeys([*metadata_blockers, "VISUAL_PREFLIGHT_RUNTIME_UNAVAILABLE"])
+        )
+        batch_preflight["recommended_action"] = "restore_visual_runtime_before_shot_review"
+    else:
+        batch_preflight["visual_lane_assessment_state"] = "AVAILABLE"
+        if metadata_blockers:
             batch_preflight["status"] = "FAIL"
-            batch_preflight["recommended_action"] = (
-                "run_preflight_with_project_venv_or_add_input_manifest_before_training_or_benchmark_use"
+            batch_preflight["reasons"] = list(
+                dict.fromkeys([*(batch_preflight.get("reasons") or []), *metadata_blockers])
             )
-        elif str(batch_preflight.get("status") or "").upper() == "PASS":
-            batch_preflight["status"] = "WARN"
-            batch_preflight["recommended_action"] = (
-                "metadata_only_preflight_is_not_enough_for_lane_governance_use_project_venv_before_promotion"
-            )
-        batch_preflight["reasons"] = reasons
+            batch_preflight["recommended_action"] = "complete_prompt_intent_metadata_before_shot_review"
     mismatch_items = [
         row
         for row in compact_items
@@ -234,13 +288,20 @@ def run_preflight_batch(
         "target_profile": target_profile,
         "input_dir": str(input_dir),
         "input_count": len(images),
+        "preflight_phase": normalized_phase,
+        "runtime_initialization_attempted": normalized_phase == "visual",
         "runtime_ready": bool(runtime_ready),
-        "observation_mode": "light_router" if runtime_ready else "metadata_only",
+        "observation_mode": (
+            "light_router"
+            if runtime_ready
+            else ("metadata_only" if normalized_phase == "metadata_only" else "visual_runtime_unavailable")
+        ),
         "manifest_summary": {
             **dict(manifest_index.get("summary") or {}),
             "matched_image_count": manifest_matched_count,
             "matched_image_share": _round_or_none(manifest_matched_count / max(1, len(images))),
         },
+        "metadata_gate": metadata_gate,
         "batch_preflight": batch_preflight,
         "mismatch_count": len(mismatch_items),
         "mismatch_examples": mismatch_items[:20],
@@ -249,14 +310,19 @@ def run_preflight_batch(
 
 
 def static_preflight_blockers(payload: Dict[str, Any]) -> List[str]:
-    blockers: List[str] = []
-    if int(payload.get("input_count") or 0) <= 0:
-        blockers.append("INPUT_BATCH_EMPTY")
+    metadata_gate = payload.get("metadata_gate") if isinstance(payload.get("metadata_gate"), dict) else {}
+    if isinstance(metadata_gate.get("blockers"), list):
+        return [str(blocker) for blocker in metadata_gate["blockers"] if str(blocker).strip()]
+    input_count = int(payload.get("input_count") or 0)
+    if input_count <= 0:
+        return ["INPUT_BATCH_EMPTY"]
     batch = payload.get("batch_preflight") if isinstance(payload.get("batch_preflight"), dict) else {}
     intended_lane_coverage = _safe_float(batch.get("intended_lane_coverage")) or 0.0
     if intended_lane_coverage < 0.50:
-        blockers.append("PROMPT_INTENT_METADATA_MISSING")
-    return blockers
+        return ["PROMPT_INTENT_METADATA_MISSING"]
+    if not bool(batch.get("manifest_required_field_ready")):
+        return ["PROMPT_INTENT_FIELDS_INCOMPLETE"]
+    return []
 
 
 def create_lightweight_preflight_config(base_dir: Path) -> Any:
