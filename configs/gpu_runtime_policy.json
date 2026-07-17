@@ -1,0 +1,19 @@
+{
+  "schema_version": "gpu_runtime_policy_v1",
+  "execution_preference": "GPU_FIRST",
+  "cpu_fallback": "EXPLICIT_ONLY",
+  "whea_gate": {
+    "mode": "ACKNOWLEDGED_EVENT_WATERMARK",
+    "acknowledged_boot_id": "2026-07-16T10:34:10.5000000Z",
+    "acknowledged_event_count_since_boot": 74,
+    "acknowledged_through": "2026-07-16T18:34:39.7467019+08:00",
+    "acknowledged_at_utc": "2026-07-16T15:04:19.281157+00:00",
+    "acknowledged_by": "operator",
+    "reason_code": "RESOLVED_SOFTWARE_STACK_CONFLICT",
+    "reason_summary": "Historical WHEA events were attributed to the resolved interaction of system optimization, driver, and antivirus software.",
+    "block_if_probe_unassessed": true,
+    "block_if_event_timestamp_missing": true,
+    "block_on_event_after_watermark": true,
+    "block_on_new_event_during_run": true
+  }
+}

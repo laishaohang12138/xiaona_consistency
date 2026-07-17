@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .qa_input_manifest import load_input_manifest_index, required_prompt_intent_fields
 from .qa_io import atomic_write_json
@@ -47,8 +47,12 @@ def _round_coverage(payload: Dict[str, float]) -> Dict[str, float]:
     return {key: round(float(value), 4) for key, value in payload.items()}
 
 
-def _split_plan(base_dir: Path, label: str, relative_dir: Path) -> Dict[str, Any]:
-    input_dir = (base_dir / relative_dir).resolve()
+def _split_plan(base_dir: Path, label: str, target_dir: Path) -> Dict[str, Any]:
+    input_dir = (base_dir / target_dir).resolve()
+    try:
+        command_input_dir = input_dir.relative_to(base_dir.resolve())
+    except ValueError:
+        command_input_dir = input_dir
     manifest = load_input_manifest_index(input_dir)
     entries = manifest.get("entries") if isinstance(manifest.get("entries"), list) else []
     coverage = _coverage(entries)
@@ -57,6 +61,35 @@ def _split_plan(base_dir: Path, label: str, relative_dir: Path) -> Dict[str, Any
     missing_fields = [field for field, count in missing_counts.items() if count > 0]
     item_count = len(entries)
     ready = bool(item_count) and not missing_fields
+    manual_required_fields: List[Dict[str, str]] = []
+    if "prompt_id" in missing_fields:
+        manual_required_fields.append(
+            {
+                "field": "prompt_id",
+                "why": "Only the operator can confirm which prompt file, prompt slot, or batch prompt family produced this batch.",
+            }
+        )
+    if "seed" in missing_fields:
+        manual_required_fields.append(
+            {
+                "field": "seed_or_seed_unavailable_reason",
+                "why": "Use the exposed per-image seed, or confirm why the generator did not expose one; never infer a seed.",
+            }
+        )
+    if "anchor_source" in missing_fields:
+        manual_required_fields.append(
+            {
+                "field": "anchor_source",
+                "why": "Confirm the actual generation references before applying a shared anchor source.",
+            }
+        )
+    if "intended_view" in missing_fields:
+        manual_required_fields.append(
+            {
+                "field": "intended_view",
+                "why": "Record generation intent from the prompt slot or batch record; observed image geometry is not intent truth.",
+            }
+        )
     return {
         "split": label,
         "input_dir": str(input_dir),
@@ -73,6 +106,7 @@ def _split_plan(base_dir: Path, label: str, relative_dir: Path) -> Dict[str, Any
         "missing_counts": missing_counts,
         "missing_fields": missing_fields,
         "ready_for_clean_replay": ready,
+        "ready_for_visual_preflight": ready,
         "safe_default_candidates": {
             "seed_unavailable_reason": {
                 "value": "nano_banana_seed_not_exposed",
@@ -87,15 +121,10 @@ def _split_plan(base_dir: Path, label: str, relative_dir: Path) -> Dict[str, Any
                 "safe_to_apply_when": "Every image used the face master and body master as generation references.",
             },
         },
-        "manual_required_fields": [
-            {
-                "field": "prompt_id",
-                "why": "Only the operator can confirm which prompt file, prompt slot, or batch prompt family produced this split.",
-            }
-        ] if "prompt_id" in missing_fields else [],
+        "manual_required_fields": manual_required_fields,
         "example_fill_command": (
             ".\\.venv\\Scripts\\python.exe .\\check_consistency.py --workflow fill_input_manifest_defaults "
-            f"--input-dir {relative_dir} "
+            f'--input-dir "{command_input_dir}" '
             "--manifest-seed-unavailable-reason nano_banana_seed_not_exposed "
             "--manifest-generator-name nano_banana "
             "--manifest-anchor-source \"<confirmed_anchor_source>\" "
@@ -108,16 +137,37 @@ def build_manifest_completion_plan(
     *,
     base_dir: Path,
     output_file: Path,
+    targets: Optional[Sequence[Tuple[str, Path]]] = None,
 ) -> Dict[str, Any]:
-    splits = [_split_plan(base_dir, label, relative_dir) for label, relative_dir in _DEFAULT_SPLITS]
-    ready = all(bool(row.get("ready_for_clean_replay")) for row in splits)
-    blocked = [row.get("split") for row in splits if not bool(row.get("ready_for_clean_replay"))]
+    selected_targets = tuple(targets) if targets is not None else _DEFAULT_SPLITS
+    if not selected_targets:
+        raise ValueError("manifest completion plan requires at least one input target")
+    splits = [_split_plan(base_dir, label, target_dir) for label, target_dir in selected_targets]
+    explicit_targets = targets is not None
+    ready = all(bool(row.get("ready_for_visual_preflight")) for row in splits)
+    blocked = [row.get("split") for row in splits if not bool(row.get("ready_for_visual_preflight"))]
+    if explicit_targets:
+        for row in splits:
+            row["ready_for_clean_replay"] = None
+    ready_status = (
+        "READY_FOR_VISUAL_PREFLIGHT"
+        if explicit_targets and ready
+        else "READY_FOR_CLEAN_REPLAY"
+        if ready
+        else "NEEDS_MANIFEST_COMPLETION"
+    )
     payload = {
         "schema_version": "input_manifest_completion_plan_v1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "purpose": "Make clean-lane replay metadata completion explicit before invariance gates are judged.",
-        "overall_status": "READY_FOR_CLEAN_REPLAY" if ready else "NEEDS_MANIFEST_COMPLETION",
-        "ready_for_clean_replay": ready,
+        "scope": "explicit_input_targets" if explicit_targets else "default_clean_replay_splits",
+        "purpose": (
+            "Make the selected batch metadata completion explicit before visual runtime is initialized."
+            if explicit_targets
+            else "Make clean-lane replay metadata completion explicit before invariance gates are judged."
+        ),
+        "overall_status": ready_status,
+        "ready_for_clean_replay": None if explicit_targets else ready,
+        "ready_for_visual_preflight": ready,
         "blocked_splits": blocked,
         "splits": splits,
         "operator_policy": {
@@ -128,9 +178,14 @@ def build_manifest_completion_plan(
         },
         "next_actions": [
             "Fill seed_unavailable_reason if Nano Banana did not expose seeds.",
-            "Confirm anchor_source only if the whole split used the same truth-anchor inputs.",
+            "Confirm anchor_source only if the whole target used the same truth-anchor inputs.",
             "Fill prompt_id from the real prompt file, slot, or batch prompt family.",
-            "Rerun clean front and three_quarter replay after manifests are complete.",
+            "Fill intended_view from generation intent rather than observed image geometry.",
+            (
+                "Rerun preflight_batch for the selected input target after its manifest is complete."
+                if explicit_targets
+                else "Rerun clean front and three_quarter replay after manifests are complete."
+            ),
         ],
     }
     output_file.parent.mkdir(parents=True, exist_ok=True)

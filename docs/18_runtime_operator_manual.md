@@ -47,14 +47,15 @@
    - Reports core components and topology coordinate-axis quantiles separately and never changes review results.
 
 ## Recommended Daily Sequence
-1. Run `shot_review`.
-2. Run `inspect_review_packet`.
-3. Compare top candidates manually.
-4. Confirm one winner.
-5. Run `promote_winner`.
-6. Periodically run `winner_bank_status`.
-7. Before side/back topology replay, run `prepare_topology_replay_pack`.
-8. Before controlled replay, run `prepare_replay_collection_plan`.
+1. Run `gpu_runtime_safety_preflight` before any intended CUDA review.
+2. Run `prepare_manifest_completion_plan --input-dir .\input` and complete real batch metadata.
+3. Run `shot_review` only after both preconditions pass.
+4. Run `inspect_review_packet`.
+5. Compare top candidates manually.
+6. Confirm one winner and run `promote_winner` as mutable review memory only.
+7. Periodically run `winner_bank_status`.
+8. Before side/back topology replay, run `prepare_topology_replay_pack`.
+9. Before controlled replay, run `prepare_replay_collection_plan`.
 
 ## Start Command
 Run the interactive entry:
@@ -66,10 +67,43 @@ Run the interactive entry:
 Then choose one workflow from the menu.
 
 Heavy repeatability workflows require explicit confirmation because each selected image runs one
-baseline plus 13 serialized model executions. CUDA is the default. NVIDIA/WHEA risk blocks execution
-unless the operator selects CPU or explicitly acknowledges the recorded hardware risk. The body
+baseline plus 13 serialized model executions. `configs/gpu_runtime_policy.json` fixes CUDA as the
+daily default; CPU must be selected explicitly and remains a different measurement contract.
+NVIDIA/WHEA risk blocks execution unless it is covered by the tracked operator-acknowledged historical
+watermark. A risk override is separate from that acknowledgement and is usable only when project-stage
+governance explicitly permits it; the current stage denies overrides. The body
 workflow stops when the baseline is unavailable or a trial fails, preserves the resumable checkpoint,
 and applies the preregistered cooldown after each real HMR2 execution.
+
+Run the read-only safety check without touching CUDA or model providers:
+
+```powershell
+.\.venv\Scripts\python.exe .\check_consistency.py --workflow gpu_runtime_safety_preflight
+```
+
+The result is written to `outputs/gpu_runtime_safety_preflight.json`. `PASS` means that the probe found
+no event after the tracked acknowledgement watermark; it may still report raw historical events as
+`ACKNOWLEDGED_HISTORICAL_EVENTS`. The acknowledgement preserves the raw count, boot ID, latest event
+time, operator, reason, and acknowledgement time. It does not certify VRAM, temperature, power, driver
+correctness, or PCIe stability under load, and the device guard rechecks the count at the real execution
+boundary. Any later event or positive during-run delta blocks qualification.
+
+Generate a completion plan for the active batch without replacing the historical clean-lane plan:
+
+```powershell
+.\.venv\Scripts\python.exe .\check_consistency.py --workflow prepare_manifest_completion_plan --input-dir .\input
+```
+
+The result is written to `outputs/current_input_manifest_completion_plan.json`. Fill only metadata
+confirmed from the real generation record; never infer `prompt_id`, seed, anchor source, or intended
+view from image appearance.
+
+CUDA visual preflight, `shot_review`, and repeatability runs use a device-scoped lease such as
+`outputs/.gpu_device_locks/gpu-0.lock`. The lease is acquired before visual runtime or provider
+initialization and is released on normal failure as well as success. Each attempt writes a unique
+`gpu_execution_sessions/*.json` record containing the pre-run snapshot, post-run snapshot, event
+delta, and qualification eligibility. A clean hardware session only certifies that no new NVIDIA
+WHEA event was observed during that execution boundary; it does not certify identity consistency.
 
 Example body command:
 

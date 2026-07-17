@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -130,6 +131,10 @@ WORKFLOW_UI: Dict[str, Dict[str, str]] = {
     "preflight_batch": {
         "label": "批次前置预检",
         "summary": "在重型 QA 前先看 lane 纯度、混批风险和 prompt intent 元数据是否齐全。",
+    },
+    "gpu_runtime_safety_preflight": {
+        "label": "GPU 运行安全预检",
+        "summary": "只读检查本次启动后的 NVIDIA WHEA 17 风险；不初始化 CUDA、视觉模型或 provider。",
     },
     "run_identity_repeatability_shadow": {
         "label": "身份测量重复性 Shadow 探针",
@@ -421,6 +426,7 @@ def _select_workflow_interactively(default: str = "shot_review") -> str:
         [
             ("shot_review", "审一轮 shot 批次，输出 QA、排序和 review packet"),
             ("preflight_batch", "在 heavy QA 前先做 lane 纯度、混批和元数据预检"),
+            ("gpu_runtime_safety_preflight", "只读检查当前启动周期的 NVIDIA WHEA 17 风险"),
             ("prepare_input_manifest", "为当前 input 目录生成或更新 input_manifest.json 模板"),
             ("fill_input_manifest_defaults", "给当前 input_manifest.json 批量补录 prompt_id / seed / anchor_source"),
             ("merge_input_manifest_metadata", "把外部逐图 metadata 合并进 input_manifest.json"),
@@ -557,6 +563,7 @@ def _default_review_paths(base_dir: Path, artifacts_dir: Optional[Path] = None) 
     output_dir = _resolve_artifacts_dir_arg(artifacts_dir, base_dir)
     return {
         "preflight_batch": output_dir / "preflight_batch.json",
+        "gpu_runtime_safety_preflight": output_dir / "gpu_runtime_safety_preflight.json",
         "batch_split_plan": output_dir / "batch_split_plan.json",
         "materialized_batch_split": output_dir / "materialized_batch_split.json",
         "review_run_index": output_dir / "review_run_index.json",
@@ -571,6 +578,7 @@ def _default_review_paths(base_dir: Path, artifacts_dir: Optional[Path] = None) 
         "topology_replay_pack": output_dir / "topology_replay_pack.json",
         "replay_collection_plan": output_dir / "replay_collection_plan.json",
         "manifest_completion_plan": output_dir / "input_manifest_completion_plan.json",
+        "current_manifest_completion_plan": output_dir / "current_input_manifest_completion_plan.json",
         "qa_report": output_dir / "qa_report.json",
         "ranked_candidates": output_dir / "ranked_candidates.json",
         "review_packet": output_dir / "review_packet.json",
@@ -746,6 +754,7 @@ def _print_gpu_policy_summary(policy: Dict[str, Any]) -> None:
     print(
         "[GPU策略] "
         f"device={policy.get('device')} "
+        f"| configured_default={policy.get('configured_execution_preference') or '-'} "
         f"| require_gpu={policy.get('require_gpu')} "
         f"| surface_auto={policy.get('surface_auto_export') or 'off'} "
         f"| torch_cuda={torch_status.get('cuda_available')} "
@@ -866,7 +875,9 @@ def _apply_cli_device_policy(
     ):
         return None
 
-    device = str(args.device_policy or ("cuda" if truth_fusion_requested else "auto"))
+    from core.qa_gpu_device_policy import configured_default_device
+
+    device = str(args.device_policy or configured_default_device())
     surface_auto = str(
         args.surface_occlusion_auto
         if args.surface_occlusion_auto is not None
@@ -878,16 +889,6 @@ def _apply_cli_device_policy(
             permission="allow_gpu_hardware_risk_override",
             action=f"{effective_mode} GPU hardware-risk override",
         )
-    hardware_risk: Optional[Dict[str, Any]] = None
-    if device != "auto":
-        try:
-            hardware_risk = _prepare_cuda_hardware_risk(
-                device=device,
-                allow_override=bool(args.allow_gpu_hardware_risk),
-                context="shot_review" if effective_mode == "qa" else effective_mode,
-            )
-        except (RuntimeError, ValueError) as exc:
-            parser.error(str(exc))
     try:
         from core.qa_gpu_device_policy import apply_truth_fusion_gpu_env
 
@@ -904,20 +905,35 @@ def _apply_cli_device_policy(
             "GPU is required but unavailable: "
             + ", ".join(str(item) for item in policy.get("requirement_blockers") or [])
         )
-    if hardware_risk is None:
-        try:
-            hardware_risk = _prepare_cuda_hardware_risk(
-                device=str(policy.get("device") or device),
-                allow_override=bool(args.allow_gpu_hardware_risk),
-                context="shot_review" if effective_mode == "qa" else effective_mode,
-                gpu_status=policy.get("gpu_status") if isinstance(policy.get("gpu_status"), dict) else None,
-            )
-        except (RuntimeError, ValueError) as exc:
-            parser.error(str(exc))
-    policy["gpu_hardware_risk"] = hardware_risk
+    policy["gpu_hardware_risk"] = {
+        "schema_version": "windows_nvidia_whea_risk_v0_1",
+        "probe_state": "DEFERRED_TO_GPU_EXECUTION_GUARD",
+        "risk_state": "PENDING_DEVICE_LEASE",
+        "blockers": [],
+    }
     policy["gpu_hardware_risk_override"] = bool(args.allow_gpu_hardware_risk)
     _print_gpu_policy_summary(policy)
     return policy
+
+
+def _gpu_execution_context(
+    *,
+    base_dir: Path,
+    artifact_dir: Path,
+    policy: Optional[Dict[str, Any]],
+    workload_class: str,
+    allow_hardware_risk: bool,
+) -> Any:
+    from core.qa_gpu_execution_guard import create_gpu_execution_guard
+
+    guard = create_gpu_execution_guard(
+        base_dir=base_dir,
+        artifact_dir=artifact_dir / "gpu_execution_sessions",
+        policy=policy,
+        workload_class=workload_class,
+        allow_hardware_risk=allow_hardware_risk,
+    )
+    return guard if guard is not None else nullcontext(None)
 
 
 def _print_review_packet_summary(packet: Dict[str, Any]) -> None:
@@ -1643,6 +1659,7 @@ def _prepare_interactive_args(args: argparse.Namespace, base_dir: Path) -> None:
 
     if workflow in {
         "preflight_batch",
+        "gpu_runtime_safety_preflight",
         "prepare_input_manifest",
         "fill_input_manifest_defaults",
         "merge_input_manifest_metadata",
@@ -1782,11 +1799,13 @@ def _prepare_repeatability_device_policy(
     try:
         from core.qa_gpu_device_policy import apply_truth_fusion_gpu_env
 
-        hardware_risk = _prepare_cuda_hardware_risk(
-            device=device,
-            allow_override=bool(args.allow_gpu_hardware_risk),
-            context="repeatability",
-        )
+        if bool(args.allow_gpu_hardware_risk):
+            from core.qa_project_stage import require_project_permission
+
+            require_project_permission(
+                "allow_gpu_hardware_risk_override",
+                action="repeatability GPU hardware-risk override",
+            )
 
         gpu_policy = apply_truth_fusion_gpu_env(
             device=device,
@@ -1806,10 +1825,30 @@ def _prepare_repeatability_device_policy(
             + ", ".join(str(blocker) for blocker in blockers)
             + "; use --device-policy cpu only for an explicitly CPU-bound run"
         )
+    from core.qa_gpu_execution_guard import resolve_gpu_resource
+
+    if resolve_gpu_resource(gpu_policy) is None:
+        hardware_risk = {
+            "schema_version": "windows_nvidia_whea_risk_v0_1",
+            "probe_state": "BYPASSED_CPU_EXECUTION",
+            "risk_state": "CPU_EXECUTION_SELECTED",
+            "blockers": [],
+        }
+    else:
+        hardware_risk = {
+            "schema_version": "windows_nvidia_whea_risk_v0_1",
+            "probe_state": "DEFERRED_TO_GPU_EXECUTION_GUARD",
+            "risk_state": "PENDING_DEVICE_LEASE",
+            "blockers": [],
+        }
     return gpu_policy, hardware_risk
 
 
-def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optional[int]:
+def _handle_workflow_action(
+    args: argparse.Namespace,
+    base_dir: Path,
+    parser: argparse.ArgumentParser,
+) -> Optional[int]:
     workflow = str(args.workflow or "").strip()
     if workflow in {"", "shot_review", "advanced_cli"}:
         return None
@@ -1840,6 +1879,35 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             owner=workflow,
         )
         atexit.register(lock.release)
+
+    if workflow == "gpu_runtime_safety_preflight":
+        from core.qa_gpu_device_policy import build_gpu_runtime_safety_preflight
+        from core.qa_io import atomic_write_json
+
+        result = build_gpu_runtime_safety_preflight()
+        output_file = paths["gpu_runtime_safety_preflight"]
+        atomic_write_json(output_file, result)
+        observation = (
+            result.get("risk_observation")
+            if isinstance(result.get("risk_observation"), dict)
+            else {}
+        )
+        gate_evaluation = (
+            result.get("gate_evaluation")
+            if isinstance(result.get("gate_evaluation"), dict)
+            else {}
+        )
+        print(
+            "[GPU运行安全预检] "
+            f"status={result.get('status')} "
+            f"| probe={observation.get('probe_state')} "
+            f"| disposition={gate_evaluation.get('disposition')} "
+            f"| nvidia_whea17_since_boot={observation.get('nvidia_whea17_count_since_boot')} "
+            "| runtime_initialized_by_preflight=False"
+        )
+        print(f"[GPU运行安全预检文件] {output_file}")
+        print(f"[交互引导] 下一步：{result.get('next_action')}")
+        return 0 if result.get("status") in {"PASS", "NOT_APPLICABLE"} else 2
 
     if workflow == "prepare_input_manifest":
         from core.qa_input_manifest import create_or_update_input_manifest
@@ -1881,82 +1949,102 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
             ).resolve()
         )
         gpu_policy, hardware_risk = _prepare_repeatability_device_policy(args)
-
-        runtime = create_runtime(base_dir)
-        execution_context = {
-            "gpu_policy": gpu_policy,
-            "gpu_hardware_risk": hardware_risk,
-            "gpu_hardware_risk_override": bool(args.allow_gpu_hardware_risk),
-            "cpu_thread_environment": {
-                key: os.getenv(key)
-                for key in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"]
-            },
-        }
-        if is_body_repeatability:
-            from core.providers import build_provider_bundle
-            from core.qa_body_repeatability_adapter import BodyCanonicalRepeatabilityAdapter
-            from core.qa_body_repeatability_runner import run_body_repeatability_shadow
-            from core.qa_repeatability_shadow import load_body_repeatability_protocol
-
-            runtime.config.provider_policy["heavy_evidence"] = "body_canonical_hmr2"
-            runtime.providers = build_provider_bundle(runtime.config.provider_policy)
-            provider_status = runtime.providers.describe_heavy_evidence()
-            if str(provider_status.get("provider_name") or "") != "body_canonical_hmr2":
-                raise ValueError(
-                    "body repeatability requires body_canonical_hmr2; "
-                    f"active provider is {provider_status.get('provider_name')}"
-                )
-            if not bool(provider_status.get("integration_ready")):
-                raise ValueError(
-                    "body repeatability requires a direct-ready HMR2 integration; "
-                    f"integration_state={provider_status.get('integration_state')} "
-                    f"reason={provider_status.get('reason')}"
-                )
-            body_protocol = load_body_repeatability_protocol()
-            body_execution = (
-                body_protocol.get("execution")
-                if isinstance(body_protocol.get("execution"), dict)
-                else {}
-            )
-            result = run_body_repeatability_shadow(
-                image_paths=image_paths,
-                output_root=output_root,
-                adapter=BodyCanonicalRepeatabilityAdapter(
-                    runtime,
-                    execution_context={
-                        **execution_context,
-                        "inter_execution_cooldown_seconds": body_execution.get(
-                            "inter_execution_cooldown_seconds"
-                        ),
-                        "stop_on_failed_trial": body_execution.get("stop_on_failed_trial"),
-                    },
+        guard_context = _gpu_execution_context(
+            base_dir=base_dir,
+            artifact_dir=output_root,
+            policy=gpu_policy,
+            workload_class="body_repeatability" if is_body_repeatability else "identity_repeatability",
+            allow_hardware_risk=bool(args.allow_gpu_hardware_risk),
+        )
+        with guard_context as gpu_guard:
+            if gpu_guard is not None:
+                hardware_risk = gpu_guard.whea_before
+                print(f"[GPU执行租约] {gpu_guard.artifact_path}")
+            runtime = create_runtime(base_dir)
+            execution_context = {
+                "gpu_policy": gpu_policy,
+                "gpu_hardware_risk": hardware_risk,
+                "gpu_hardware_risk_override": bool(args.allow_gpu_hardware_risk),
+                "gpu_execution_guard": (
+                    {
+                        "schema_version": gpu_guard.record.get("schema_version"),
+                        "lease_id": gpu_guard.lease_id,
+                        "artifact_path": str(gpu_guard.artifact_path),
+                        "device": dict(gpu_guard.resource),
+                    }
+                    if gpu_guard is not None
+                    else None
                 ),
-                run_id=args.repeatability_run_id,
-                retry_failed=bool(args.repeatability_retry_failed),
-            )
-        else:
-            from core.qa_face_repeatability_adapter import FaceCanonicalRepeatabilityAdapter
-            from core.qa_identity_repeatability_runner import run_identity_repeatability_shadow
+                "cpu_thread_environment": {
+                    key: os.getenv(key)
+                    for key in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"]
+                },
+            }
+            if is_body_repeatability:
+                from core.providers import build_provider_bundle
+                from core.qa_body_repeatability_adapter import BodyCanonicalRepeatabilityAdapter
+                from core.qa_body_repeatability_runner import run_body_repeatability_shadow
+                from core.qa_repeatability_shadow import load_body_repeatability_protocol
 
-            provider_status = runtime.providers.describe_face_canonical()
-            if str(provider_status.get("provider_name") or "") != "face_pose_canonical_3ddfa":
-                raise ValueError(
-                    "identity repeatability requires face_pose_canonical_3ddfa; "
-                    f"active provider is {provider_status.get('provider_name')}"
+                runtime.config.provider_policy["heavy_evidence"] = "body_canonical_hmr2"
+                runtime.providers = build_provider_bundle(runtime.config.provider_policy)
+                provider_status = runtime.providers.describe_heavy_evidence()
+                if str(provider_status.get("provider_name") or "") != "body_canonical_hmr2":
+                    raise ValueError(
+                        "body repeatability requires body_canonical_hmr2; "
+                        f"active provider is {provider_status.get('provider_name')}"
+                    )
+                if not bool(provider_status.get("integration_ready")):
+                    raise ValueError(
+                        "body repeatability requires a direct-ready HMR2 integration; "
+                        f"integration_state={provider_status.get('integration_state')} "
+                        f"reason={provider_status.get('reason')}"
+                    )
+                body_protocol = load_body_repeatability_protocol()
+                body_execution = (
+                    body_protocol.get("execution")
+                    if isinstance(body_protocol.get("execution"), dict)
+                    else {}
                 )
-            axis_arg = str(args.repeatability_axis or "both")
-            axes = ["face_identity", "face_shape"] if axis_arg == "both" else [axis_arg]
-            result = run_identity_repeatability_shadow(
-                image_paths=image_paths,
-                output_root=output_root,
-                adapter=FaceCanonicalRepeatabilityAdapter(
-                    runtime,
-                    execution_context=execution_context,
-                ),
-                axes=axes,
-                run_id=args.repeatability_run_id,
-                retry_failed=bool(args.repeatability_retry_failed),
-            )
+                result = run_body_repeatability_shadow(
+                    image_paths=image_paths,
+                    output_root=output_root,
+                    adapter=BodyCanonicalRepeatabilityAdapter(
+                        runtime,
+                        execution_context={
+                            **execution_context,
+                            "inter_execution_cooldown_seconds": body_execution.get(
+                                "inter_execution_cooldown_seconds"
+                            ),
+                            "stop_on_failed_trial": body_execution.get("stop_on_failed_trial"),
+                        },
+                    ),
+                    run_id=args.repeatability_run_id,
+                    retry_failed=bool(args.repeatability_retry_failed),
+                )
+            else:
+                from core.qa_face_repeatability_adapter import FaceCanonicalRepeatabilityAdapter
+                from core.qa_identity_repeatability_runner import run_identity_repeatability_shadow
+
+                provider_status = runtime.providers.describe_face_canonical()
+                if str(provider_status.get("provider_name") or "") != "face_pose_canonical_3ddfa":
+                    raise ValueError(
+                        "identity repeatability requires face_pose_canonical_3ddfa; "
+                        f"active provider is {provider_status.get('provider_name')}"
+                    )
+                axis_arg = str(args.repeatability_axis or "both")
+                axes = ["face_identity", "face_shape"] if axis_arg == "both" else [axis_arg]
+                result = run_identity_repeatability_shadow(
+                    image_paths=image_paths,
+                    output_root=output_root,
+                    adapter=FaceCanonicalRepeatabilityAdapter(
+                        runtime,
+                        execution_context=execution_context,
+                    ),
+                    axes=axes,
+                    run_id=args.repeatability_run_id,
+                    retry_failed=bool(args.repeatability_retry_failed),
+                )
         print(
             json.dumps(
                 {
@@ -2016,12 +2104,23 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
     if workflow == "prepare_manifest_completion_plan":
         from core.qa_manifest_completion import build_manifest_completion_plan
 
+        explicit_input = args.input_dir is not None
+        output_file = (
+            paths["current_manifest_completion_plan"]
+            if explicit_input
+            else paths["manifest_completion_plan"]
+        )
         result = build_manifest_completion_plan(
             base_dir=base_dir,
-            output_file=paths["manifest_completion_plan"],
+            output_file=output_file,
+            targets=(
+                (("current_batch", _resolve_input_dir_arg(args.input_dir, base_dir)),)
+                if explicit_input
+                else None
+            ),
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
-        print(f"[清单补全计划] {paths['manifest_completion_plan']}")
+        print(f"[清单补全计划] {output_file}")
         print("[交互引导] 先补 seed_unavailable_reason 和 anchor_source，再用真实 prompt_id 补齐来源。")
         return 0
 
@@ -2504,14 +2603,30 @@ def _handle_workflow_action(args: argparse.Namespace, base_dir: Path) -> Optiona
         if blockers:
             print(f"[预检] 静态阻断，跳过视觉 runtime: {', '.join(blockers)}")
         else:
-            result = _run_shot_review_preflight(
+            device_policy = _apply_cli_device_policy(
+                parser=parser,
+                args=args,
                 base_dir=base_dir,
-                target_profile=args.profile,
-                input_manifest=manifest_path,
-                input_dir=input_dir,
-                artifacts_dir=args.artifacts_dir,
-                initialize_runtime=True,
+                selected_profile=args.profile,
+                effective_mode="qa",
             )
+            with _gpu_execution_context(
+                base_dir=base_dir,
+                artifact_dir=_resolve_artifacts_dir_arg(args.artifacts_dir, base_dir),
+                policy=device_policy,
+                workload_class="visual_preflight",
+                allow_hardware_risk=bool(args.allow_gpu_hardware_risk),
+            ) as gpu_guard:
+                if gpu_guard is not None:
+                    print(f"[GPU执行租约] {gpu_guard.artifact_path}")
+                result = _run_shot_review_preflight(
+                    base_dir=base_dir,
+                    target_profile=args.profile,
+                    input_manifest=manifest_path,
+                    input_dir=input_dir,
+                    artifacts_dir=args.artifacts_dir,
+                    initialize_runtime=True,
+                )
         _print_preflight_summary(result)
         print(f"[预检文件] {paths['preflight_batch']}")
         print("[交互引导] 如果这里已经 WARN/FAIL，先拆批或补齐 input manifest，再跑 shot_review。")
@@ -3017,6 +3132,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=[
             "shot_review",
             "preflight_batch",
+            "gpu_runtime_safety_preflight",
             "prepare_input_manifest",
             "fill_input_manifest_defaults",
             "merge_input_manifest_metadata",
@@ -3159,7 +3275,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input-dir",
         type=Path,
-        help="Override the input directory for preflight_batch, prepare_input_manifest, and qa shot_review.",
+        help=(
+            "Override the input directory for preflight_batch, manifest preparation/completion, "
+            "and qa shot_review. An explicit directory gives prepare_manifest_completion_plan "
+            "a separate current-batch artifact."
+        ),
     )
     parser.add_argument(
         "--repeatability-image",
@@ -3358,7 +3478,7 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
     try:
-        workflow_result = _handle_workflow_action(args, base_dir)
+        workflow_result = _handle_workflow_action(args, base_dir, parser)
     except ValueError as exc:
         parser.error(str(exc))
     if workflow_result is not None:
@@ -3524,89 +3644,109 @@ def cli(argv: Optional[Sequence[str]] = None) -> int:
             print("[交互引导] 请先补齐 input manifest/提示词意图元数据，或修复空批次。")
             return 2
 
-    _apply_cli_device_policy(
+    device_policy = _apply_cli_device_policy(
         parser=parser,
         args=args,
         base_dir=base_dir,
         selected_profile=selected_profile,
         effective_mode=effective_mode,
     )
-
-    if effective_mode == "qa":
-        preflight_payload = _run_shot_review_preflight(
+    execution_context = (
+        _gpu_execution_context(
             base_dir=base_dir,
-            target_profile=selected_profile,
-            input_manifest=_resolve_cli_path(args.input_manifest, base_dir) if args.input_manifest else None,
-            input_dir=_resolve_input_dir_arg(args.input_dir, base_dir),
-            artifacts_dir=args.artifacts_dir,
-            initialize_runtime=True,
+            artifact_dir=_resolve_artifacts_dir_arg(args.artifacts_dir, base_dir),
+            policy=device_policy,
+            workload_class="shot_review",
+            allow_hardware_risk=bool(args.allow_gpu_hardware_risk),
         )
-        _print_preflight_summary(preflight_payload)
-        print(f"[预检文件] {_default_review_paths(base_dir, args.artifacts_dir)['preflight_batch']}")
-        preflight_status = str((preflight_payload.get("batch_preflight") or {}).get("status") or "").upper()
-        if preflight_status == "FAIL" and not args.allow_preflight_fail:
-            print("[交互引导] 当前 batch preflight 失败，已阻断 shot_review。")
-            print("[交互引导] 先拆批或补齐 input manifest；当前项目阶段不允许绕过失败预检。")
-            return 2
-        if preflight_status == "FAIL" and args.allow_preflight_fail:
-            print("[交互引导] 已显式允许 preflight FAIL，继续执行 shot_review。")
+        if effective_mode == "qa"
+        else nullcontext(None)
+    )
+    try:
+        with execution_context as gpu_guard:
+            if gpu_guard is not None:
+                print(f"[GPU执行租约] {gpu_guard.artifact_path}")
+            if effective_mode == "qa":
+                preflight_payload = _run_shot_review_preflight(
+                    base_dir=base_dir,
+                    target_profile=selected_profile,
+                    input_manifest=_resolve_cli_path(args.input_manifest, base_dir) if args.input_manifest else None,
+                    input_dir=_resolve_input_dir_arg(args.input_dir, base_dir),
+                    artifacts_dir=args.artifacts_dir,
+                    initialize_runtime=True,
+                )
+                _print_preflight_summary(preflight_payload)
+                print(f"[预检文件] {_default_review_paths(base_dir, args.artifacts_dir)['preflight_batch']}")
+                preflight_status = str((preflight_payload.get("batch_preflight") or {}).get("status") or "").upper()
+                if preflight_status == "FAIL" and not args.allow_preflight_fail:
+                    print("[交互引导] 当前 batch preflight 失败，已阻断 shot_review。")
+                    print("[交互引导] 先拆批或补齐 input manifest；当前项目阶段不允许绕过失败预检。")
+                    return 2
+                if preflight_status == "FAIL" and args.allow_preflight_fail:
+                    print("[交互引导] 已显式允许 preflight FAIL，继续执行 shot_review。")
 
-    if effective_mode == "qa" and args.input_dir is not None:
-        runtime = create_runtime(base_dir)
-        _override_runtime_input_dir(runtime, _resolve_input_dir_arg(args.input_dir, base_dir))
-        if args.artifacts_dir is not None:
-            _override_runtime_artifacts_dir(runtime, _resolve_artifacts_dir_arg(args.artifacts_dir, base_dir))
-        if args.mode is not None:
-            runtime.config.run_mode = str(args.mode)
-        if selected_profile is not None:
-            runtime.config.review.active_profile = str(selected_profile)
-        if args.heavy_candidate_mode is not None:
-            runtime.config.review.heavy_review_candidate_mode = str(args.heavy_candidate_mode)
-        if args.heavy_max_candidates is not None:
-            runtime.config.review.heavy_review_max_candidates = int(args.heavy_max_candidates)
-        resolved_heavy_provider = str(args.heavy_provider) if args.heavy_provider is not None else None
-        if resolved_heavy_provider is None:
-            from core.qa_runtime import get_preferred_heavy_evidence_for_profile
+            if effective_mode == "qa" and args.input_dir is not None:
+                runtime = create_runtime(base_dir)
+                _override_runtime_input_dir(runtime, _resolve_input_dir_arg(args.input_dir, base_dir))
+                if args.artifacts_dir is not None:
+                    _override_runtime_artifacts_dir(runtime, _resolve_artifacts_dir_arg(args.artifacts_dir, base_dir))
+                if args.mode is not None:
+                    runtime.config.run_mode = str(args.mode)
+                if selected_profile is not None:
+                    runtime.config.review.active_profile = str(selected_profile)
+                if args.heavy_candidate_mode is not None:
+                    runtime.config.review.heavy_review_candidate_mode = str(args.heavy_candidate_mode)
+                if args.heavy_max_candidates is not None:
+                    runtime.config.review.heavy_review_max_candidates = int(args.heavy_max_candidates)
+                resolved_heavy_provider = str(args.heavy_provider) if args.heavy_provider is not None else None
+                if resolved_heavy_provider is None:
+                    from core.qa_runtime import get_preferred_heavy_evidence_for_profile
 
-            resolved_heavy_provider = get_preferred_heavy_evidence_for_profile(
-                runtime.config,
-                runtime.config.review.active_profile,
-            )
-        if (
-            resolved_heavy_provider is not None
-            and str(runtime.config.provider_policy.get("heavy_evidence") or "").strip() != resolved_heavy_provider
-        ):
-            runtime.config.provider_policy["heavy_evidence"] = resolved_heavy_provider
-            if runtime.providers is not None:
-                from core.providers import build_provider_bundle
+                    resolved_heavy_provider = get_preferred_heavy_evidence_for_profile(
+                        runtime.config,
+                        runtime.config.review.active_profile,
+                    )
+                if (
+                    resolved_heavy_provider is not None
+                    and str(runtime.config.provider_policy.get("heavy_evidence") or "").strip() != resolved_heavy_provider
+                ):
+                    runtime.config.provider_policy["heavy_evidence"] = resolved_heavy_provider
+                    if runtime.providers is not None:
+                        from core.providers import build_provider_bundle
 
-                runtime.providers = build_provider_bundle(runtime.config.provider_policy)
-        if args.auto_load_thresholds:
-            runtime.config.auto_load_thresholds = True
-        print_runtime_config(runtime)
-        run_pipeline(runtime, profile_name=selected_profile, threshold_override=threshold_override)
-    else:
-        pipeline_main(
-            base_dir=base_dir,
-            profile_name=selected_profile,
-            run_mode=args.mode,
-            heavy_evidence_provider=args.heavy_provider,
-            heavy_review_candidate_mode=args.heavy_candidate_mode,
-            heavy_review_max_candidates=args.heavy_max_candidates,
-            auto_load_thresholds=True if args.auto_load_thresholds else None,
-            threshold_override=threshold_override,
-            benchmark_report_path=_resolve_cli_path(args.benchmark_report, base_dir) if args.benchmark_report else None,
-            benchmark_labels_path=_resolve_cli_path(args.benchmark_labels, base_dir) if args.benchmark_labels else None,
-            benchmark_output_path=_resolve_cli_path(args.benchmark_output, base_dir) if args.benchmark_output else None,
-            benchmark_template_out=_resolve_cli_path(args.benchmark_template_out, base_dir) if args.benchmark_template_out else None,
-            benchmark_compare_heavy_providers=args.benchmark_compare_heavy_providers,
-            benchmark_image_root=_resolve_cli_path(args.benchmark_image_root, base_dir) if args.benchmark_image_root else None,
-            benchmark_dataset_role=benchmark_dataset_role,
-            benchmark_optuna_ready=benchmark_optuna_ready,
-            benchmark_id=benchmark_id,
-            benchmark_freeze_tag=benchmark_freeze_tag,
-            benchmark_update_labels=bool(args.benchmark_seal_labels),
-        )
+                        runtime.providers = build_provider_bundle(runtime.config.provider_policy)
+                if args.auto_load_thresholds:
+                    runtime.config.auto_load_thresholds = True
+                print_runtime_config(runtime)
+                run_pipeline(runtime, profile_name=selected_profile, threshold_override=threshold_override)
+            else:
+                pipeline_main(
+                    base_dir=base_dir,
+                    profile_name=selected_profile,
+                    run_mode=args.mode,
+                    heavy_evidence_provider=args.heavy_provider,
+                    heavy_review_candidate_mode=args.heavy_candidate_mode,
+                    heavy_review_max_candidates=args.heavy_max_candidates,
+                    auto_load_thresholds=True if args.auto_load_thresholds else None,
+                    threshold_override=threshold_override,
+                    benchmark_report_path=_resolve_cli_path(args.benchmark_report, base_dir) if args.benchmark_report else None,
+                    benchmark_labels_path=_resolve_cli_path(args.benchmark_labels, base_dir) if args.benchmark_labels else None,
+                    benchmark_output_path=_resolve_cli_path(args.benchmark_output, base_dir) if args.benchmark_output else None,
+                    benchmark_template_out=_resolve_cli_path(args.benchmark_template_out, base_dir) if args.benchmark_template_out else None,
+                    benchmark_compare_heavy_providers=args.benchmark_compare_heavy_providers,
+                    benchmark_image_root=_resolve_cli_path(args.benchmark_image_root, base_dir) if args.benchmark_image_root else None,
+                    benchmark_dataset_role=benchmark_dataset_role,
+                    benchmark_optuna_ready=benchmark_optuna_ready,
+                    benchmark_id=benchmark_id,
+                    benchmark_freeze_tag=benchmark_freeze_tag,
+                    benchmark_update_labels=bool(args.benchmark_seal_labels),
+                )
+    except Exception as exc:
+        from core.qa_gpu_execution_guard import GpuExecutionGuardError
+
+        if isinstance(exc, GpuExecutionGuardError):
+            parser.error(str(exc))
+        raise
     if effective_mode == "qa":
         review_packet_path = _default_review_paths(base_dir, args.artifacts_dir)["review_packet"]
         try:

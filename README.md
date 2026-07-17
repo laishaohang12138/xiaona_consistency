@@ -29,7 +29,11 @@ XiaoNa LoRA candidate screening and consistency-evidence repository.
 - `configs/optuna_guard.json` remains an additional Optuna readiness check and cannot relax the project-stage lock
 - `configs/optuna_mode_presets.json` provides user-facing review / front / 3q / side / full-release fit presets
 - Winner bank is currently mutable review memory, not frozen release truth or a fitting source
-- QA runs perform metadata-only preflight before visual runtime initialization; metadata-only output defers lane evidence instead of reporting synthetic geometry failures, and CUDA review paths fail closed on NVIDIA WHEA risk
+- QA runs perform metadata-only preflight before visual runtime initialization; metadata-only output defers lane evidence instead of reporting synthetic geometry failures
+- `gpu_runtime_safety_preflight` performs a read-only WHEA check and writes `outputs/gpu_runtime_safety_preflight.json` without initializing CUDA, a visual model, or a provider
+- `configs/gpu_runtime_policy.json` fixes daily QA to `GPU_FIRST`; CPU execution is an explicit operator choice rather than an automatic default
+- CUDA visual-preflight, review, and repeatability paths acquire a device-scoped lock before runtime/provider initialization, accept only operator-acknowledged historical WHEA events, fail closed on any event after that watermark, and preserve before/after WHEA delta records under the active artifact directory
+- `prepare_manifest_completion_plan --input-dir <batch>` writes a separate current-batch completion plan without overwriting the historical front/three-quarter replay plan
 - Body truth is pose/gait-aware: `Task-63987060-116-1.png` remains the only body truth while pose-sensitive deltas are interpreted separately
 - Side/back evidence now carries same-truth projection confidence and uncertainty; derived projections do not create new truth anchors
 - Final training-set admission and final image-set construction are outside this repository; outputs are screening, review-priority ranking, risk routing, and evidence packets only

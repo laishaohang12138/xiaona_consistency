@@ -11,6 +11,8 @@ Updated for the current review-only governance state.
 - `review_packet.json` and `gpt_review_packet.json` remain detail files for candidate-level analysis.
 - `review_invariance_status.json` tracks angle, clothing, lighting, and topology maturity.
 - `input_manifest_completion_plan.json` tracks which input-manifest fields still need operator confirmation.
+- `current_input_manifest_completion_plan.json` can track one explicitly selected batch without replacing the historical front/three-quarter plan.
+- `gpu_runtime_safety_preflight.json` records a read-only NVIDIA/WHEA gate without initializing CUDA or any visual provider.
 - `prepare_lighting_replay_pack` now scaffolds a controlled lighting replay workspace under `input_replay/lighting/`.
 - `prepare_outer_replay_pack` now scaffolds a controlled OUTER replay workspace under `input_replay/outer/`.
 - `prepare_topology_replay_pack` now scaffolds controlled side/back topology replay workspaces under `input_replay/topology/`.
@@ -18,6 +20,15 @@ Updated for the current review-only governance state.
 - Replay run commands now use isolated `outputs/replay/...` artifact directories so controlled variants do not overwrite main `outputs/`.
 - `promote_winner` supports shortlist-based manual promotion.
 - `winner_bank_status` exposes current curated-bank readiness.
+
+### Runtime Safety
+
+- CUDA visual preflight, review, and repeatability acquire a device-scoped lease before runtime initialization and compare WHEA state before and after execution.
+- Daily QA is fixed to `GPU_FIRST` by `configs/gpu_runtime_policy.json`; CPU is available only when explicitly selected.
+- The operator confirmed that the 74 NVIDIA-linked WHEA event 17 records from the 2026-07-16 boot came from a resolved interaction among system optimization, driver, and antivirus software.
+- Those 74 records and their latest timestamp are retained as an auditable historical watermark. The current read-only gate is `PASS / ACKNOWLEDGED_HISTORICAL_EVENTS`; the raw events are not deleted or relabeled as absent.
+- Any same-boot count above 74, any event later than the acknowledged timestamp, an unreadable policy/probe, or any positive during-run delta remains fail-closed.
+- CPU and CUDA remain different measurement contracts and cannot be mixed as repeatability or qualification evidence.
 
 ### Batch Review Stack
 

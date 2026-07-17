@@ -4,6 +4,10 @@
 
 ### P0
 
+- Keep CUDA review and repeatability disabled while `gpu_runtime_safety_preflight` is `FAIL`; do not use CPU fallback as qualification evidence for a GPU execution path.
+- Use the configured `GPU_FIRST` path for daily QA. Select CPU only explicitly, and keep CPU/CUDA evidence contracts separate.
+- For the active 82-image batch, use `current_input_manifest_completion_plan.json` to complete real generation metadata without altering the historical clean-lane plan or fabricating missing fields.
+
 1. Start using the handoff pack in every new chat window.
 2. Generate `input_manifest_completion_plan.json` before rerunning clean front / three_quarter replay.
 3. Fill `prompt_id` from the real prompt file, prompt slot, or batch family.
